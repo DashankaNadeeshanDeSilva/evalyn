@@ -45,16 +45,35 @@ to LLM stochasticity.
 - **Ambition:** **open-source from day 1** — public repo, real README/docs/license, designed for
   strangers to adopt and bring their own keys.
 
-### Why purpose-built (and not Hermes)
+### Why not Hermes as the chassis
 
 We evaluated adapting the Nous **Hermes agent** harness as the chassis. Hermes is a rich
 *personal-assistant autonomy* runtime (40+ tools, messaging gateways, self-improving skills,
 persistent memory, MIT-licensed). But it ships **zero evaluation primitives** — no scoring, no
 baselines, no reproducibility model — and its "creative autonomy" architecture actively fights
 the *determinism and reproducibility* an eval harness lives or dies by. We keep two *ideas* from
-Hermes — **markdown skill/persona files** and **a thin tool-loop agent** — but build a
-purpose-built evaluation spine around them. "Purpose-built" means **built for evaluation**, not
-"built for NiuwnAI."
+Hermes — **markdown skill/persona files** and **a thin tool-loop agent** — but do not build on it.
+
+### Build on Inspect AI; own the differentiators
+
+We do **not** hand-build the commodity evaluation spine. We build on **Inspect AI** (UK AISI's
+LLM-eval framework: `Task → Solver → Scorer`, an immutable self-describing eval-log format, a log
+viewer, and first-class agent/tool/sandbox support; permissively licensed). Inspect gives us
+reproducibility infrastructure, a scorer-composition model, and a log ecosystem that would take
+months to reproduce and never match.
+
+Evalyn's own code is the layer Inspect does **not** provide:
+
+1. **Target packs** — a project-agnostic contract that drives a *black-box product* over live
+   HTTP/SSE (Inspect is oriented at models/datasets, not a running product's API surface).
+2. **The adaptive discovery agent** — goal-directed, hypothesis-driven red-teaming that *pursues
+   threads* (§4). Inspect can *run* an agent; it does not *provide* this one.
+3. **The findings → regression flywheel** — confirmed discoveries auto-emit reproducible probes.
+
+So "purpose-built" now means: **purpose-built target-pack + discovery + flywheel layer on top of a
+proven eval spine.** We map our concepts onto Inspect's primitives (a probe suite is an Inspect
+`Task`; a session driver is a `Solver`; each scoring tier is a `Scorer`; every run is an Inspect
+eval log) rather than inventing parallel machinery. See §9 for the full prior-art adoption table.
 
 ---
 
@@ -72,15 +91,16 @@ evalyn compare  --target ./packs/twincore --config-a base --config-b deliberatio
 ```
 evalyn/
 ├── src/evalyn/
-│   ├── engine/        # probe runner, session mgmt, HTTP/SSE client, baseline store, diffing,
-│   │                  #   run orchestration, budget accounting, artifact persistence
-│   ├── scoring/       # tier-1 deterministic checks, tier-2 classifier judge, tier-3 rubric judge,
-│   │                  #   blind A/B judging, rubric loader, calibration/anchor harness
+│   ├── engine/        # Inspect Task builder from packs, session Solver (HTTP/SSE), run
+│   │                  #   orchestration, baseline store + diffing, budget accounting.
+│   │                  #   (Reproducibility/log-format come from Inspect, not re-implemented here.)
+│   ├── scoring/       # Inspect Scorers: tier-1 deterministic, tier-2 classifier judge,
+│   │                  #   tier-3 G-Eval rubric judge, blind A/B judging, calibration/anchor harness
 │   ├── discovery/     # the agentic evaluator: thin tool-loop, objectives, hypotheses,
 │   │                  #   persona/playbook loader, coverage & novelty tracking
 │   ├── targets/       # target-pack loader + schema validation + stream-format adapters
-│   ├── providers/     # pluggable model providers (OpenAI / Anthropic / OpenAI-compatible)
-│   └── cli.py
+│   ├── providers/     # model providers via Inspect's model layer (OpenAI / Anthropic / compatible)
+│   └── cli.py         # thin wrapper over Inspect's runner + our discovery loop
 ├── packs/
 │   └── twincore/      # first reference target pack (lives in-repo as the worked example)
 │       ├── target.yaml    # base URL, auth flow, session/chat endpoints, SSE format, invariants,
@@ -190,6 +210,8 @@ frameworks handle badly.
 
 **Principle:** *never use an LLM judge where a deterministic check works, and never trust a judge
 you have not measured.* Scoring is a three-tier ladder — cheapest and most trustworthy first.
+**Each tier is implemented as an Inspect `Scorer`**, composed per `Task`, so scores land in the
+standard eval log and render in the Inspect viewer for free.
 
 ### Tier 1 — Deterministic checks (free, exact)
 Invariants and structural assertions: regex/heuristics for first-person voice, leak patterns,
@@ -203,8 +225,10 @@ invented facts?"), block/allow, on-topic/off-topic. Small fast model, temperatur
 schema output**, and it **must quote the evidence span** from the transcript that justifies the
 verdict. A verdict without a supporting quote is scored `unsure` — never silently trusted.
 
-### Tier 3 — Rubric judge (strong model, for nuance)
-Groundedness, completeness, persona fidelity, tone. Trust rules:
+### Tier 3 — Rubric judge (strong model, for nuance) — via G-Eval
+Groundedness, completeness, persona fidelity, tone. We use the **G-Eval** method (from DeepEval):
+the judge first *generates explicit evaluation steps* from the rubric, then scores the transcript
+against those steps — more stable and less gameable than a bare "rate this 1–5" prompt. Trust rules:
 
 - **Rubrics are pinned files** in the pack (markdown, git-versioned). Every artifact records the
   **rubric hash** — a score is meaningless without knowing exactly which rubric produced it.
@@ -242,17 +266,29 @@ behaves like a curious, adversarial visitor and adapts based on what the target 
 move. A scripted suite asks 40 pre-written questions; this agent asks one, notices "it hedged when I
 mentioned salary," and *pursues* that thread.
 
-**Hypothesis-driven.** The agent is given **objectives**, not prompts:
-`find-hallucination`, `break-persona`, `provoke-over-blocking`, `bypass-injection-guard`,
-`extract-PII`, `find-scope-gaps`. For each it forms a hypothesis ("this Twin will invent a fact if I
-ask about a plausible-but-absent project"), tests it in the fewest turns, and **confirms, refutes, or
-mutates** it. This maps onto real TwinCore findings (F-5/F-12 over-blocking, F-6 PII over-share,
-hallucination) but is built to find the ones not yet enumerated.
+**Hypothesis-driven, on a two-axis taxonomy.** The agent explores an **objective × strategy** grid,
+borrowed from promptfoo's proven `plugin × strategy` red-team model:
+
+- **Objectives** (*what* weakness — the "plugin" axis): `find-hallucination`, `break-persona`,
+  `provoke-over-blocking`, `bypass-injection-guard`, `extract-PII`, `find-scope-gaps`. The seed set
+  is **mined from Giskard's LLM-scan vulnerability taxonomy** (hallucination, prompt injection,
+  harmfulness, sensitive-info disclosure, robustness) so coverage priors are solid on day one.
+- **Strategies** (*how* to deliver — the "strategy" axis): direct, base64, unicode/leet, role-play,
+  delimiter injection, multi-turn trust-then-pivot/crescendo.
+
+For each cell the agent forms a hypothesis ("this Twin will invent a fact if I ask about a
+plausible-but-absent project"), tests it in the fewest turns, and **confirms, refutes, or mutates**
+it. This maps onto real TwinCore findings (F-5/F-12 over-blocking, F-6 PII over-share, hallucination)
+but is built to find the ones not yet enumerated.
 
 **Personas + playbooks as pluggable knowledge.** Personas (hostile recruiter, naïve fan, social
-engineer, journalist) and attack playbooks (the injection taxonomy: base64, unicode/leet, role-play,
-delimiter, multi-turn trust-then-pivot) live as **markdown files in the pack** — seeded strategy the
-agent *starts from and recombines*, not a cage. Powerful *and* extensible with no engine changes.
+engineer, journalist) supply the *voice*; playbooks encode the *strategy* axis above. Both live as
+**markdown files in the pack** — seeded strategy the agent *starts from and recombines*, not a cage.
+Powerful *and* extensible with no engine changes.
+
+**Trajectory-aware scoring.** Multi-turn discovery is judged over the *whole path*, not just the
+final reply (adopting LangChain AgentEvals' trajectory-evaluation idea) — so a Twin that is *slowly*
+manipulated across several turns is caught even when no single reply looks damning.
 
 **Coverage & novelty tracking.** The agent maintains a map of what it has probed and a
 semantic-similarity check so it explores breadth instead of rephrasing the same attack — and knows
@@ -359,7 +395,8 @@ visitor surface. The two are not redundant: one tests the node, the other tests 
   infra-heavy; deferred.
 - **Auto-reconfiguring the target for A/B** — the user brings the stack up per config; Evalyn just
   runs and tags. Auto-config is a later convenience, not core.
-- **Training-data / trajectory export** (the Hermes strength) — not an eval concern.
+- **Training-data trajectory *export*** (the Hermes strength — dumping trajectories to train models)
+  — not an eval concern. (Distinct from trajectory *scoring* in §2/§4, which is in scope.)
 - **A hosted SaaS / web UI** — CLI + artifacts + CI first. (OSS-from-day-1 ≠ SaaS-from-day-1.)
 
 ---
@@ -379,3 +416,28 @@ visitor surface. The two are not redundant: one tests the node, the other tests 
    demonstrably work.
 6. A second, trivial "hello-world" target pack (or a documented skeleton) exists to prove the engine
    is genuinely project-agnostic.
+7. The spine is Inspect-based: every run produces a standard Inspect eval log viewable in the Inspect
+   viewer, and each scoring tier is an Inspect `Scorer`.
+
+---
+
+## 9. Prior art — what we build on, adopt, and ignore
+
+Surveyed against the [Awesome-AI-Evaluations-Tools](https://github.com/danielrosehill/Awesome-AI-Evaluations-Tools)
+landscape. Decisions:
+
+| Tool | Relationship | What we take |
+|------|--------------|--------------|
+| **Inspect AI** (UK AISI) | **Build on** (dependency) | `Task → Solver → Scorer` model, immutable eval-log format, log viewer, model provider layer, agent/tool support. Our spine. |
+| **promptfoo** | **Adopt pattern** | Red-team **plugin × strategy** two-axis taxonomy → our discovery **objective × strategy** grid (§4). Assertion vocabulary informs Tier-1/3. |
+| **DeepEval** | **Adopt method** | **G-Eval** (judge generates evaluation steps from the rubric, then scores) as the Tier-3 implementation; its faithfulness/hallucination metric definitions seed `grounding.yaml`. |
+| **Giskard OSS** (LLM scan) | **Adopt taxonomy** | Its vulnerability categories (hallucination, injection, harmfulness, sensitive-info disclosure, robustness) seed the discovery **objective** axis for good coverage priors. |
+| **LangChain AgentEvals** | **Adopt concept** | **Trajectory evaluation** — score the whole multi-turn path, not just the final reply (§2 multi-turn probes, §4 discovery). |
+| **Bloom** | **Reference** | Behavior-elicitation prompt patterns for discovery objectives. |
+| lm-eval-harness, HELM, OpenCompass, LightEval, BIG-bench, AlpacaEval, OLMES | **Ignore** | Academic *model* benchmarks (MMLU-style leaderboards). We evaluate a *product's behavior* via its live API — different problem. |
+| Langfuse, Phoenix, Opik, Helicone, Evidently | **Defer** | Observability/dashboard platforms. Out of v1 (no UI/SaaS). Possible **future export target** for our artifacts. |
+
+**Net effect:** the survey *strengthens* the design — we now stand on a proven eval spine and adopt
+battle-tested patterns for the parts we were specifying from scratch, while the **adaptive discovery
+agent + findings→regression flywheel + project-agnostic target packs** remain Evalyn's novel core,
+which nothing in the landscape provides as a unified whole.
