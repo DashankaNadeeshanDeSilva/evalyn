@@ -62,18 +62,30 @@ Full table is §9 of the design doc. Summary:
   AlpacaEval) — they benchmark models on leaderboards, not product behavior.
 - **Defer:** observability platforms (Langfuse, Phoenix, Opik, Helicone, Evidently) — possible future
   export target; no UI/SaaS in v1.
+- **2026-07-22 revision:** the design was reviewed against Anthropic's engineering article
+  *[Demystifying Evals for AI Agents](https://www.anthropic.com/engineering/demystifying-evals-for-ai-agents)*
+  and amended (user-approved). Adopted: capability-vs-regression probe kinds + graduation,
+  pass@k/pass^k (pass^k gates safety probes), transcript-vs-outcome grading + optional
+  `state.checks`/`reset`/seed-fingerprint pack hooks, `evalyn validate-pack` task-health tooling
+  (reference solutions, balanced-set lint, suspect-task flagging), transcript-review discipline
+  (agent-blamed vs grader-blamed triage), "grade outcomes not paths" for flywheel-emitted probes,
+  and τ-bench-style **simulated-user probes** (schema in v1; runner is nice-to-have, may ship v1.x).
 
 ## 5. Design essentials (skim; full detail in the design doc)
 
 - **§1–2 Engine + target packs.** Engine knows *only* the pack contract (how to open a session, send
   a message, read the reply; invariants, probes, rubrics, personas, playbooks, anchors, budget,
-  allowlist). Probe suite = Inspect `Task`; session driver = `Solver`; scoring tier = `Scorer`; run =
-  Inspect eval log. Multi-turn probes are first-class.
+  allowlist; optional read-only `state` hooks: outcome `checks`, `seed_fingerprint`, `reset`). Probe
+  suite = Inspect `Task`; session driver = `Solver`; scoring tier = `Scorer`; run = Inspect eval log.
+  Multi-turn probes are first-class. Probes have `kind: regression|capability` (capability =
+  aspirational, never reds the build, graduates when stable) and weighted checks (partial credit);
+  a τ-bench-style simulated-user probe type is specced (runner nice-to-have, may ship v1.x).
 - **§3 Scoring = 3-tier trust ladder.** Tier 1 deterministic (facts, can hard-fail) → Tier 2 cheap
   classifier judge (must quote evidence or scored `unsure`) → Tier 3 **G-Eval** rubric judge (pinned
   rubric files, judge ≠ generator family, blind order-swapped A/B, self-consistency k=3). **Judge is
   calibrated** against a human-labeled anchor set (≥85% agreement gate). Gate never fails on one
-  stochastic flip — fails on *pattern*, quarantines flips.
+  stochastic flip — fails on *pattern*, quarantines flips. Artifacts record **pass@k and pass^k**
+  per probe; **safety-critical probes gate on pass^k** (all samples must pass), not majority vote.
 - **§4 Discovery agent.** Goal-directed loop (observe → reason → pursue thread). **objective ×
   strategy** grid. **Trust boundary: the agent PROPOSES, the scoring layer DISPOSES** (a finding is
   real only when §3 confirms it against the transcript — kills false positives). Every confirmed
@@ -82,7 +94,10 @@ Full table is §9 of the design doc. Summary:
   spend), `--dry-run` estimate, caching, model tiers. **Target allowlist** (refuses non-allowlisted
   URLs; prod needs `--i-know-this-is-prod`). Analytics hygiene (tag eval sessions), PII discipline
   (transcripts gitignored). `gate` returns CI exit codes + PR comment; `discover` is nightly/on-demand,
-  never a blocking gate.
+  never a blocking gate. **`evalyn validate-pack`** = task health: graders must pass their reference
+  solutions, balanced-set lint (every category needs positive AND negative cases), 0%-pass probes
+  flagged as suspect tasks. **Transcript discipline:** reports link sampled transcripts; quarantine
+  triage records agent-blamed vs grader-blamed; grader-blamed rate = eval-health meta-metric.
 - **§6 TwinCore reference pack.** Seeded from real history (below). **§7 YAGNI scope-outs. §8 success
   criteria. §9 prior-art table.**
 - **§10 Feasibility & UI.** (a) Evalyn works for **any** product via target packs — feasibility bands:
