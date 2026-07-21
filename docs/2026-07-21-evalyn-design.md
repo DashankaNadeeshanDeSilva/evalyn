@@ -441,3 +441,56 @@ landscape. Decisions:
 battle-tested patterns for the parts we were specifying from scratch, while the **adaptive discovery
 agent + findings→regression flywheel + project-agnostic target packs** remain Evalyn's novel core,
 which nothing in the landscape provides as a unified whole.
+
+---
+
+## 10. Feasibility (any product?) & UI
+
+### 10.1 Can Evalyn evaluate any product? — feasibility bands
+
+Evalyn is **two layers**: a generic **engine** that knows nothing about any product, and swappable
+**target packs** holding everything product-specific. TwinCore is only the first reference pack;
+retargeting means writing a new pack, never editing the engine. Realistic feasibility by product
+type:
+
+| Band | Product type | Work required |
+|------|--------------|---------------|
+| **Easy** (no engine change) | Any product with a **conversational HTTP endpoint** (REST/JSON or SSE) | Write `target.yaml` + probes + rubrics + invariants. Config + content only. |
+| **Medium** (small adapter) | Novel **auth flow** (token/cookie/OAuth) or **stream format** not shipped yet | Add a pluggable auth/stream adapter in `targets/` — bounded, reusable afterwards. |
+| **Harder** (contract extension) | **Non-conversational** (classification API, batch pipeline, image-gen) or **non-HTTP** (WebSocket-only, gRPC), or environments where you cannot seed a throwaway account | Needs a new session driver / contract extension, not just config. |
+
+**The irreducible per-product cost — true of TwinCore too:** the **evaluation content** (probes,
+rubrics, personas, human-labeled anchors) is *always* bespoke, because it encodes what "good
+behavior" *means* for that product. Evalyn makes the **machinery** reusable; it cannot make the
+**definition of good** reusable — no tool can, and pretending otherwise is how generic eval suites
+become meaningless. Building on Inspect keeps the commodity plumbing (runner, log format, scoring
+harness) free so pack authors spend their effort only on that irreducible content.
+
+> **Plain-English framing:** Evalyn is a universal remote — the remote (engine) works with any TV,
+> you just pick the right profile (target pack). Chat-over-HTTP products are easy to add; unusual
+> ones need a little custom plumbing first; and for *every* product you still decide what a good vs
+> bad answer looks like.
+
+### 10.2 Dashboard & UI
+
+**v1 has no bespoke Evalyn dashboard/SaaS — deliberately** (see §7). The v1 surfaces are:
+
+- the **CLI** (`discover` / `gate` / `compare`, `--dry-run`, etc.),
+- **self-contained JSON run artifacts** in `runs/` + a **Markdown report** per run,
+- a **PR comment** with the gate summary in CI, and
+- **the Inspect log viewer for free** — because the spine is Inspect, every run is a standard Inspect
+  eval log, so a local web viewer renders transcripts, per-probe scores, the judge's reasoning, and
+  latency/token/cost, and diffs runs. "See results in a browser" is covered day one; it is Inspect's
+  viewer, not a custom Evalyn dashboard.
+
+**Interaction model = launch-and-observe, not live-steer.** You start a run from the CLI, watch
+console progress, and inspect artifacts/viewer afterward. **Real-time control** of a running
+discovery agent (pause, redirect mid-hunt, a live control panel) is **not** in v1. A bespoke
+dashboard, or exporting artifacts into an observability platform (Langfuse/Phoenix/Opik), is a
+**deferred future option** (§7, §9) — held back so v1 ships the valuable core (the evals) rather than
+UI chrome.
+
+> **Plain-English framing:** No fancy custom dashboard yet — on purpose. But you're not stuck in a
+> terminal: Inspect's built-in web viewer lets you click through every conversation, see scores, and
+> read *why* the judge decided what it did. What you can't do in v1 is steer the agent live while it
+> runs — you launch it, let it finish, then review.

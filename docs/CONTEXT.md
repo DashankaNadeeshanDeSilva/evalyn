@@ -85,6 +85,13 @@ Full table is §9 of the design doc. Summary:
   never a blocking gate.
 - **§6 TwinCore reference pack.** Seeded from real history (below). **§7 YAGNI scope-outs. §8 success
   criteria. §9 prior-art table.**
+- **§10 Feasibility & UI.** (a) Evalyn works for **any** product via target packs — feasibility bands:
+  *easy* (conversational HTTP/SSE product = config + content only), *medium* (novel auth/stream = small
+  adapter), *harder* (non-conversational or non-HTTP = new session driver). Eval **content** (probes/
+  rubrics/anchors) is *always* bespoke per product — that's inherent to evaluation. (b) **v1 has no
+  custom dashboard** (deliberate), but the **Inspect log viewer** gives a browser UI for transcripts/
+  scores/judge-reasoning for free; interaction is **launch-and-observe**, not live-steer. Custom
+  dashboard / Langfuse-Phoenix export are deferred.
 
 ## 6. TwinCore facts the pack author will need
 
