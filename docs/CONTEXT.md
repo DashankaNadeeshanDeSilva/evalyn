@@ -163,8 +163,9 @@ building the pack):
 - **Scratch/handoff docs** go in temp locations unless asked otherwise (this doc was explicitly asked
   for, so it lives in the repo).
 - This is a **fresh separate repo** (`/Users/dashankadesilva/Drive/Projects/Evalyn_eval_agent`), git
-  initialized, `main` branch, `.gitignore` present. Not the niuwnai-mvp workflow (no `dev` branch here
-  yet — establish branch/PR conventions when the user is ready).
+  initialized, `.gitignore` present. **Branch convention (user-decided 2026-07-22): for now, work on
+  the main worktree and commit all docs to `master`.** Proper branch/PR conventions come later, when
+  implementation starts. Not the niuwnai-mvp workflow (no `dev` branch here).
 
 ## 9. Repo state right now
 
