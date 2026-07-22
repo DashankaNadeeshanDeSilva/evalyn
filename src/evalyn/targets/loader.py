@@ -50,6 +50,16 @@ def load_pack(path: str | Path) -> Pack:
                 probes.append(Probe.model_validate(entry))
             except Exception as e:
                 raise PackError(f"invalid probe in {pf.name}: {e}") from e
+
+    seen: set[str] = set()
+    dupes: set[str] = set()
+    for p in probes:
+        if p.id in seen:
+            dupes.add(p.id)
+        seen.add(p.id)
+    if dupes:
+        raise PackError(f"duplicate probe id(s): {', '.join(sorted(dupes))}")
+
     return Pack(spec=spec, probes=probes, root=root)
 
 

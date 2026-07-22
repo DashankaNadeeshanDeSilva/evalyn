@@ -61,3 +61,30 @@ def test_load_pack_invalid_probe(tmp_path):
     probe_file.write_text("- id: test-probe\n  category: test\n  checks: []\n")
     with pytest.raises(PackError, match="invalid probe"):
         load_pack(invalid_pack)
+
+def test_load_pack_duplicate_probe_id(tmp_path):
+    """load_pack raises PackError when two probes share the same id."""
+    dup_pack = tmp_path / "dup_probe"
+    dup_pack.mkdir()
+    target_file = dup_pack / "target.yaml"
+    target_file.write_text(
+        "name: test\n"
+        "sessions:\n"
+        "  session1: { method: POST, path: /session }\n"
+        "allowlist: []\n"
+    )
+    probes_dir = dup_pack / "probes"
+    probes_dir.mkdir()
+    probe_file = probes_dir / "test.yaml"
+    probe_file.write_text(
+        "- id: dup-probe\n"
+        "  category: test\n"
+        "  turns: [\"hi\"]\n"
+        "  checks: []\n"
+        "- id: dup-probe\n"
+        "  category: test\n"
+        "  turns: [\"hi\"]\n"
+        "  checks: []\n"
+    )
+    with pytest.raises(PackError, match="dup-probe"):
+        load_pack(dup_pack)
