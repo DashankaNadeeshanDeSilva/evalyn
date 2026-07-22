@@ -11,6 +11,8 @@ plans only; Plan #1 (the `gate` foundation) is written and next to build.
 - `docs/ROADMAP.md` — how the 3 plans stage; what's in each.
 - `docs/superpowers/plans/` — the executable, task-by-task plans (Plan #1 lives here).
 - `docs/EVALYN_EXPLAINED.md` — plain-English overview.
+- `docs/JOURNAL.md` — progress journal: task status, deferred findings register, decisions.
+  **Update at every task completion**; triage its open items at each plan's final review.
 
 ## Environment & commands
 
