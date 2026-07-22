@@ -25,7 +25,8 @@ Execution: subagent-driven (fresh implementer per task → task review → fixes
 | 3 | Pack loader (env resolution + allowlist) | `6c0e40a`, `fcf72fd` (tests fix), `7fb6253` (dup-id fix) | ✅ done, review clean after fixes |
 | 4 | Stream adapters (vercel-ai / raw-sse / json) | `37dfffb` | ✅ done, review clean |
 | 5 | Session solver (live HTTP/SSE, multi-turn) + toy target promoted | `649579e` | ✅ done, Opus review clean |
-| 6–14 | Scoring tiers → task builder → run/gate → validate-pack → CLI → e2e | — | ⏳ pending |
+| 6 | Tier-1 deterministic scorer (invariants + checks) | `c85d0f5` | ✅ done, Opus review clean |
+| 7–14 | Tier-2 judge → task builder → run/gate → validate-pack → CLI → e2e | — | ⏳ pending |
 
 ### Pre-flight plan amendments (user-approved 2026-07-23)
 
@@ -102,6 +103,14 @@ Triage at the Plan #1 final whole-branch review unless tagged later.
 - Note: solver honors audit contracts 1/2/4 (allowlist-only URL, buffer-then-parse, errors via
   `raise_for_status`); minipack allowlist gained `http://127.0.0.1:8899` (necessary + minimal,
   reviewer-verified).
+
+**Tier-1 scorer (Task 6):**
+- [ ] **Task 12 MUST guard:** `{type: invariant}` with `ref=None` silently no-ops; `{type: contains}`
+      with `value=None` crashes with `AttributeError` — both reachable via schema-valid malformed
+      packs; `validate-pack` is the designated guard. *(carry to Task 12 dispatch)*
+- [ ] Tier-1 tests minimal per brief — `contains`/`not_contains` scoring and non-required check
+      recording untested; expand when Task 8 wires real probes. *(minor)*
+- [ ] `first-person` invariant regex narrow (only `he/she + 4 verbs` — misses `they`, other verbs). *(minor)*
 
 **Misc:**
 - [ ] `tests/test_smoke.py:1` combined import (`E401`) — only matters if `tests/` enters lint
