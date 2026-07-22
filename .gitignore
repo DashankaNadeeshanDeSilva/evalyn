@@ -6,3 +6,6 @@ __pycache__/
 .venv/
 venv/
 .DS_Store
+
+# SDD scratch (progress ledger, briefs)
+.superpowers/
