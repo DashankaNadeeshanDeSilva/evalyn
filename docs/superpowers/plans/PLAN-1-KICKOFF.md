@@ -15,7 +15,7 @@ I want to execute **Plan #1** of the Evalyn project — the gate-first foundatio
 **Read these first, in order, to get full context (I have no memory of prior sessions):**
 1. `docs/CONTEXT.md` — what Evalyn is, the locked decisions, and my working preferences.
 2. `docs/EVALYN_EXPLAINED.md` — the plain-English overview of the product.
-3. `docs/superpowers/plans/ROADMAP.md` — how the 3 plans are staged and where Plan #1 fits.
+3. `docs/ROADMAP.md` — how the 3 plans are staged and where Plan #1 fits.
 4. `docs/2026-07-22-inspect-spike-findings.md` — the validated Inspect AI fit + the key
    architecture finding (per-probe pass/fail policy lives in Evalyn's gate-diff layer).
 5. **`docs/superpowers/plans/2026-07-22-evalyn-gate-foundation.md`** — THE PLAN to execute. It has

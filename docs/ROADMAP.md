@@ -6,10 +6,10 @@ you start or resume work, and update it whenever scope shifts. The detailed, tas
 each stage lives in its own file next to this one.
 
 **Companion docs:**
-- Plain-English overview of the product → [`../../EVALYN_EXPLAINED.md`](../../EVALYN_EXPLAINED.md)
-- Full technical design (source of truth for *what* Evalyn is) → [`../../2026-07-21-evalyn-design.md`](../../2026-07-21-evalyn-design.md)
-- Orientation / decisions log → [`../../CONTEXT.md`](../../CONTEXT.md)
-- Why we build on Inspect (the de-risking experiment) → [`../../2026-07-22-inspect-spike-findings.md`](../../2026-07-22-inspect-spike-findings.md)
+- Plain-English overview of the product → [`EVALYN_EXPLAINED.md`](./EVALYN_EXPLAINED.md)
+- Full technical design (source of truth for *what* Evalyn is) → [`2026-07-21-evalyn-design.md`](./2026-07-21-evalyn-design.md)
+- Orientation / decisions log → [`CONTEXT.md`](./CONTEXT.md)
+- Why we build on Inspect (the de-risking experiment) → [`2026-07-22-inspect-spike-findings.md`](./2026-07-22-inspect-spike-findings.md)
 
 ---
 
@@ -29,7 +29,7 @@ each stage lives in its own file next to this one.
 
 | Stage | The job it delivers | Detailed plan | Status |
 |-------|---------------------|---------------|--------|
-| **Plan #1** | `gate` (fixed regression tests, pass/fail) | [`2026-07-22-evalyn-gate-foundation.md`](./2026-07-22-evalyn-gate-foundation.md) | ✅ Plan written — **ready to execute** |
+| **Plan #1** | `gate` (fixed regression tests, pass/fail) | [`superpowers/plans/2026-07-22-evalyn-gate-foundation.md`](./superpowers/plans/2026-07-22-evalyn-gate-foundation.md) | ✅ Plan written — **ready to execute** |
 | **Plan #2** | Real product wiring + full-strength judging + `compare` (A/B) + CI | *(not yet written)* | ⏳ Planned (scope below) |
 | **Plan #3** | `discover` (problem-hunting agent) + the flywheel | *(not yet written)* | ⏳ Planned (scope below) |
 
@@ -123,7 +123,7 @@ design §7):
 
 ## How this maps to the technical design
 
-The design doc ([`2026-07-21-evalyn-design.md`](../../2026-07-21-evalyn-design.md)) describes the
+The design doc ([`2026-07-21-evalyn-design.md`](./2026-07-21-evalyn-design.md)) describes the
 *whole* v1 at once. This roadmap slices that same design into buildable stages:
 
 - Design §1–2 (engine + pack contract) → **Plan #1**.
