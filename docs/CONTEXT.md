@@ -181,9 +181,11 @@ The brainstorming/design phase is **complete and approved**. The next action is 
 into a **phased implementation plan** — invoke the **`superpowers:writing-plans`** skill against the
 design doc. Do **not** start coding before the plan exists and the user approves it.
 
-Suggested phase-0 sanity checks before/early in planning:
-1. Confirm the exact TwinCore visitor chat endpoint(s), session-open flow, and SSE event format from
-   the live router + frontend (needed for `target.yaml`).
-2. Confirm Inspect AI's current API surface (`Task/Solver/Scorer`, custom scorers, model providers,
-   agent support) via its docs — pin the version.
-3. Decide the working name (currently placeholder **"evalyn"**) before scaffolding the package.
+Phase-0 sanity checks — status:
+1. **[still open]** Confirm the exact TwinCore visitor chat endpoint(s), session-open flow, and SSE
+   event format from the live router + frontend (needed for `target.yaml`). Do this when authoring
+   the TwinCore pack.
+2. **[done 2026-07-22]** Inspect AI API surface confirmed via a working fit spike (Inspect 0.3.249) —
+   see `2026-07-22-inspect-spike-findings.md`. Mapping validated; key finding: reducers are
+   task-level, so per-probe pass/fail policy lives in Evalyn's own log-reading gate-diff layer.
+3. **[done 2026-07-22]** Name settled: **evalyn** (free on PyPI + CLI). No rename needed.

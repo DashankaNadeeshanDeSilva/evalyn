@@ -5,8 +5,8 @@
 **Status:** Approved design, pre-implementation
 **Author:** Dashanka (with Claude)
 
-> `evalyn` is a placeholder working name. Rename freely before scaffolding — it appears
-> as the package/CLI name throughout this doc and is the only thing that changes on a rename.
+> **Name settled (2026-07-22):** `evalyn` is the confirmed package + CLI name (free on PyPI and as a
+> CLI binary). It is the name used throughout this doc and in scaffolding.
 
 ---
 
