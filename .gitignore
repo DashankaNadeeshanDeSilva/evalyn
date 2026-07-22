@@ -1,4 +1,5 @@
 runs/
+spike/
 __pycache__/
 *.pyc
 .env
