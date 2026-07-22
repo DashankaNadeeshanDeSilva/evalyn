@@ -165,11 +165,16 @@ building the pack):
 - This is a **standalone public OSS repo**
   (`/Users/dashankadesilva/Drive/Projects/Evalyn_eval_agent`), MIT-licensed, published at
   **https://github.com/DashankaNadeeshanDeSilva/evalyn** (remote `origin`).
-- **Branch conventions (adopted 2026-07-22):** default branch is **`main`** (renamed from `master`).
-  Docs and small changes may commit directly to `main`; **code changes go on a feature branch**
-  (e.g. `feat/gate-foundation`) and merge via PR. Conventional-commit prefixes (`feat:`, `docs:`,
-  `test:`, `fix:`). **All commits under the user's name only, no Claude trailer. Never push or open a
-  PR without asking first.**
+- **Branch conventions (adopted 2026-07-22 — dev-integration model):**
+  - **`main`** = stable release branch (renamed from `master`).
+  - **`dev`** = integration branch. **All work is done on a dedicated feature branch cut from `dev`
+    and merged back into `dev` via PR** when complete; `dev` is promoted to `main` at release points.
+    Never commit work straight to `main` (and prefer not to commit straight to `dev` either — go
+    through a feature branch + PR).
+  - Conventional-commit prefixes (`feat:`, `docs:`, `test:`, `fix:`, `chore:`).
+  - **All commits under the user's name only, no Claude trailer.**
+  - **Only commit automatically; ask for explicit approval before every push and before opening/
+    updating any PR.**
 
 ## 9. Repo state right now
 

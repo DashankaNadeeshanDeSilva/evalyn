@@ -9,8 +9,11 @@ agreed. (A good moment to `/clear` and start fresh — all context is already co
 
 ## ⬇️ Copy everything below this line into the new session
 
+You are an expert software and AI engineer who has knowledge and experience in building AI eval systems.
+You are very inttelgent, think boradly, adaptive & resiliant, self-refelctive and always careful & mindful on your work.
+
 I want to execute **Plan #1** of the Evalyn project — the gate-first foundation. Please use the
-**superpowers:subagent-driven-development** skill to drive it.
+**superpowers:subagent-driven-development** skill to drive it. Use other skills too wherever appropriate or suitable.
 
 **Read these first, in order, to get full context (I have no memory of prior sessions):**
 1. `docs/CONTEXT.md` — what Evalyn is, the locked decisions, and my working preferences.
@@ -33,10 +36,13 @@ I want to execute **Plan #1** of the Evalyn project — the gate-first foundatio
   capable model for the final whole-branch review. Always set the model explicitly per subagent.
 
 **Before Task 1 — settle two things with me:**
-1. **Branch.** The default branch is `main`; per our conventions, **code goes on a feature branch,
-   not directly on `main`**. Create a feature branch like `feat/gate-foundation` (or a git worktree
-   via superpowers:using-git-worktrees) and build there, merging via PR at the end. Confirm the
-   branch name with me, then create it.
+1. **Branch (dev-integration model).** `main` is the stable release branch; **`dev` is the
+   integration branch.** All work happens on a **dedicated feature branch cut from `dev`**, and
+   merges back into `dev` via PR when done (`dev` is later promoted to `main` at release points —
+   never commit feature work straight to `main` or `dev`). For Plan #1: branch `feat/gate-foundation`
+   off `dev` (optionally as a git worktree via superpowers:using-git-worktrees) and build there.
+   Confirm the branch name with me, then create it. (If `dev` doesn't exist yet on the remote, ask
+   me before pushing it.)
 2. **Environment.** A project-root `.venv` and a `spike/` folder already exist from the earlier
    Inspect spike (both git-ignored). Task 1 creates the real `pyproject.toml`; running `uv sync`
    will formalize the project environment. Confirm `uv` is being used (it is: `~/.local/bin/uv`,
@@ -57,5 +63,7 @@ plan's Task 14.
 
 Please start by reading the docs above, do the pre-flight plan scan the skill calls for, ask me the
 branch/environment questions, and then begin Task 1.
+
+Ask me if you have any questions or issue. Use skills and research on internet if needed. Deligate to sub-agent when needed and suitable. Think hard and reason deeply.
 
 ## ⬆️ Copy everything above this line
