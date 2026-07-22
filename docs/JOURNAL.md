@@ -24,7 +24,8 @@ Execution: subagent-driven (fresh implementer per task → task review → fixes
 | 2 | Pack schema models (pydantic v2) | `85bc5e5` | ✅ done, review clean |
 | 3 | Pack loader (env resolution + allowlist) | `6c0e40a`, `fcf72fd` (tests fix), `7fb6253` (dup-id fix) | ✅ done, review clean after fixes |
 | 4 | Stream adapters (vercel-ai / raw-sse / json) | `37dfffb` | ✅ done, review clean |
-| 5–14 | Solver → scoring → task builder → run/gate → validate-pack → CLI → e2e | — | ⏳ pending |
+| 5 | Session solver (live HTTP/SSE, multi-turn) + toy target promoted | `649579e` | ✅ done, Opus review clean |
+| 6–14 | Scoring tiers → task builder → run/gate → validate-pack → CLI → e2e | — | ⏳ pending |
 
 ### Pre-flight plan amendments (user-approved 2026-07-23)
 
@@ -93,6 +94,15 @@ Triage at the Plan #1 final whole-branch review unless tagged later.
       question. *(minor)*
 - [ ] Adapter tests are happy-path only (no escaping/unicode/CRLF/malformed-frame cases). *(minor)*
 
+**Session solver (Task 5):**
+- [ ] Unused `import pytest` in `tests/engine/test_solver.py` (brief-verbatim; `ruff` scopes to
+      `src/` only). *(minor)*
+- [ ] `state.metadata["turns"]` raw key access — `KeyError` instead of a domain error on
+      non-conforming samples. *(minor)*
+- Note: solver honors audit contracts 1/2/4 (allowlist-only URL, buffer-then-parse, errors via
+  `raise_for_status`); minipack allowlist gained `http://127.0.0.1:8899` (necessary + minimal,
+  reviewer-verified).
+
 **Misc:**
 - [ ] `tests/test_smoke.py:1` combined import (`E401`) — only matters if `tests/` enters lint
       scope. *(minor)*
@@ -102,8 +112,9 @@ Triage at the Plan #1 final whole-branch review unless tagged later.
 ### Decisions log
 
 - 2026-07-23 — Branch `feat/gate-foundation` (in-place, no worktree). Merge target: `dev` via PR.
-- 2026-07-23 — Implementer/fixer subagents run on **Sonnet** (user preference; quality over
-  speed). Reviewers: Sonnet. Final whole-branch review: Opus.
+- 2026-07-23 — Subagent model policy (user, escalated in three steps during Tasks 4–5): **Opus
+  for all subagents** from Task 6 onward — implementers, fixers, task reviewers, final review.
+  (Task 5 itself: Sonnet implementer + Opus reviewer.)
 - 2026-07-23 — This journal created; updated at every task completion.
 
 ---
