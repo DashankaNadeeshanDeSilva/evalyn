@@ -33,10 +33,10 @@ I want to execute **Plan #1** of the Evalyn project — the gate-first foundatio
   capable model for the final whole-branch review. Always set the model explicitly per subagent.
 
 **Before Task 1 — settle two things with me:**
-1. **Branch.** We must NOT build on `master` without my consent (docs have been going to `master`,
-   but this is real source code). Recommend a branch — I'm inclined toward a feature branch like
-   `feat/gate-foundation` (or a git worktree via superpowers:using-git-worktrees). Ask me, then
-   create it.
+1. **Branch.** The default branch is `main`; per our conventions, **code goes on a feature branch,
+   not directly on `main`**. Create a feature branch like `feat/gate-foundation` (or a git worktree
+   via superpowers:using-git-worktrees) and build there, merging via PR at the end. Confirm the
+   branch name with me, then create it.
 2. **Environment.** A project-root `.venv` and a `spike/` folder already exist from the earlier
    Inspect spike (both git-ignored). Task 1 creates the real `pyproject.toml`; running `uv sync`
    will formalize the project environment. Confirm `uv` is being used (it is: `~/.local/bin/uv`,

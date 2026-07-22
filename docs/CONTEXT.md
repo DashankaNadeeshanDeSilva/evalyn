@@ -162,10 +162,14 @@ building the pack):
 - **Verification before completion:** run/exercise before claiming done; evidence before assertions.
 - **Scratch/handoff docs** go in temp locations unless asked otherwise (this doc was explicitly asked
   for, so it lives in the repo).
-- This is a **fresh separate repo** (`/Users/dashankadesilva/Drive/Projects/Evalyn_eval_agent`), git
-  initialized, `.gitignore` present. **Branch convention (user-decided 2026-07-22): for now, work on
-  the main worktree and commit all docs to `master`.** Proper branch/PR conventions come later, when
-  implementation starts. Not the niuwnai-mvp workflow (no `dev` branch here).
+- This is a **standalone public OSS repo**
+  (`/Users/dashankadesilva/Drive/Projects/Evalyn_eval_agent`), MIT-licensed, published at
+  **https://github.com/DashankaNadeeshanDeSilva/evalyn** (remote `origin`).
+- **Branch conventions (adopted 2026-07-22):** default branch is **`main`** (renamed from `master`).
+  Docs and small changes may commit directly to `main`; **code changes go on a feature branch**
+  (e.g. `feat/gate-foundation`) and merge via PR. Conventional-commit prefixes (`feat:`, `docs:`,
+  `test:`, `fix:`). **All commits under the user's name only, no Claude trailer. Never push or open a
+  PR without asking first.**
 
 ## 9. Repo state right now
 

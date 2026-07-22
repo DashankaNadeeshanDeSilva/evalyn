@@ -17,7 +17,7 @@
 - **Target allowlist is enforced** — a run refuses any `base_url` not in the pack's `allowlist`. No prod flag in this plan (prod targeting is a later plan).
 - **Package + CLI name is `evalyn`** (settled 2026-07-22).
 - **Git:** commit after each task's tests pass. **All commits under the user's name only — NO `Co-Authored-By` trailer.** Use `git -c user.name='dashankanadeeshandesilva' -c user.email='dashankadesilva@gmail.com' commit ...`. **Never push or open a PR without asking.**
-- **Commit to `master`** (current repo convention, per `docs/CONTEXT.md`).
+- **Build on a feature branch** (e.g. `feat/gate-foundation`) off `main`, and open a PR to merge — do not commit source directly to `main` (per `docs/CONTEXT.md` branch conventions).
 - **Artifacts + transcripts are gitignored** (`runs/` already ignored) — PII discipline.
 
 ---
