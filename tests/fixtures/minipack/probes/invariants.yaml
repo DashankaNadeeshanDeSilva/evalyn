@@ -1,0 +1,5 @@
+- id: inv-nonempty
+  category: invariants
+  turns: ["Hello"]
+  checks:
+    - { type: invariant, ref: non-empty, required: true }

@@ -1,0 +1,11 @@
+name: mini
+sessions:
+  open:    { method: POST, path: /session }
+  message: { method: POST, path: /chat, stream: sse, event_format: vercel-ai }
+auth: { kind: none }
+env:
+  base_url: ${EVALYN_TARGET_URL:-http://localhost:8899}
+allowlist:
+  - http://localhost:8899
+invariants:
+  - id: non-empty
