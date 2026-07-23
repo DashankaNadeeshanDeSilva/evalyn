@@ -32,7 +32,8 @@ Execution: subagent-driven (fresh implementer per task → task review → fixes
 | 10 | Run orchestration + self-contained artifact (A1/A2 applied) | `2cf4888` | ✅ done, Fable review clean |
 | 11 | Gate-diff/reporter + baseline (the crux: per-probe policy) | `d09be27`, `d6220d2` (test fix) | ✅ done, Fable review clean after fix |
 | 12 | validate-pack (malformed-check guards, solvability, balance lint) | `a870e21` | ✅ done, Fable review clean |
-| 13–14 | CLI wiring → e2e | — | ⏳ pending |
+| 13 | CLI wiring (`gate` / `validate-pack`, CI exit codes 0/1/2) | `52ef5f0` | ✅ done, Fable review clean |
+| 14 | End-to-end gate + full-suite green | — | ⏳ pending |
 
 ### Pre-flight plan amendments (user-approved 2026-07-23)
 
@@ -152,6 +153,16 @@ Triage at the Plan #1 final whole-branch review unless tagged later.
       inconsistency between the two added guards) — one-line harmonization. *(minor)*
 - [ ] `KNOWN_INVARIANTS` captured at import time — revisit if invariants become pack-extensible
       (Plan #2+). *(info)*
+
+**CLI (Task 13):**
+- Carry-notes CLOSED at CLI level: pack-hash drift + baseline-only probes surface as `warning:`
+  lines (verdict-neutral, tested); gate.py untouched.
+- [ ] Broad `except Exception` → exit 2 hides engine tracebacks (plan-mandated) — add a
+      `--debug`/re-raise flag later for diagnosability. *(minor)*
+- [ ] Allowlist exit-2 test lacks the `setup error` stderr assertion (asymmetric with run-error
+      test). *(minor)*
+- [ ] stderr assertions require `click>=8.2` (installed: 8.2.1) — consider a pyproject floor to
+      guard against downgrade. *(minor)*
 
 **Misc:**
 - [ ] `tests/test_smoke.py:1` combined import (`E401`) — only matters if `tests/` enters lint
