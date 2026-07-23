@@ -1,8 +1,12 @@
 runs/
 spike/
+logs/
 __pycache__/
 *.pyc
 .env
 .venv/
 venv/
 .DS_Store
+
+# SDD scratch (progress ledger, briefs)
+.superpowers/

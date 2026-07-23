@@ -1,0 +1,5 @@
+- id: inv-basic-reply
+  category: invariants
+  turns: ["Tell me a bit about yourself."]
+  checks:
+    - { type: invariant, ref: non-empty, required: true }
