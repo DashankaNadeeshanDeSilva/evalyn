@@ -29,7 +29,8 @@ Execution: subagent-driven (fresh implementer per task → task review → fixes
 | 7 | Tier-2 classifier judge (evidence-or-unsure) | `659164f`, `8316ad6` (safeguard fixes) | ✅ done, Opus review clean after fixes |
 | 8 | Task builder (probes → Inspect Task, pass@k/pass^k reducers) | `a75f8d2` | ✅ done, Opus review clean |
 | 9 | Example reference pack (balanced injection + grounding + invariants) | `54aa199` | ✅ done, Opus review clean (zero findings) |
-| 10–14 | Run orchestration → gate-diff → validate-pack → CLI → e2e | — | ⏳ pending |
+| 10 | Run orchestration + self-contained artifact (A1/A2 applied) | `2cf4888` | ✅ done, Fable review clean |
+| 11–14 | Gate-diff/baseline → validate-pack → CLI → e2e | — | ⏳ pending |
 
 ### Pre-flight plan amendments (user-approved 2026-07-23)
 
@@ -121,6 +122,17 @@ Triage at the Plan #1 final whole-branch review unless tagged later.
   (pydantic `model_dump` shape) normalized to `True` instead of silently flipping verdicts.
 - [ ] No test exercises the verdict-≠-expect → `INCORRECT` path (unused `INCORRECT` import,
       F401 if `tests/` linted). *(minor)*
+
+**Run orchestration (Task 10):**
+- [ ] **Task 11 MUST handle:** empty `reducers` on a `ProbeResult` (probe absent from log — e.g.
+      all trials errored before scoring) is a HARD FAILURE for gate policy, never a pass.
+      *(carry to Task 11 dispatch)*
+- [ ] Task 11 decision: add explicit `ProbeResult.trials` field (actual count) vs. key-label-only;
+      note `from_dict` is strict — schema additions break older-artifact reads. *(carry to Task 11)*
+- [ ] Artifact filename has second resolution — same-second runs overwrite (plan-mandated naming);
+      add sub-second/uniquifier later. *(minor)*
+- [ ] Artifact write is non-atomic and CWD-relative (`Path("runs")` hardcoded, brief-mandated);
+      `out_dir` param is the follow-up. *(minor)*
 
 **Misc:**
 - [ ] `tests/test_smoke.py:1` combined import (`E401`) — only matters if `tests/` enters lint
