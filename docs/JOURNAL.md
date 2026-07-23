@@ -31,7 +31,8 @@ Execution: subagent-driven (fresh implementer per task → task review → fixes
 | 9 | Example reference pack (balanced injection + grounding + invariants) | `54aa199` | ✅ done, Opus review clean (zero findings) |
 | 10 | Run orchestration + self-contained artifact (A1/A2 applied) | `2cf4888` | ✅ done, Fable review clean |
 | 11 | Gate-diff/reporter + baseline (the crux: per-probe policy) | `d09be27`, `d6220d2` (test fix) | ✅ done, Fable review clean after fix |
-| 12–14 | validate-pack → CLI → e2e | — | ⏳ pending |
+| 12 | validate-pack (malformed-check guards, solvability, balance lint) | `a870e21` | ✅ done, Fable review clean |
+| 13–14 | CLI wiring → e2e | — | ⏳ pending |
 
 ### Pre-flight plan amendments (user-approved 2026-07-23)
 
@@ -110,9 +111,9 @@ Triage at the Plan #1 final whole-branch review unless tagged later.
   reviewer-verified).
 
 **Tier-1 scorer (Task 6):**
-- [ ] **Task 12 MUST guard:** `{type: invariant}` with `ref=None` silently no-ops; `{type: contains}`
-      with `value=None` crashes with `AttributeError` — both reachable via schema-valid malformed
-      packs; `validate-pack` is the designated guard. *(carry to Task 12 dispatch)*
+- [x] ~~Task 12 MUST guard: malformed checks (`ref=None` no-op, `value=None` crash)~~ — **CLOSED in
+      Task 12** (`a870e21`): all 4 guards (missing ref, dangling ref, missing value incl.
+      not_contains, missing question) with falsifiability-verified tests.
 - [ ] Tier-1 tests minimal per brief — `contains`/`not_contains` scoring and non-required check
       recording untested; expand when Task 8 wires real probes. *(minor)*
 - [ ] `first-person` invariant regex narrow (only `he/she + 4 verbs` — misses `they`, other verbs). *(minor)*
@@ -145,6 +146,12 @@ Triage at the Plan #1 final whole-branch review unless tagged later.
 - Note: 8-scenario policy trace verified; capability-never-reds (incl. empty reducers) test-pinned
   with counterfactual; implementer fixed a brief bug (empty-reducer non-safety probes silently
   passed) + 2 latent `_min_over_scorers` bugs.
+
+**validate-pack (Task 12):**
+- [ ] `value: ""` passes the contains guard while `question: ""` is caught (`.strip()`
+      inconsistency between the two added guards) — one-line harmonization. *(minor)*
+- [ ] `KNOWN_INVARIANTS` captured at import time — revisit if invariants become pack-extensible
+      (Plan #2+). *(info)*
 
 **Misc:**
 - [ ] `tests/test_smoke.py:1` combined import (`E401`) — only matters if `tests/` enters lint
