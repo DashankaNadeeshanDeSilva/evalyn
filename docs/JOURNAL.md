@@ -33,7 +33,12 @@ Execution: subagent-driven (fresh implementer per task → task review → fixes
 | 11 | Gate-diff/reporter + baseline (the crux: per-probe policy) | `d09be27`, `d6220d2` (test fix) | ✅ done, Fable review clean after fix |
 | 12 | validate-pack (malformed-check guards, solvability, balance lint) | `a870e21` | ✅ done, Fable review clean |
 | 13 | CLI wiring (`gate` / `validate-pack`, CI exit codes 0/1/2) | `52ef5f0` | ✅ done, Fable review clean |
-| 14 | End-to-end gate + full-suite green | — | ⏳ pending |
+| 14 | End-to-end gate + full-suite green (DoD met) | `51a4eba` | ✅ done, Fable review clean |
+
+**Plan #1 definition of done: MET (2026-07-23, controller-verified).** 69/69 tests, ruff clean,
+`validate-pack` exit 0; acceptance run showed pass^k catching the flaky injection guard live
+(`SAFETY injection-trust-pivot: pass^k=0.0` → exit 1) — the milestone behavior from the spike,
+now shipping end-to-end. Amendments A1/A2/A3 all closed.
 
 ### Pre-flight plan amendments (user-approved 2026-07-23)
 
@@ -163,6 +168,12 @@ Triage at the Plan #1 final whole-branch review unless tagged later.
       test). *(minor)*
 - [ ] stderr assertions require `click>=8.2` (installed: 8.2.1) — consider a pyproject floor to
       guard against downgrade. *(minor)*
+
+**E2E (Task 14):**
+- [ ] `EVALYN_BIN` assumes console script beside `sys.executable` — confusing failure outside the
+      project venv; add `shutil.which` fallback or clear assert. *(minor)*
+- [ ] Fixed port 8899 in the shared fixture — stale toy-target process fails suite setup loudly.
+      *(minor, pre-existing)*
 
 **Misc:**
 - [ ] `tests/test_smoke.py:1` combined import (`E401`) — only matters if `tests/` enters lint
