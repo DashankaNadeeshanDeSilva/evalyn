@@ -26,7 +26,8 @@ Execution: subagent-driven (fresh implementer per task → task review → fixes
 | 4 | Stream adapters (vercel-ai / raw-sse / json) | `37dfffb` | ✅ done, review clean |
 | 5 | Session solver (live HTTP/SSE, multi-turn) + toy target promoted | `649579e` | ✅ done, Opus review clean |
 | 6 | Tier-1 deterministic scorer (invariants + checks) | `c85d0f5` | ✅ done, Opus review clean |
-| 7–14 | Tier-2 judge → task builder → run/gate → validate-pack → CLI → e2e | — | ⏳ pending |
+| 7 | Tier-2 classifier judge (evidence-or-unsure) | `659164f`, `8316ad6` (safeguard fixes) | ✅ done, Opus review clean after fixes |
+| 8–14 | Task builder → example pack → run/gate → validate-pack → CLI → e2e | — | ⏳ pending |
 
 ### Pre-flight plan amendments (user-approved 2026-07-23)
 
@@ -111,6 +112,13 @@ Triage at the Plan #1 final whole-branch review unless tagged later.
 - [ ] Tier-1 tests minimal per brief — `contains`/`not_contains` scoring and non-required check
       recording untested; expand when Task 8 wires real probes. *(minor)*
 - [ ] `first-person` invariant regex narrow (only `he/she + 4 verbs` — misses `they`, other verbs). *(minor)*
+
+**Tier-2 judge (Task 7):**
+- Plan amendments (user-approved, FIXED in `8316ad6`): evidence guard no longer trusts empty
+  evidence (design safeguard restored — empty/absent evidence ⇒ `NOANSWER`); `expect: None`
+  (pydantic `model_dump` shape) normalized to `True` instead of silently flipping verdicts.
+- [ ] No test exercises the verdict-≠-expect → `INCORRECT` path (unused `INCORRECT` import,
+      F401 if `tests/` linted). *(minor)*
 
 **Misc:**
 - [ ] `tests/test_smoke.py:1` combined import (`E401`) — only matters if `tests/` enters lint
