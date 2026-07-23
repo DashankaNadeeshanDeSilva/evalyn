@@ -91,6 +91,8 @@ def run_gate(pack: Pack, judge_model: str = "mockllm/model",
     task = build_task(pack, judge_model=judge_model)
     logs = inspect_eval(task, model="mockllm/model", log_dir=log_dir, display="none")
     log = logs[0]
+    if log.status != "success":
+        raise RuntimeError(f"inspect eval did not succeed: status {log.status!r}")
     if log.samples is None and log.location:
         log = read_eval_log(log.location)
     probes = _reduce_log_to_probes(log, pack)

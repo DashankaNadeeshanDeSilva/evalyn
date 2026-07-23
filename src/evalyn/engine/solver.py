@@ -17,7 +17,11 @@ def session_solver(pack: Pack) -> Solver:
     async def _open(client: httpx.AsyncClient) -> str:
         r = await client.request(open_ep.method, f"{base_url}{open_ep.path}", json={})
         r.raise_for_status()
-        return r.json().get("session_id", "")
+        data = r.json()
+        if "session_id" not in data:
+            raise RuntimeError(
+                f"target open response from {open_ep.path} has no 'session_id' key")
+        return data["session_id"]
 
     async def _send(client: httpx.AsyncClient, session_id: str, message: str) -> str:
         payload = {"session_id": session_id, "message": message}

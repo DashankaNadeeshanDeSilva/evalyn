@@ -42,6 +42,50 @@ def test_load_pack_invalid_target_spec(tmp_path):
     with pytest.raises(PackError, match="invalid target.yaml"):
         load_pack(invalid_pack)
 
+def test_load_pack_empty_target_yaml(tmp_path):
+    """An empty target.yaml is a PackError, not an AttributeError."""
+    empty_pack = tmp_path / "empty_yaml"
+    empty_pack.mkdir()
+    (empty_pack / "target.yaml").write_text("")
+    with pytest.raises(PackError, match="invalid target.yaml"):
+        load_pack(empty_pack)
+
+def test_probe_with_zero_samples_is_pack_error(tmp_path):
+    """samples must be >= 1; samples: 0 is rejected at load time."""
+    bad_pack = tmp_path / "zero_samples"
+    bad_pack.mkdir()
+    (bad_pack / "target.yaml").write_text(
+        "name: test\n"
+        "sessions:\n"
+        "  session1: { method: POST, path: /session }\n"
+        "allowlist: []\n"
+    )
+    probes_dir = bad_pack / "probes"
+    probes_dir.mkdir()
+    (probes_dir / "p.yaml").write_text(
+        "- id: zero\n  category: test\n  turns: [hi]\n  checks: []\n  samples: 0\n")
+    with pytest.raises(PackError, match="invalid probe"):
+        load_pack(bad_pack)
+
+def test_probe_glob_matches_yml_and_yaml_deterministically(tmp_path):
+    """Probes in *.yml files load too, in sorted filename order across both suffixes."""
+    pack_dir = tmp_path / "yml_pack"
+    pack_dir.mkdir()
+    (pack_dir / "target.yaml").write_text(
+        "name: test\n"
+        "sessions:\n"
+        "  session1: { method: POST, path: /session }\n"
+        "allowlist: []\n"
+    )
+    probes_dir = pack_dir / "probes"
+    probes_dir.mkdir()
+    (probes_dir / "b.yaml").write_text(
+        "- {id: from-yaml, category: c, turns: [hi], checks: []}\n")
+    (probes_dir / "a.yml").write_text(
+        "- {id: from-yml, category: c, turns: [hi], checks: []}\n")
+    pack = load_pack(pack_dir)
+    assert [p.id for p in pack.probes] == ["from-yml", "from-yaml"]  # a.yml < b.yaml
+
 def test_load_pack_invalid_probe(tmp_path):
     """load_pack raises PackError when a probe entry is schema-invalid."""
     invalid_pack = tmp_path / "invalid_probe"

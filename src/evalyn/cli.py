@@ -28,6 +28,12 @@ def gate(
         typer.echo(f"gate: setup error: {e}", err=True)
         raise typer.Exit(2)
 
+    has_classifier = any(c.type == "classifier" for p in pack.probes for c in p.checks)
+    if judge_model.startswith("mockllm") and has_classifier:
+        typer.echo("warning: judge model is mockllm — classifier checks fail closed "
+                   "(scored UNSURE); pass a real --judge-model for classifier scoring",
+                   err=True)
+
     if dry_run:
         typer.echo(f"gate (dry-run): pack '{pack.spec.name}', {len(pack.probes)} probes, "
                    f"target {base_url}, judge {judge_model}. No calls made.")

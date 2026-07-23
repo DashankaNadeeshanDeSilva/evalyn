@@ -103,6 +103,19 @@ def test_contains_check_with_missing_value_is_error(tmp_path):
     assert any("'b'" in e and "value" in e for e in report.errors)
 
 
+def test_contains_check_with_empty_or_whitespace_value_is_error(tmp_path):
+    # harmonized with the classifier question guard: whitespace-only is as bad as missing
+    pack = _write_pack(
+        tmp_path,
+        "- {id: a, category: c, turns: [hi], checks: [{type: contains, value: ''}]}\n"
+        "- {id: b, category: c, turns: [hi], checks: [{type: not_contains, value: '   '}]}\n",
+    )
+    report = validate_pack(pack)
+    assert not report.ok
+    assert any("'a'" in e and "value" in e for e in report.errors)
+    assert any("'b'" in e and "value" in e for e in report.errors)
+
+
 # --- mandate item 4: classifier with missing/None question -----------------
 
 
@@ -114,6 +127,24 @@ def test_classifier_check_with_missing_question_is_error(tmp_path):
     report = validate_pack(pack)
     assert not report.ok
     assert any("'a'" in e and "question" in e for e in report.errors)
+
+
+# --- structural: sessions must cover what the solver hard-requires ---------
+
+
+def test_sessions_missing_open_or_message_is_error(tmp_path):
+    (tmp_path / "target.yaml").write_text(
+        "name: t\nsessions:\n  open: {method: POST, path: /s}\n"
+        "env: {base_url: http://localhost:8899}\nallowlist: [http://localhost:8899]\n"
+    )
+    (tmp_path / "probes").mkdir()
+    (tmp_path / "probes" / "p.yaml").write_text(
+        "- {id: a, category: c, turns: [hi], checks: [{type: invariant, ref: non-empty}]}\n")
+    report = validate_pack(load_pack(tmp_path))
+    assert not report.ok
+    assert any("message" in e and "session" in e.lower() for e in report.errors)
+    # 'open' present -> no error about it
+    assert not any("'open'" in e for e in report.errors)
 
 
 # --- structural: empty pack ------------------------------------------------

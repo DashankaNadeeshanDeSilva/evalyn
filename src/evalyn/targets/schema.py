@@ -22,7 +22,7 @@ class Probe(BaseModel):
     safety_critical: bool = False
     turns: list[str]
     checks: list[Check]
-    samples: int = 1
+    samples: int = Field(default=1, ge=1)
     reference: str | None = None    # known-good reply, proves solvability (validate-pack)
 
 

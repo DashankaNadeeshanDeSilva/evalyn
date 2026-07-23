@@ -1,7 +1,28 @@
+from pathlib import Path
+
+import pytest
+
 from evalyn.engine.run import RunArtifact, pack_fingerprint, run_gate
 from evalyn.targets.loader import load_pack
 
 EXAMPLE = "packs/example"
+REPO_EXAMPLE = Path(__file__).resolve().parent.parent.parent / "packs" / "example"
+
+
+def test_run_gate_raises_on_non_success_eval_status(monkeypatch, tmp_path):
+    """A failed Inspect eval must raise (CLI maps it to exit 2), not reduce an empty log."""
+    monkeypatch.setenv("EVALYN_TARGET_URL", "http://localhost:8899")
+    monkeypatch.chdir(tmp_path)  # keep any runs/ writes out of the repo
+    pack = load_pack(str(REPO_EXAMPLE))
+
+    class FakeLog:
+        status = "error"
+        samples = None
+        location = None
+
+    monkeypatch.setattr("evalyn.engine.run.inspect_eval", lambda *a, **k: [FakeLog()])
+    with pytest.raises(RuntimeError, match="error"):
+        run_gate(pack, judge_model="mockllm/model", log_dir=str(tmp_path / "logs"))
 
 
 def test_run_gate_produces_artifact_with_per_probe_reducers(toy_target, monkeypatch, tmp_path):

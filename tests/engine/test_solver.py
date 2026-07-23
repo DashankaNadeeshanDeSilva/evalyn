@@ -17,6 +17,44 @@ def _capture():
     return score
 
 
+@pytest.mark.asyncio
+async def test_open_response_without_session_id_raises(monkeypatch):
+    """A session-open reply missing 'session_id' must fail loudly, never proceed with ''."""
+    monkeypatch.setenv("EVALYN_TARGET_URL", "http://localhost:8899")
+    pack = load_pack(MINIPACK)
+
+    class FakeResponse:
+        def raise_for_status(self):
+            pass
+
+        def json(self):
+            return {"unexpected": "shape"}  # no session_id key
+
+    class FakeClient:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *exc):
+            return False
+
+        async def request(self, *args, **kwargs):
+            return FakeResponse()
+
+        def stream(self, *args, **kwargs):
+            raise AssertionError(
+                "solver proceeded to send a message despite a bad open response")
+
+    monkeypatch.setattr("evalyn.engine.solver.httpx.AsyncClient", FakeClient)
+    solve = session_solver(pack)
+    state = TaskState(model="m", sample_id="1", epoch=1, input="x", messages=[])
+    state.metadata = {"turns": ["hi"]}
+    with pytest.raises(RuntimeError, match="session_id"):
+        await solve(state, None)
+
+
 def test_solver_drives_toy_target(toy_target, monkeypatch):
     monkeypatch.setenv("EVALYN_TARGET_URL", toy_target)
     pack = load_pack(MINIPACK)

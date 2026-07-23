@@ -12,6 +12,9 @@ spine), and returns a diffable artifact + CI exit code.
     uv run evalyn validate-pack packs/example      # task-health check
     uv run evalyn gate --target packs/example      # run the suite
 
+Note: with the default `mockllm/...` judge model, classifier checks fail closed (scored UNSURE) —
+pass a real `--judge-model` to get classifier scoring.
+
 Safety-critical probes are gated on **pass^k** (must pass every trial); quality probes diff their
 mean against a committed baseline; capability probes never fail the build. See
 `docs/2026-07-21-evalyn-design.md` for the full design.

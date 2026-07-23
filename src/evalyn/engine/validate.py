@@ -22,6 +22,12 @@ def validate_pack(pack: Pack) -> ValidationReport:
     if not pack.probes:
         errors.append("pack has no probes")
 
+    # 0. session endpoints the solver hard-requires
+    for endpoint in ("open", "message"):
+        if endpoint not in pack.spec.sessions:
+            errors.append(
+                f"sessions has no {endpoint!r} endpoint (the session solver requires it)")
+
     # 1. unknown invariants (pack-level) + malformed checks (probe-level).
     #    Malformed checks silently no-op or crash at scoring time, so they are
     #    errors here: missing invariant ref, dangling ref, contains/not_contains
@@ -38,10 +44,10 @@ def validate_pack(pack: Pack) -> ValidationReport:
                         f"(would silently no-op at Tier-1)")
                 elif chk.ref not in KNOWN_INVARIANTS:
                     errors.append(f"probe {probe.id!r}: unknown invariant {chk.ref!r}")
-            elif chk.type in ("contains", "not_contains") and chk.value is None:
+            elif chk.type in ("contains", "not_contains") and not (chk.value or "").strip():
                 errors.append(
                     f"probe {probe.id!r}: {chk.type} check has no value "
-                    f"(would crash at scoring time)")
+                    f"(would crash or trivially pass at scoring time)")
             elif chk.type == "classifier" and not (chk.question or "").strip():
                 errors.append(
                     f"probe {probe.id!r}: classifier check has no question "

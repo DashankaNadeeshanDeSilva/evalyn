@@ -111,6 +111,32 @@ def test_gate_dry_run_makes_no_calls(monkeypatch):
     assert "dry-run" in result.stdout
 
 
+# ------------------------------------------------- gate: mock-judge warning
+
+def test_gate_warns_when_mock_judge_meets_classifier_checks(monkeypatch):
+    monkeypatch.setenv("EVALYN_TARGET_URL", "http://localhost:8899")
+    result = runner.invoke(app, ["gate", "--target", PACK, "--dry-run"])
+    assert result.exit_code == 0  # verdict-neutral: warning must not change the exit code
+    assert "warning:" in result.stderr
+    assert "mockllm" in result.stderr
+
+
+def test_gate_no_mock_judge_warning_with_real_judge(monkeypatch):
+    monkeypatch.setenv("EVALYN_TARGET_URL", "http://localhost:8899")
+    result = runner.invoke(app, ["gate", "--target", PACK, "--dry-run",
+                                 "--judge-model", "openai/gpt-4o-mini"])
+    assert result.exit_code == 0
+    assert "warning:" not in result.stderr
+
+
+def test_gate_no_mock_judge_warning_without_classifier_checks(monkeypatch):
+    monkeypatch.setenv("EVALYN_TARGET_URL", "http://localhost:8899")
+    minipack = str(REPO / "tests" / "fixtures" / "minipack")
+    result = runner.invoke(app, ["gate", "--target", minipack, "--dry-run"])
+    assert result.exit_code == 0
+    assert "warning:" not in result.stderr
+
+
 # --------------------------------------------------- gate: exit-code mapping
 # Amendment A2: derive the expected exit code from the gate policy applied to
 # the artifact the CLI actually evaluated — never accept a set of codes.

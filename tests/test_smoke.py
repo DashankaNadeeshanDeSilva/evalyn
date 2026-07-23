@@ -1,4 +1,5 @@
-import subprocess, sys
+import subprocess
+import sys
 
 def test_version_importable():
     import evalyn

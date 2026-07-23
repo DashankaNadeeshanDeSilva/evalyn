@@ -33,7 +33,7 @@ def load_pack(path: str | Path) -> Pack:
     target_file = root / "target.yaml"
     if not target_file.exists():
         raise PackError(f"no target.yaml in {root}")
-    raw = yaml.safe_load(target_file.read_text())
+    raw = yaml.safe_load(target_file.read_text()) or {}
     if isinstance(raw.get("env"), dict):
         raw["env"] = {k: _resolve_env_string(str(v)) for k, v in raw["env"].items()}
     try:
@@ -43,7 +43,9 @@ def load_pack(path: str | Path) -> Pack:
 
     probes: list[Probe] = []
     probes_dir = root / "probes"
-    for pf in sorted(probes_dir.glob("*.yaml")) if probes_dir.exists() else []:
+    probe_files = (sorted({*probes_dir.glob("*.yaml"), *probes_dir.glob("*.yml")})
+                   if probes_dir.exists() else [])
+    for pf in probe_files:
         entries = yaml.safe_load(pf.read_text()) or []
         for entry in entries:
             try:
