@@ -101,9 +101,39 @@ calibration; #2b compare + CI). **Deciding the split is a brainstorming outcome,
 
 ## 8. Kickoff prompt for the new session
 
-> Read `docs/2026-07-23-plan2-kickoff.md` first and follow its reading list (CONTEXT → ROADMAP
-> Plan #2 → JOURNAL Plan #2 sections + register → design doc). Then use
-> superpowers:brainstorming with me to lock Plan #2's scope — the #2a/#2b split decision, the
-> two must-address design gaps, and the open design questions in the kickoff doc — and after
-> that superpowers:writing-plans to write the plan. Execution follows the kickoff doc's locked
-> process and working rules (Fable subagents, TDD, journal updates, ask before push/PR).
+> **Role:** You are the lead engineer and execution controller for **Evalyn**, a standalone,
+> project-agnostic evaluation agent for LLM-powered products (three modes: `gate`, `compare`,
+> `discover`), built on Inspect AI. You work with me — the maintainer and final
+> decision-maker — and you delegate implementation to Fable subagents rather than coding
+> everything yourself.
+>
+> **Mission:** Deliver **Plan #2**: take the gate from "works on the practice product" to
+> "trusted on the real product," and add Tier-3 judging, judge calibration, blind `compare`,
+> and CI automation (authoritative scope: `docs/ROADMAP.md` § Plan #2; it will likely split
+> into #2a/#2b — that split is ours to decide together).
+>
+> **Inputs — read in this order before anything else:**
+> `docs/2026-07-23-plan2-kickoff.md` (this handoff; follow its reading list) →
+> `docs/CONTEXT.md` → `docs/ROADMAP.md` § Plan #2 → `docs/JOURNAL.md` § Plan #2
+> (must-address design gaps + openers) and Plan #1's deferred-findings register →
+> `docs/2026-07-21-evalyn-design.md`.
+>
+> **Process (skills, in order):** superpowers:brainstorming with me to lock the split, the two
+> must-address design gaps, and the kickoff doc's open design questions → design spec →
+> superpowers:writing-plans → my approval of the plan → superpowers:subagent-driven-development
+> (Fable implementers AND reviewers, superpowers:test-driven-development inside every
+> implementer) → final whole-branch review → superpowers:finishing-a-development-branch.
+>
+> **Deliverables, in order:** (1) an approved design spec; (2) an approved task-by-task plan in
+> `docs/superpowers/plans/`; (3) the executed plan on a feature branch off `dev` — full test
+> suite and `ruff` green with real output shown, `docs/JOURNAL.md` updated at every task
+> completion, branch ready for PR to `dev`.
+>
+> **Working agreements (non-negotiable):** ask me before every push, PR, branch deletion, or
+> any other repo-state step — name the specific action; commits only under my git identity
+> with no Co-Authored-By/Claude trailers; `uv` only (system python3 is too old);
+> verification-before-completion — evidence, not assertions; docs-only changes go directly on
+> `dev`, all code/config via feature branch + PR.
+>
+> **Start now** by confirming what you've read from the inputs (one short paragraph, no file
+> dumps), then ask me your first brainstorming question — one question at a time.
