@@ -86,6 +86,32 @@ unspecified behavior choice).
   (works as designed); budget-unenforced finding (= approved A3 forward-compat).
 - MUST-FIX: bundle items above. Everything else: DEFER → Plan #2 openers below.
 
+### PR #1 review fixes (2026-07-23, commit `ca025e9`) — review-verdict set APPLIED ✅
+
+The user's separate-session `/code-review high` on PR #1 returned 10 findings, verdict "merge
+with fixes". User approved the **review-verdict set** scope; one Fable fixer (TDD), Fable
+review Approved (0 Critical/Important). Controller-verified: **92/92 tests**, ruff clean,
+validate-pack exit 0 (with intended interim warning on `injection-trust-pivot`).
+
+1. [x] **#2+#4 (fail-closed hole):** `gate` now runs `validate_pack` before evaluating (incl.
+       `--dry-run`) — errors → stderr + exit 2; warnings print (stdout, matching validate-pack)
+       without aborting. This also closes the Plan #2 opener "gate auto-runs validate-pack".
+2. [x] **#1 interim guard:** validate-pack warns on multi-turn `safety_critical` probes
+       (final-reply-only scoring until Plan #2 transcript scoring).
+3. [x] **#6 observability:** all-errored capability probe renders "no scored trials — all trials
+       errored or unscored" instead of `pass^k=None`; verdict-neutral, counterfactual test
+       unmodified.
+4. [x] **#5 evidence robustness:** tier-2 evidence match now normalizes (casefold/punctuation/
+       whitespace) with ≥0.6 token-overlap fallback; empty-evidence ⇒ NOANSWER safeguard
+       byte-identical; fabrication still fails closed.
+5. [x] **#3/#7/#9 docs:** budget fields, `Check.weight`/non-required semantics marked
+       declarative-only (Plan #2) in schema + README; README notes pack-max epochs call-volume.
+
+Tracked (not fixed, per approved scope): #8 fingerprint-over-env (existing Plan #2 opener),
+#9 per-probe epochs (beyond docs note), #10 pooled httpx client (added to openers below).
+New review minors → Plan #2 openers: token-overlap stopword/min-floor hardening + unicode-aware
+punctuation strip in tier-2 `_normalize`; shared conftest fixture for pack-writing test helpers.
+
 ### Pre-flight plan amendments (user-approved 2026-07-23)
 
 - **A1 (Task 10):** per-probe reducer keys/values are computed from the **actual number of
@@ -253,7 +279,13 @@ Triage at the Plan #1 final whole-branch review unless tagged later.
 
 ### Other Plan #2 openers (from the final branch reviews)
 
-- `gate` auto-runs validate-pack before evaluating (closes residual scorer-defensiveness risk).
+- ~~`gate` auto-runs validate-pack before evaluating~~ — **DONE in `ca025e9`** (PR #1 review fixes).
+- Pooled httpx client for the solver (fresh `AsyncClient` per `solve()` today — no connection
+  reuse across samples/epochs; PR #1 review #10).
+- Tier-2 evidence-match hardening: stopword filter / min-token floor on the 0.6 token-overlap
+  fallback; unicode-aware punctuation strip in `_normalize` (PR #1 review minors).
+- Shared conftest fixture for pack-writing test helpers (`tests/test_cli.py` vs
+  `tests/engine/test_validate.py` near-duplication).
 - Artifact records NOANSWER counts distinctly, so judge-infra failure ≠ product failure.
 - `pack_fingerprint` over raw pack bytes (today it hashes resolved env — localhost vs 127.0.0.1
   flips the hash → spurious staleness warnings).
