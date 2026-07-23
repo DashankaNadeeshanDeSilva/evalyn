@@ -30,7 +30,8 @@ Execution: subagent-driven (fresh implementer per task → task review → fixes
 | 8 | Task builder (probes → Inspect Task, pass@k/pass^k reducers) | `a75f8d2` | ✅ done, Opus review clean |
 | 9 | Example reference pack (balanced injection + grounding + invariants) | `54aa199` | ✅ done, Opus review clean (zero findings) |
 | 10 | Run orchestration + self-contained artifact (A1/A2 applied) | `2cf4888` | ✅ done, Fable review clean |
-| 11–14 | Gate-diff/baseline → validate-pack → CLI → e2e | — | ⏳ pending |
+| 11 | Gate-diff/reporter + baseline (the crux: per-probe policy) | `d09be27`, `d6220d2` (test fix) | ✅ done, Fable review clean after fix |
+| 12–14 | validate-pack → CLI → e2e | — | ⏳ pending |
 
 ### Pre-flight plan amendments (user-approved 2026-07-23)
 
@@ -133,6 +134,17 @@ Triage at the Plan #1 final whole-branch review unless tagged later.
       add sub-second/uniquifier later. *(minor)*
 - [ ] Artifact write is non-atomic and CWD-relative (`Path("runs")` hardcoded, brief-mandated);
       `out_dir` param is the follow-up. *(minor)*
+
+**Gate-diff / baseline (Task 11):**
+- [ ] **Task 13/14 SHOULD surface:** gate never compares `current.pack_hash` vs `baseline.pack_hash`
+      (pack drift undetected); probes present in baseline but absent from current artifact are
+      silently invisible (loop is over current only). *(carry to Task 13/14 dispatches)*
+- [ ] Asymmetric mean lookup: current side prefix-matches, baseline side exact-matches `"mean"` —
+      unify before any `mean_*` reducer exists. *(minor)*
+- [ ] Band boundary `>` has no drop==band test; float fuzz at exact boundary. *(minor)*
+- Note: 8-scenario policy trace verified; capability-never-reds (incl. empty reducers) test-pinned
+  with counterfactual; implementer fixed a brief bug (empty-reducer non-safety probes silently
+  passed) + 2 latent `_min_over_scorers` bugs.
 
 **Misc:**
 - [ ] `tests/test_smoke.py:1` combined import (`E401`) — only matters if `tests/` enters lint
