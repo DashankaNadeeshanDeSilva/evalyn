@@ -40,6 +40,50 @@ Execution: subagent-driven (fresh implementer per task → task review → fixes
 (`SAFETY injection-trust-pivot: pass^k=0.0` → exit 1) — the milestone behavior from the spike,
 now shipping end-to-end. Amendments A1/A2/A3 all closed.
 
+### Final whole-branch reviews (2026-07-23) — verdict: **merge WITH FIXES**
+
+Two independent final reviews ran over the full branch diff (base `93483c6` = merge-base with
+`dev`): a Fable senior review (with open-items triage) and `/code-review high`. No Critical
+findings; architecture coherent; all global constraints verified branch-wide (no blocking HTTP,
+no committed artifacts, commits clean). Full reports: `.superpowers/sdd/` task outputs.
+
+**USER-APPROVED PRE-MERGE FIX BUNDLE — NOT YET APPLIED. This is the next unit of work
+(one Fable fixer subagent, one commit, TDD per fix). A stopped fixer's partial edits were
+discarded; the tree is clean at 69/69 tests + ruff clean on src/.**
+
+1. [ ] Tests lint trio: `uv run ruff check tests --fix` (+ manual: split E401 in
+       `tests/test_smoke.py`; F401 `pytest` in `tests/engine/test_solver.py`; F401 `INCORRECT`
+       in `tests/scoring/test_tier2.py` — consumed by fix 2, don't delete).
+2. [ ] Tier-2 INCORRECT-path test: judge returns `{"verdict": false, "evidence": <real substring>}`
+       vs `expect: true` → asserts `INCORRECT` (`tests/scoring/test_tier2.py`).
+3. [ ] `validate.py`: empty/whitespace `value` on contains/not_contains = error (harmonize with
+       question's `.strip()` guard) + test.
+4. [ ] Mock-judge trap: README quickstart sentence (mockllm ⇒ classifier checks fail closed,
+       pass real `--judge-model`) + CLI `warning:` line when judge starts with "mockllm" AND pack
+       has classifier checks (verdict-neutral) + tests (warning present/absent).
+5. [ ] `loader.py` ~L36: `yaml.safe_load(...) or {}` so empty target.yaml → existing
+       "invalid target.yaml" PackError, not AttributeError + test.
+6. [ ] `schema.py`: `Probe.samples` → `Field(default=1, ge=1)` + test (samples: 0 → PackError
+       via loader).
+7. [ ] `loader.py` ~L46: glob `*.yaml` AND `*.yml` (sorted union) + test.
+8. [ ] `run.py`: after `inspect_eval`, non-"success" log status → raise RuntimeError naming
+       status (CLI's existing except → exit 2) + engine-level test. Do NOT change CLI.
+9. [ ] `solver.py` `_open`: missing `session_id` key in open response → clear RuntimeError,
+       never silent `""` + test.
+10. [ ] `validate.py`: error if `spec.sessions` lacks `"open"` or `"message"` (solver
+        hard-requires both) + test.
+
+Acceptance: full suite green (~75+), `ruff check src/ tests/` BOTH clean, `packs/example` still
+validates clean. One commit:
+`git -c user.name='dashankanadeeshandesilva' -c user.email='dashankadesilva@gmail.com' commit -m "fix: pre-merge hardening bundle from final branch review"` — never push.
+
+**Triage outcomes applied to the register** (verdicts from the final review):
+- CLOSED with evidence: missing `probes/` dir (fails loudly both paths); schema-test gap (covered
+  at loader layer); empty-reducers carry (shipped+pinned); trials-field decision (key-label per
+  A1); pack-hash/baseline-only carries (shipped as CLI warnings); `test_cli_help_runs` coupling
+  (works as designed); budget-unenforced finding (= approved A3 forward-compat).
+- MUST-FIX: bundle items above. Everything else: DEFER → Plan #2 openers below.
+
 ### Pre-flight plan amendments (user-approved 2026-07-23)
 
 - **A1 (Task 10):** per-probe reducer keys/values are computed from the **actual number of
@@ -193,7 +237,34 @@ Triage at the Plan #1 final whole-branch review unless tagged later.
 
 ## Plan #2 — Real product wiring + Tier-3 + `compare` *(not started)*
 
-Carry-ins from Plan #1 so far: raw-sse single-space fidelity (TwinCore pack may stream SSE);
-`extra="forbid"` decision; budget/auth/state consumers for the forward-compat schema fields.
+### ⚠️ Design gaps deferred from Plan #1 — MUST be addressed in Plan #2 (user decision 2026-07-23)
+
+1. **Scorers only see the FINAL assistant reply** (`state.output.completion`): a leak in an
+   earlier turn of a multi-turn probe followed by a benign closing turn passes the safety gate.
+   The solver records all turns in `state.messages`; no scorer reads them. Fix = transcript
+   scoring (walk all assistant turns) — belongs with Tier-3/real-product scoring work. The
+   shipped example pack scores correctly today only because its attack lands on the final turn.
+2. **Weighted / non-required check semantics are unimplemented**: `schema.Check.weight` and the
+   "non-required contributes weighted score" promise (schema.py) affect nothing — tier1 records
+   non-required checks in metadata only; tier2 fails on any classifier mismatch regardless of
+   `required`. Consequence: the example grounding probe can never trigger the regression band.
+
+### Other Plan #2 openers (from the final branch reviews)
+
+- `gate` auto-runs validate-pack before evaluating (closes residual scorer-defensiveness risk).
+- Artifact records NOANSWER counts distinctly, so judge-infra failure ≠ product failure.
+- `pack_fingerprint` over raw pack bytes (today it hashes resolved env — localhost vs 127.0.0.1
+  flips the hash → spurious staleness warnings).
+- `out_dir` param for artifacts (atomic write; fixes CWD-relative `runs/` + test pollution).
+- Adapter-hardening bundle: malformed frames → `StreamFormatError`; vercel error frames (`3:`/`e:`)
+  surfaced; raw-sse single-space (not lstrip) fidelity; interior `\r`; whitespace-fidelity
+  decision; adapter edge-case tests.
+- Loader hardening: narrow `except Exception`; `${VAR}` set-but-empty semantics; lowercase env
+  names; `extra="forbid"` decision; validate `event_format`/`stream` values statically.
+- validate-pack warns on `kind: capability` + `safety_critical: true` (contradictory combo).
+- CLI `--debug` (re-raise instead of swallowed traceback); `--update-baseline` prints the verdict
+  it is blessing; `click>=8.2` floor.
+- pyproject metadata (license/readme/authors/urls) before any PyPI publish.
+- Carry-ins already tagged: TwinCore raw-sse fidelity; budget/auth/state consumers (A3).
 
 ## Plan #3 — `discover` + flywheel *(not started)*
