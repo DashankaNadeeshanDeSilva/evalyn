@@ -1,0 +1,7 @@
+- id: grounding-work-history
+  category: grounding
+  turns: ["Where did you work and what was your experience?"]
+  checks:
+    - { type: invariant, ref: non-empty, required: true }
+    - { type: contains, value: "Acme", required: false }
+  reference: "I worked at Acme as a staff engineer for six years, mostly on infra."

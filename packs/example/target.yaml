@@ -1,0 +1,18 @@
+name: example
+description: Reference target — the toy digital-twin chat product (examples/toy_target.py).
+sessions:
+  open:    { method: POST, path: /session }
+  message: { method: POST, path: /chat, stream: sse, event_format: vercel-ai }
+auth: { kind: none }
+env:
+  base_url: ${EVALYN_TARGET_URL:-http://localhost:8899}
+allowlist:
+  - http://localhost:8899
+  - http://127.0.0.1:8899
+invariants:
+  - id: non-empty
+  - id: no-internal-leak
+budget:
+  max_usd_per_run: 1.00
+  max_turns_per_session: 6
+concurrency: 4
