@@ -47,35 +47,37 @@ Two independent final reviews ran over the full branch diff (base `93483c6` = me
 findings; architecture coherent; all global constraints verified branch-wide (no blocking HTTP,
 no committed artifacts, commits clean). Full reports: `.superpowers/sdd/` task outputs.
 
-**USER-APPROVED PRE-MERGE FIX BUNDLE — NOT YET APPLIED. This is the next unit of work
-(one Fable fixer subagent, one commit, TDD per fix). A stopped fixer's partial edits were
-discarded; the tree is clean at 69/69 tests + ruff clean on src/.**
+**PRE-MERGE FIX BUNDLE: APPLIED ✅ (2026-07-23, commit `6a98f40`).** One Fable fixer subagent,
+TDD per fix, one commit; Fable review verified all 10 items with file:line evidence — zero
+Critical/Important findings. Controller-verified acceptance: **80/80 tests** (69 + 11 new),
+`ruff check src/ tests/` both clean, `validate-pack packs/example` exit 0.
 
-1. [ ] Tests lint trio: `uv run ruff check tests --fix` (+ manual: split E401 in
+1. [x] Tests lint trio: `uv run ruff check tests --fix` (+ manual: split E401 in
        `tests/test_smoke.py`; F401 `pytest` in `tests/engine/test_solver.py`; F401 `INCORRECT`
        in `tests/scoring/test_tier2.py` — consumed by fix 2, don't delete).
-2. [ ] Tier-2 INCORRECT-path test: judge returns `{"verdict": false, "evidence": <real substring>}`
+2. [x] Tier-2 INCORRECT-path test: judge returns `{"verdict": false, "evidence": <real substring>}`
        vs `expect: true` → asserts `INCORRECT` (`tests/scoring/test_tier2.py`).
-3. [ ] `validate.py`: empty/whitespace `value` on contains/not_contains = error (harmonize with
+3. [x] `validate.py`: empty/whitespace `value` on contains/not_contains = error (harmonize with
        question's `.strip()` guard) + test.
-4. [ ] Mock-judge trap: README quickstart sentence (mockllm ⇒ classifier checks fail closed,
+4. [x] Mock-judge trap: README quickstart sentence (mockllm ⇒ classifier checks fail closed,
        pass real `--judge-model`) + CLI `warning:` line when judge starts with "mockllm" AND pack
        has classifier checks (verdict-neutral) + tests (warning present/absent).
-5. [ ] `loader.py` ~L36: `yaml.safe_load(...) or {}` so empty target.yaml → existing
+5. [x] `loader.py`: `yaml.safe_load(...) or {}` so empty target.yaml → existing
        "invalid target.yaml" PackError, not AttributeError + test.
-6. [ ] `schema.py`: `Probe.samples` → `Field(default=1, ge=1)` + test (samples: 0 → PackError
+6. [x] `schema.py`: `Probe.samples` → `Field(default=1, ge=1)` + test (samples: 0 → PackError
        via loader).
-7. [ ] `loader.py` ~L46: glob `*.yaml` AND `*.yml` (sorted union) + test.
-8. [ ] `run.py`: after `inspect_eval`, non-"success" log status → raise RuntimeError naming
-       status (CLI's existing except → exit 2) + engine-level test. Do NOT change CLI.
-9. [ ] `solver.py` `_open`: missing `session_id` key in open response → clear RuntimeError,
+7. [x] `loader.py`: glob `*.yaml` AND `*.yml` (sorted union) + test.
+8. [x] `run.py`: after `inspect_eval`, non-"success" log status → raise RuntimeError naming
+       status (CLI's existing except → exit 2) + engine-level test. CLI untouched by this fix.
+9. [x] `solver.py` `_open`: missing `session_id` key in open response → clear RuntimeError,
        never silent `""` + test.
-10. [ ] `validate.py`: error if `spec.sessions` lacks `"open"` or `"message"` (solver
+10. [x] `validate.py`: error if `spec.sessions` lacks `"open"` or `"message"` (solver
         hard-requires both) + test.
 
-Acceptance: full suite green (~75+), `ruff check src/ tests/` BOTH clean, `packs/example` still
-validates clean. One commit:
-`git -c user.name='dashankanadeeshandesilva' -c user.email='dashankadesilva@gmail.com' commit -m "fix: pre-merge hardening bundle from final branch review"` — never push.
+Review minors from the fix-bundle review (deferred, polish-level → Plan #2 openers): fix-8 test's
+`match="error"` is loose (pin to `"did not succeed"`); fix-9 test's stream-path guard only covers
+SSE (diagnostic-only weakness); mockllm warning also prints on `--dry-run` (deliberate,
+unspecified behavior choice).
 
 **Triage outcomes applied to the register** (verdicts from the final review):
 - CLOSED with evidence: missing `probes/` dir (fails loudly both paths); schema-test gap (covered
