@@ -112,6 +112,13 @@ Tracked (not fixed, per approved scope): #8 fingerprint-over-env (existing Plan 
 New review minors → Plan #2 openers: token-overlap stopword/min-floor hardening + unicode-aware
 punctuation strip in tier-2 `_normalize`; shared conftest fixture for pack-writing test helpers.
 
+### Plan #1 MERGED ✅ (2026-07-23)
+
+PR #1 merged to `dev` (merge commit `d4ce297`) after the re-review (`/code-review med`) returned
+"all resolved — good to merge". Feature branch `feat/gate-foundation` deleted (local + remote).
+Post-merge `dev` verified: 92/92 tests, ruff clean. Re-review's one non-blocker added to Plan #2
+openers (tier1 null-`value` defense-in-depth).
+
 ### Pre-flight plan amendments (user-approved 2026-07-23)
 
 - **A1 (Task 10):** per-probe reducer keys/values are computed from the **actual number of
@@ -286,6 +293,9 @@ Triage at the Plan #1 final whole-branch review unless tagged later.
   fallback; unicode-aware punctuation strip in `_normalize` (PR #1 review minors).
 - Shared conftest fixture for pack-writing test helpers (`tests/test_cli.py` vs
   `tests/engine/test_validate.py` near-duplication).
+- Tier-1 null-`value` defense-in-depth: the `chk["value"]` access in tier1 is unreachable via
+  `gate` (validate-pack runs first) but unguarded on any other entry path — one-line guard
+  (PR #1 re-review non-blocker).
 - Artifact records NOANSWER counts distinctly, so judge-infra failure ≠ product failure.
 - `pack_fingerprint` over raw pack bytes (today it hashes resolved env — localhost vs 127.0.0.1
   flips the hash → spurious staleness warnings).
