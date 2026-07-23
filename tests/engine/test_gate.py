@@ -31,6 +31,17 @@ def test_capability_probe_never_fails_build():
     assert res.exit_code == 0
 
 
+def test_capability_probe_with_empty_reducers_never_fails_build():
+    # locked semantic: capability probes NEVER red the build — even when the
+    # probe has no scores at all (which is a hard failure for any other kind)
+    p = ProbeResult("cap", "grounding", "capability", False, 1, {})
+    res = evaluate_gate(_art([p]), baseline=None)
+    assert res.exit_code == 0
+    assert not any("cap" in f for f in res.failures)
+    assert "## Capability probes (not gating)" in res.report_md
+    assert "`cap`" in res.report_md
+
+
 def test_regression_mean_drop_beyond_band_fails():
     base = _art([ProbeResult("g", "grounding", "regression", False, 1,
                              {"mean": {"tier1": 1.0}})])
@@ -38,7 +49,7 @@ def test_regression_mean_drop_beyond_band_fails():
                             {"mean": {"tier1": 0.5}})])
     res = evaluate_gate(cur, baseline=base, band=0.1)
     assert res.exit_code == 1
-    assert any("g" in f for f in res.failures)
+    assert any("`g`" in f for f in res.failures)
 
 
 def test_regression_small_drop_is_quarantined_not_failed():
@@ -48,7 +59,7 @@ def test_regression_small_drop_is_quarantined_not_failed():
                             {"mean": {"tier1": 0.95}})])
     res = evaluate_gate(cur, baseline=base, band=0.1)
     assert res.exit_code == 0
-    assert any("g" in q for q in res.quarantined)
+    assert any("`g`" in q for q in res.quarantined)
 
 
 def test_regression_no_baseline_imperfect_mean_is_quarantined():
@@ -56,7 +67,7 @@ def test_regression_no_baseline_imperfect_mean_is_quarantined():
                             {"mean": {"tier1": 0.5}})])
     res = evaluate_gate(cur, baseline=None)
     assert res.exit_code == 0
-    assert any("g" in q for q in res.quarantined)
+    assert any("`g`" in q for q in res.quarantined)
 
 
 # --- carry-note 1: empty reducers (probe absent from log) is a HARD FAILURE ---
