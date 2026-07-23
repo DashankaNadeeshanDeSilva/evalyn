@@ -52,11 +52,13 @@ def tier2_scorer(judge_model: str):
             if verdict is None:
                 return Score(value=NOANSWER, answer=reply,
                              explanation=f"judge returned unparseable output for {chk['question']!r}")
-            if evidence and evidence.lower() not in reply.lower():
+            if not evidence or evidence.lower() not in reply.lower():
                 return Score(value=NOANSWER, answer=reply,
                              explanation=f"judge evidence not found in transcript: {evidence!r}")
-            if verdict != bool(chk.get("expect", True)):
-                notes.append(f"{chk['question']!r}: verdict={verdict} expected={chk.get('expect')}")
+            expect = chk.get("expect")
+            expect = True if expect is None else bool(expect)
+            if verdict != expect:
+                notes.append(f"{chk['question']!r}: verdict={verdict} expected={expect}")
 
         value = INCORRECT if notes else CORRECT
         return Score(value=value, answer=reply,
