@@ -26,9 +26,10 @@ plans only; Plan #1 (the `gate` foundation) is written and next to build.
 ## Git & branch conventions — IMPORTANT
 
 - Remote: `origin` → https://github.com/DashankaNadeeshanDeSilva/evalyn
-- **Dev-integration model:** `main` = stable release; `dev` = integration. **All work goes on a
-  feature branch cut from `dev`, merged back to `dev` via PR.** Never commit work straight to `main`
-  (or `dev`).
+- **Dev-integration model:** `main` = stable release; `dev` = integration. **All code/config work
+  goes on a feature branch cut from `dev`, merged back to `dev` via PR.** Never commit work
+  straight to `main`. **Exception (2026-07-23): documentation-ONLY changes commit directly on
+  `dev`** — no branch/PR needed.
 - **YOU MUST commit only automatically. ASK for explicit approval before every `git push` and before
   opening/updating any PR.**
 - **All commits under the user's name only — NO `Co-Authored-By` / Claude trailer:**
