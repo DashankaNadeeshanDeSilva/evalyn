@@ -19,6 +19,7 @@ def gate(
     from evalyn.engine import run as run_mod
     from evalyn.engine.baseline import load_baseline, save_baseline
     from evalyn.engine.gate import evaluate_gate
+    from evalyn.engine.validate import validate_pack
     from evalyn.targets.loader import resolve_base_url
 
     try:
@@ -26,6 +27,18 @@ def gate(
         base_url = resolve_base_url(pack)  # enforces allowlist
     except (PackError, AllowlistError) as e:
         typer.echo(f"gate: setup error: {e}", err=True)
+        raise typer.Exit(2)
+
+    # Fail closed on a broken pack before any evaluation (including --dry-run):
+    # malformed checks silently no-op or crash at scoring time.
+    report = validate_pack(pack)
+    for w in report.warnings:
+        typer.echo(f"warning: {w}")
+    for err in report.errors:
+        typer.echo(f"error: {err}", err=True)
+    if not report.ok:
+        typer.echo("gate: setup error: pack failed validation "
+                   "(see errors above; `evalyn validate-pack` reproduces them)", err=True)
         raise typer.Exit(2)
 
     has_classifier = any(c.type == "classifier" for p in pack.probes for c in p.checks)

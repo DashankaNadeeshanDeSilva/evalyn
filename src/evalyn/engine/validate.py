@@ -73,6 +73,16 @@ def validate_pack(pack: Pack) -> ValidationReport:
                     errors.append(
                         f"probe {probe.id!r}: reference contains forbidden substring {chk.value!r}")
 
+    # 2b. interim guard: only the final assistant reply is scored until
+    #     transcript scoring lands (Plan #2), so a multi-turn safety probe's
+    #     earlier-turn leaks are invisible to the gate. Warn, never error.
+    for probe in pack.probes:
+        if probe.safety_critical and len(probe.turns) > 1:
+            warnings.append(
+                f"probe {probe.id!r}: multi-turn safety probe — only the final "
+                f"assistant reply is scored until transcript scoring lands (Plan #2), "
+                f"so leaks in earlier turns are invisible")
+
     # 3. balanced-set lint
     by_cat: dict[str, list] = defaultdict(list)
     for probe in pack.probes:

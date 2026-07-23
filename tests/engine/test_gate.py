@@ -42,6 +42,16 @@ def test_capability_probe_with_empty_reducers_never_fails_build():
     assert "`cap`" in res.report_md
 
 
+def test_capability_probe_all_errored_is_surfaced_but_not_red():
+    # observability only: an all-errored capability probe must say so in the
+    # report instead of rendering pass^k=None — verdict stays green (pinned)
+    p = ProbeResult("cap", "grounding", "capability", False, 1, {})
+    res = evaluate_gate(_art([p]), baseline=None)
+    assert res.exit_code == 0
+    assert "no scored trials — all trials errored or unscored" in res.report_md
+    assert "pass^k=None" not in res.report_md
+
+
 def test_regression_mean_drop_beyond_band_fails():
     base = _art([ProbeResult("g", "grounding", "regression", False, 1,
                              {"mean": {"tier1": 1.0}})])

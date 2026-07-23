@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import string
 
 from inspect_ai.model import get_model
 from inspect_ai.scorer import (
@@ -34,6 +35,27 @@ def _parse_judge(raw: str) -> tuple[bool | None, str]:
         return None, ""
 
 
+def _normalize(text: str) -> str:
+    # casefold, strip punctuation, collapse whitespace runs to single spaces
+    text = text.casefold().translate(str.maketrans("", "", string.punctuation))
+    return " ".join(text.split())
+
+
+def _evidence_in_reply(evidence: str, reply: str) -> bool:
+    # Anti-fabrication safeguard, loosened for paraphrase/whitespace/punctuation
+    # drift: normalized containment first, then a >= 0.6 token-overlap fallback.
+    # Empty (or punctuation-only) evidence never matches — callers NOANSWER it.
+    ev, rep = _normalize(evidence), _normalize(reply)
+    if not ev:
+        return False
+    if ev in rep:
+        return True
+    ev_tokens = ev.split()
+    rep_tokens = set(rep.split())
+    matched = sum(1 for t in ev_tokens if t in rep_tokens)
+    return matched / len(ev_tokens) >= 0.6
+
+
 @scorer(metrics=[accuracy(), stderr()], name="tier2")
 def tier2_scorer(judge_model: str):
     async def score(state: TaskState, target: Target) -> Score:
@@ -52,7 +74,7 @@ def tier2_scorer(judge_model: str):
             if verdict is None:
                 return Score(value=NOANSWER, answer=reply,
                              explanation=f"judge returned unparseable output for {chk['question']!r}")
-            if not evidence or evidence.lower() not in reply.lower():
+            if not evidence or not _evidence_in_reply(evidence, reply):
                 return Score(value=NOANSWER, answer=reply,
                              explanation=f"judge evidence not found in transcript: {evidence!r}")
             expect = chk.get("expect")

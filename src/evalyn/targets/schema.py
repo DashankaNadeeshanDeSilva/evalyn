@@ -11,8 +11,16 @@ class Check(BaseModel):
     question: str | None = None     # for type=classifier
     expect: bool | None = None      # for type=classifier
     value: str | None = None        # for type=contains/not_contains
-    required: bool = False          # required -> pass/fail; else contributes weighted score
-    weight: float = 1.0
+    required: bool = Field(
+        default=False,
+        description="required -> hard pass/fail. The non-required semantics "
+                    "(contribute a weighted score instead of gating) are not yet "
+                    "implemented — that consumer arrives in Plan #2.")
+    weight: float = Field(
+        default=1.0,
+        description="Declarative only: parsed and validated but not yet used in "
+                    "scoring — the weighted/non-required scoring consumer arrives "
+                    "in Plan #2. Today every check scores with equal weight.")
 
 
 class Probe(BaseModel):
@@ -50,8 +58,16 @@ class Invariant(BaseModel):
 
 
 class Budget(BaseModel):
-    max_usd_per_run: float = 5.0
-    max_turns_per_session: int = 12
+    """Run budget caps. Declarative only for now: both fields are parsed and
+    validated but not yet enforced anywhere — the enforcement consumers arrive
+    in Plan #2. Declared caps do not stop or bound a run today."""
+
+    max_usd_per_run: float = Field(
+        default=5.0,
+        description="Declarative only: parsed but not yet enforced (Plan #2).")
+    max_turns_per_session: int = Field(
+        default=12,
+        description="Declarative only: parsed but not yet enforced (Plan #2).")
 
 
 class TargetSpec(BaseModel):

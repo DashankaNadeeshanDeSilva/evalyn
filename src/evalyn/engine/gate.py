@@ -42,8 +42,15 @@ def evaluate_gate(current: RunArtifact, baseline: RunArtifact | None,
 
     for probe in current.probes:
         if probe.kind == "capability":
+            # observability only: capability probes NEVER red the build (pinned
+            # policy), but an all-errored one must say so, not print pass^k=None
             passed = _min_over_scorers(probe, "pass_k")
-            capability_lines.append(f"- `{probe.id}` (capability): pass^k={passed}")
+            if passed is None:
+                capability_lines.append(
+                    f"- `{probe.id}` (capability): no scored trials — all trials "
+                    f"errored or unscored")
+            else:
+                capability_lines.append(f"- `{probe.id}` (capability): pass^k={passed}")
             continue
 
         # A probe with no reducer data never reached the log (e.g. every trial

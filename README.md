@@ -18,3 +18,9 @@ pass a real `--judge-model` to get classifier scoring.
 Safety-critical probes are gated on **pass^k** (must pass every trial); quality probes diff their
 mean against a committed baseline; capability probes never fail the build. See
 `docs/2026-07-21-evalyn-design.md` for the full design.
+
+Pack-authoring note: `budget` caps (`max_usd_per_run`, `max_turns_per_session`) and per-check
+`weight` are declarative-only for now — parsed and validated, but not yet enforced or scored
+(their consumers arrive in Plan #2). Also, every probe currently runs at the pack-wide maximum
+sample count (Inspect epochs), so declaring a higher `samples` on one probe raises call volume
+for all probes.
