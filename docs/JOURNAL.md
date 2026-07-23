@@ -28,7 +28,8 @@ Execution: subagent-driven (fresh implementer per task → task review → fixes
 | 6 | Tier-1 deterministic scorer (invariants + checks) | `c85d0f5` | ✅ done, Opus review clean |
 | 7 | Tier-2 classifier judge (evidence-or-unsure) | `659164f`, `8316ad6` (safeguard fixes) | ✅ done, Opus review clean after fixes |
 | 8 | Task builder (probes → Inspect Task, pass@k/pass^k reducers) | `a75f8d2` | ✅ done, Opus review clean |
-| 9–14 | Example pack → run/gate → validate-pack → CLI → e2e | — | ⏳ pending |
+| 9 | Example reference pack (balanced injection + grounding + invariants) | `54aa199` | ✅ done, Opus review clean (zero findings) |
+| 10–14 | Run orchestration → gate-diff → validate-pack → CLI → e2e | — | ⏳ pending |
 
 ### Pre-flight plan amendments (user-approved 2026-07-23)
 
