@@ -2,6 +2,9 @@
 name = "evalyn"
 version = "0.1.0"
 description = "Standalone, project-agnostic evaluation agent for LLM-powered products."
+readme = "README.md"
+license = { file = "LICENSE" }
+authors = [{ name = "Dashanka Nadeeshan De Silva", email = "dashankadesilva@gmail.com" }]
 requires-python = ">=3.10"
 dependencies = [
     "inspect_ai>=0.3.249",
@@ -10,6 +13,10 @@ dependencies = [
     "pyyaml>=6",
     "typer>=0.12",
 ]
+
+[project.urls]
+Repository = "https://github.com/DashankaNadeeshanDeSilva/evalyn"
+Issues = "https://github.com/DashankaNadeeshanDeSilva/evalyn/issues"
 
 [project.scripts]
 evalyn = "evalyn.cli:app"
