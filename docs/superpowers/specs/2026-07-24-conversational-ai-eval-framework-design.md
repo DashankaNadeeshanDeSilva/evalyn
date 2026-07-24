@@ -1,10 +1,15 @@
-# Conversational AI Evaluation Framework — Design Spec
+# Evalyn-pro — Conversational AI Evaluation Framework — Design Spec
 
 **Date:** 2026-07-24
 **Status:** Approved design, pre-implementation
-**Working name:** TBD — referred to as "the framework" / CLI placeholder `evaltool` throughout.
-**Note:** This is a fresh, standalone design. It deliberately does NOT build on or assume the
-existing Evalyn codebase.
+**Name:** **Evalyn-pro** — the post-Plan-#3 upgrade of Evalyn. CLI placeholder `evaltool` in
+examples below maps to the `evalyn` CLI.
+**Positioning note (added 2026-07-24):** this design was produced greenfield (deliberately
+ignoring the current codebase) to avoid anchoring, but it will be REALIZED as an upgrade of
+Evalyn after Plans #1–#3 complete. Current Evalyn is aimed at the NiuwnAI/TwinCore chat
+product; Evalyn-pro generalizes it to a product-agnostic tool per this spec. A compatibility
+reconciliation against Evalyn's existing design (notably the Inspect AI spine constraint vs §2's
+purpose-built-core decision) is recorded in the implementation planning docs.
 
 ---
 
@@ -500,3 +505,52 @@ coupling in the core.
 | D11 | Transcripts immutable; re-score without re-simulate | Cost control; reproducibility; enables future trace ingestion |
 | D12 | Everything versioned in git, no hidden state | Eval evolution code-reviewed; no SaaS dependency |
 | D13 | Web UI deferred to v2 (user decision) | v1 stays CLI-first; JSONL+manifest groundwork suffices |
+| D14 | **Supersedes D7:** realized as an Evalyn upgrade ON the Inspect AI spine | User decision 2026-07-24: Evalyn-pro must be compatible with Evalyn Plans #1–#3 (locked Inspect constraint). See §13. |
+
+---
+
+## 13. Realization as the Evalyn upgrade (added 2026-07-24, post-exploration)
+
+Evalyn-pro is **Plan #4+**: executed only after Evalyn Plans #1–#3 complete. Exploration of the
+current codebase (2026-07-24) showed the greenfield design maps onto Evalyn far more directly
+than D7 assumed — Evalyn's engine core is already product-agnostic (all TwinCore content lives
+in `packs/twincore/`), and its session solver already drives live multi-turn conversations.
+**D7 is superseded (D14):** the "conversation-native core" is realized as layers Evalyn already
+has, not a new spine.
+
+### Concept mapping (spec noun → Evalyn realization)
+
+| Spec (§3) | Evalyn realization |
+|---|---|
+| Target | `TargetSpec` + session solver + stream adapters; **NEW:** Python-callable adapter, trace-event enrichment |
+| Persona | **NEW** pack-schema object + preset library (no hook exists today) |
+| Scenario | `Probe`, extended with `persona`/`goal`/`environment`/perturbations (scripted `turns` remains the degenerate case) |
+| Trial (k) | Inspect `Epochs` / `Probe.samples` (pass@k + pass^k already recorded) |
+| Transcript | Solver-owned `state.messages` + `RunArtifact`; transcript-aware scoring lands in Plan #2a |
+| Verdict tiers | Tier-1/Tier-2 scorers (shipped) + Tier-3 rubric judge (Plan #2a); **NEW:** panel escalation + abstention |
+| Run / gate | `RunArtifact` + gate-diff layer (shipped); **NEW:** HTML report, richer gate policy |
+
+### Feature delta — what Evalyn-pro genuinely adds beyond Plans #1–#3
+
+Already shipped (#1): pass^k, Tier-1/2, gate-diff, allowlist, validate-pack.
+Already planned (#2a): Tier-3 G-Eval rubric judge, judge-calibration harness (±1-point/85%),
+transcript-aware scoring, weighted/required check semantics, configurable session shapes,
+TwinCore pack. (#2b): blind compare, CI action. (#3): discover agent, finding→probe flywheel.
+
+**Net-new in Evalyn-pro:**
+1. **Persona-driven user simulation** (§4): persona schema, knowledge inventory, behavior
+   policies, perturbation dials, goal-state tracking — a simulated-user turn generator inside
+   the session solver (replacing scripted `turns` when a persona is declared).
+2. **Judge panels + κ calibration + abstention** (§5.3–5.4): upgrades #2a's single-judge
+   harness to diverse-family panels, Cohen's/weighted κ certification, abstention excluded
+   from pass rates, review-queue routing.
+3. **Review-queue → promotion loop** (§6.4): human labeling CLI; promote to calibration anchor
+   or new probe. Feeds (does not duplicate) Plan #3's flywheel.
+4. **Python-callable target + trace enrichment** (§3.1): in-process targets; `TraceEvent`
+   scoring (tool-call checks) when traces exist.
+5. **HTML drill-down report** (§6.2) — and the v2 web UI beyond it.
+6. **Product-agnostic hardening pass**: whatever solver/pack couplings survive #2a.
+
+Constraint carry-over: everything in §§4–9 that assumed a standalone engine now inherits
+Evalyn's locked constraints — Inspect spine, async `httpx` only, judge ≠ generator family,
+safety gates on pass^k, fail-closed allowlist, `uv`.
