@@ -27,14 +27,17 @@ class Check(BaseModel):
                     "(fail-closed, every turn scanned); contains -> final.")
     required: bool = Field(
         default=False,
-        description="required -> hard pass/fail. The non-required semantics "
-                    "(contribute a weighted score instead of gating) are not yet "
-                    "implemented — that consumer arrives in Plan #2.")
+        description="required -> gates the trial: the trial's binary verdict "
+                    "(feeding pass@k/pass^k) passes only if EVERY required check "
+                    "passes, and any required failure zeroes the trial score. "
+                    "non-required -> contributes to the weighted trial score "
+                    "instead of gating.")
     weight: float = Field(
         default=1.0,
-        description="Declarative only: parsed and validated but not yet used in "
-                    "scoring — the weighted/non-required scoring consumer arrives "
-                    "in Plan #2. Today every check scores with equal weight.")
+        description="Weight in the non-required weighted mean: trial_score = "
+                    "sum(w_i * score_i) / sum(w_i) over non-required checks "
+                    "(unsure checks excluded from both sums). Ignored for "
+                    "required checks — they gate rather than weigh.")
 
 
 class Probe(BaseModel):

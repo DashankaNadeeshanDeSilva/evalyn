@@ -1,40 +1,60 @@
+import json
+
+import pytest
+
 from evalyn.engine.baseline import load_baseline, save_baseline
 from evalyn.engine.gate import evaluate_gate
 from evalyn.engine.run import ProbeResult, RunArtifact
 
 
-def _art(probes):
-    return RunArtifact("example", "hash", "mockllm/model", "now", probes, "log")
+def _art(probes, name="example"):
+    return RunArtifact(name, "hash", "mockllm/model", "now", probes, "log")
+
+
+def _probe(pid="p", *, category="cat", kind="regression", safety=False, samples=1,
+           trials=1, pass_at_k=1.0, pass_k=1.0, mean_score=1.0, unsure_trials=0,
+           checks=None):
+    return ProbeResult(pid, category, kind, safety, samples, trials=trials,
+                       pass_at_k=pass_at_k, pass_k=pass_k, mean_score=mean_score,
+                       unsure_trials=unsure_trials, checks=checks or [])
 
 
 def test_safety_probe_fails_when_pass_k_below_one():
-    # flaky injection: pass^k = 0.5 on tier1 -> must FAIL
-    p = ProbeResult("inj", "injection", "regression", True, 3,
-                    {"pass_k_3": {"tier1": 0.5, "tier2": 1.0}, "pass_at_3": {"tier1": 1.0},
-                     "mean": {"tier1": 0.67}})
+    # flaky injection: pass^k < 1 -> must FAIL, regardless of a high mean
+    p = _probe("inj", category="injection", safety=True, samples=3, trials=3,
+               pass_at_k=1.0, pass_k=0.0, mean_score=0.67)
     res = evaluate_gate(_art([p]), baseline=None)
     assert res.exit_code == 1
-    assert any("inj" in f for f in res.failures)
+    assert any("inj" in f and "SAFETY" in f for f in res.failures)
 
 
 def test_safety_probe_passes_when_pass_k_is_one():
-    p = ProbeResult("inj", "injection", "regression", True, 3,
-                    {"pass_k_3": {"tier1": 1.0, "tier2": 1.0}, "mean": {"tier1": 1.0}})
+    p = _probe("inj", category="injection", safety=True, samples=3, trials=3,
+               pass_k=1.0, mean_score=1.0)
     res = evaluate_gate(_art([p]), baseline=None)
     assert res.exit_code == 0
+
+
+def test_safety_failure_surfaces_unsure_trial_count():
+    p = _probe("inj", category="injection", safety=True, samples=3, trials=3,
+               pass_k=0.0, mean_score=1.0, unsure_trials=2)
+    res = evaluate_gate(_art([p]), baseline=None)
+    assert res.exit_code == 1
+    assert any("2 unsure" in f for f in res.failures)
 
 
 def test_capability_probe_never_fails_build():
-    p = ProbeResult("cap", "grounding", "capability", False, 1,
-                    {"pass_k_1": {"tier1": 0.0}, "mean": {"tier1": 0.0}})
+    p = _probe("cap", category="grounding", kind="capability", trials=1,
+               pass_at_k=0.0, pass_k=0.0, mean_score=0.0)
     res = evaluate_gate(_art([p]), baseline=None)
     assert res.exit_code == 0
 
 
-def test_capability_probe_with_empty_reducers_never_fails_build():
+def test_capability_probe_with_no_trials_never_fails_build():
     # locked semantic: capability probes NEVER red the build — even when the
-    # probe has no scores at all (which is a hard failure for any other kind)
-    p = ProbeResult("cap", "grounding", "capability", False, 1, {})
+    # probe has no scored trials at all (a hard failure for any other kind)
+    p = _probe("cap", category="grounding", kind="capability", trials=0,
+               pass_k=0.0, mean_score=0.0)
     res = evaluate_gate(_art([p]), baseline=None)
     assert res.exit_code == 0
     assert not any("cap" in f for f in res.failures)
@@ -45,7 +65,7 @@ def test_capability_probe_with_empty_reducers_never_fails_build():
 def test_capability_probe_all_errored_is_surfaced_but_not_red():
     # observability only: an all-errored capability probe must say so in the
     # report instead of rendering pass^k=None — verdict stays green (pinned)
-    p = ProbeResult("cap", "grounding", "capability", False, 1, {})
+    p = _probe("cap", category="grounding", kind="capability", trials=0)
     res = evaluate_gate(_art([p]), baseline=None)
     assert res.exit_code == 0
     assert "no scored trials — all trials errored or unscored" in res.report_md
@@ -53,90 +73,119 @@ def test_capability_probe_all_errored_is_surfaced_but_not_red():
 
 
 def test_regression_mean_drop_beyond_band_fails():
-    base = _art([ProbeResult("g", "grounding", "regression", False, 1,
-                             {"mean": {"tier1": 1.0}})])
-    cur = _art([ProbeResult("g", "grounding", "regression", False, 1,
-                            {"mean": {"tier1": 0.5}})])
+    base = _art([_probe("g", category="grounding", mean_score=1.0)])
+    cur = _art([_probe("g", category="grounding", mean_score=0.5)])
     res = evaluate_gate(cur, baseline=base, band=0.1)
     assert res.exit_code == 1
     assert any("`g`" in f for f in res.failures)
 
 
 def test_regression_small_drop_is_quarantined_not_failed():
-    base = _art([ProbeResult("g", "grounding", "regression", False, 1,
-                             {"mean": {"tier1": 1.0}})])
-    cur = _art([ProbeResult("g", "grounding", "regression", False, 1,
-                            {"mean": {"tier1": 0.95}})])
+    base = _art([_probe("g", category="grounding", mean_score=1.0)])
+    cur = _art([_probe("g", category="grounding", mean_score=0.95)])
     res = evaluate_gate(cur, baseline=base, band=0.1)
     assert res.exit_code == 0
     assert any("`g`" in q for q in res.quarantined)
 
 
 def test_regression_no_baseline_imperfect_mean_is_quarantined():
-    cur = _art([ProbeResult("g", "grounding", "regression", False, 1,
-                            {"mean": {"tier1": 0.5}})])
+    cur = _art([_probe("g", category="grounding", mean_score=0.5)])
     res = evaluate_gate(cur, baseline=None)
     assert res.exit_code == 0
     assert any("`g`" in q for q in res.quarantined)
 
 
-# --- carry-note 1: empty reducers (probe absent from log) is a HARD FAILURE ---
+# --- design-gap #2 proof: a NON-REQUIRED miss alone moves the band verdict ---
 
-def test_empty_reducers_on_regression_probe_is_hard_failure():
-    p = ProbeResult("gone", "grounding", "regression", False, 3, {})
+def test_nonrequired_partial_score_moves_band():
+    # same probe, required checks all pass in both runs (pass_k stays 1.0); the
+    # current run's mean dropped to 0.75 purely via a non-required weighted
+    # miss — that partial score alone must cross the band and fail the gate
+    base = _art([ProbeResult("p", "c", "regression", False, 1, trials=1,
+                             pass_at_k=1.0, pass_k=1.0, mean_score=1.0)])
+    cur = _art([ProbeResult("p", "c", "regression", False, 1, trials=1,
+                            pass_at_k=1.0, pass_k=1.0, mean_score=0.75)])
+    res = evaluate_gate(cur, base, band=0.1)
+    assert res.exit_code == 1  # 1.0 - 0.75 = 0.25 > 0.1 => REGRESSION
+    assert any("REGRESSION" in f for f in res.failures)
+
+
+# --- carry-note 1: no trials collected (probe absent from log) is a HARD FAILURE ---
+
+def test_no_trials_on_regression_probe_is_hard_failure():
+    p = _probe("gone", category="grounding", samples=3, trials=0)
     res = evaluate_gate(_art([p]), baseline=None)
     assert res.exit_code == 1
-    assert any("gone" in f for f in res.failures)
+    assert any("gone" in f and "MISSING" in f for f in res.failures)
 
 
-def test_empty_reducers_on_safety_probe_is_hard_failure():
-    p = ProbeResult("inj", "injection", "regression", True, 3, {})
+def test_no_trials_on_safety_probe_is_hard_failure():
+    p = _probe("inj", category="injection", safety=True, samples=3, trials=0)
     res = evaluate_gate(_art([p]), baseline=None)
     assert res.exit_code == 1
     assert any("inj" in f for f in res.failures)
-
-
-# --- carry-note 2 (A1): reducer keys are labeled by ACTUAL trials, not declared samples ---
-
-def test_safety_gate_uses_actual_trial_pass_k_key_not_declared_samples():
-    # declared samples=1 but the run actually collected 3 trials -> key is pass_k_3
-    p = ProbeResult("inj", "injection", "regression", True, 1,
-                    {"pass_k_3": {"tier1": 0.0}, "mean": {"tier1": 0.33}})
-    res = evaluate_gate(_art([p]), baseline=None)
-    assert res.exit_code == 1
-    assert any("inj" in f for f in res.failures)
-
-    ok = ProbeResult("inj", "injection", "regression", True, 1,
-                     {"pass_k_3": {"tier1": 1.0}, "mean": {"tier1": 1.0}})
-    assert evaluate_gate(_art([ok]), baseline=None).exit_code == 0
 
 
 def test_report_md_marks_pass_and_fail():
-    good = ProbeResult("ok", "grounding", "regression", False, 1,
-                       {"mean": {"tier1": 1.0}})
+    good = _probe("ok", category="grounding", mean_score=1.0)
     res = evaluate_gate(_art([good]), baseline=None)
     assert "PASS" in res.report_md
 
-    bad = ProbeResult("inj", "injection", "regression", True, 3,
-                      {"pass_k_3": {"tier1": 0.0}})
+    bad = _probe("inj", category="injection", safety=True, samples=3, trials=3,
+                 pass_k=0.0)
     res = evaluate_gate(_art([bad]), baseline=None)
     assert "FAIL" in res.report_md
     assert "inj" in res.report_md
 
 
+def test_exit_code_is_exactly_the_failure_verdict():
+    ok = evaluate_gate(_art([_probe("ok")]), baseline=None)
+    assert ok.exit_code == 0 and not ok.failures
+    bad = evaluate_gate(_art([_probe("gone", trials=0)]), baseline=None)
+    assert bad.exit_code == 1 and bad.failures
+
+
 # --- baseline persistence ---
 
 def test_baseline_round_trip(tmp_path):
-    art = _art([ProbeResult("g", "grounding", "regression", False, 1,
-                            {"mean": {"tier1": 1.0}})])
+    art = _art([_probe("g", category="grounding", mean_score=1.0,
+                       checks=[{"check": "invariant:non-empty", "tier": 1,
+                                "required": True, "weight": 1.0, "passed": True,
+                                "score": 1.0, "turn": None, "evidence": "",
+                                "unsure": False}])])
     path = str(tmp_path / "runs" / "baseline.json")
     save_baseline(art, path)
     loaded = load_baseline(path)
     assert loaded is not None
     assert loaded.pack_name == "example"
     assert loaded.probes[0].id == "g"
-    assert loaded.probes[0].reducers == {"mean": {"tier1": 1.0}}
+    assert loaded == art
 
 
 def test_load_baseline_missing_returns_none(tmp_path):
     assert load_baseline(str(tmp_path / "nope.json")) is None
+
+
+def test_load_baseline_predating_plan2a_schema_fails_loudly(tmp_path):
+    # a Plan-#1-era baseline (probes carry `reducers`) must NOT surface as a
+    # bare TypeError from ProbeResult(**p) — it must name the file and tell the
+    # user to re-create the baseline (no silent migration layer)
+    old = {"pack_name": "example", "pack_hash": "h", "judge_model": "j",
+           "created_at": "now", "log_path": "log",
+           "probes": [{"id": "g", "category": "grounding", "kind": "regression",
+                       "safety_critical": False, "samples": 1,
+                       "reducers": {"mean": {"tier1": 1.0}}}]}
+    path = tmp_path / "baseline.json"
+    path.write_text(json.dumps(old))
+    with pytest.raises(RuntimeError, match=r"(?s)baseline.*predates.*--update-baseline"):
+        load_baseline(str(path))
+
+
+def test_load_baseline_corrupt_json_is_not_misdiagnosed_as_old_schema(tmp_path):
+    # json.JSONDecodeError is a ValueError subclass — a corrupt file must get
+    # its own clear message (naming the path), never the predates-schema text
+    path = tmp_path / "baseline.json"
+    path.write_text("{not valid json")
+    with pytest.raises(RuntimeError, match=r"(?s)baseline.*not valid JSON") as exc:
+        load_baseline(str(path))
+    assert "predates" not in str(exc.value)

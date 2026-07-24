@@ -340,7 +340,8 @@ per verified task (user, 2026-07-24); push/PR ask-first.
 | Task | What | Commits | Status |
 |------|------|---------|--------|
 | 1 | Transcript access + scope-aware Tier-1 + `CheckResult` (P2+P4 applied) | `6de3766` | ✅ done, Fable review clean (0 findings above Minor) |
-| 2 | Tier-2 full-transcript judge + CheckResults + per-check NOANSWER (+ evidence-vs-assistant-turns-only, `_normalize` hardening riders) | — | ✅ done, Fable review clean after 1 fix round (floor-branch test) |
+| 2 | Tier-2 full-transcript judge + CheckResults + per-check NOANSWER (+ evidence-vs-assistant-turns-only, `_normalize` hardening riders) | `65a36a5` | ✅ done, Fable review clean after 1 fix round (floor-branch test) |
+| 3 | `aggregate_trial` (locked weighted formula) + metadata-driven reducer + `ProbeResult` reshape + gate bands on mean trial score — **design-gap #2 closed at engine level** | — | ✅ done, Fable review clean after 1 fix round (contract-literal `required_pass`, den==0 pin, corrupt-JSON diagnosis) |
 
 ### Deferred findings register (Plan #2a)
 
@@ -360,9 +361,14 @@ per verified task (user, 2026-07-24); push/PR ask-first.
 - [ ] Tier-2 `explanation` string omits non-required misses ("all classifier checks passed"
       while metadata records a miss) — plan-mandated reference code, cosmetic; metadata is
       authoritative. *(minor)*
-- [ ] INTERIM (must close in Task 3): `run.py` still gates per-epoch on `Score.value ==
-      CORRECT`, so a non-required miss counts as a trial pass and NOANSWER conflates with fail
-      until Task 3's metadata-driven reducer lands — Task 3 review must confirm this window
-      closes. *(tagged Task 3)*
+- [x] ~~INTERIM: `run.py` gates per-epoch on `Score.value == CORRECT`~~ — **CLOSED in Task 3**
+      (reviewer-verified: `CORRECT` import removed, reducer reads only metadata CheckResults,
+      tests prove `Score.value` is ignored).
+- [ ] Old-baseline RuntimeError surfaces via typer traceback (message + non-zero exit intact) —
+      clean exit-2 mapping belongs to CLI polish. *(minor, tagged Task 12)*
+- [ ] Design-gap #2 pin is two engine tests in composition (reducer partial score; gate band
+      flip) — the single composed e2e flow lands in Task 13. *(tagged Task 13)*
+- [ ] `schema.py` `weight` docstring — **CLOSED in Task 3** (rewritten with real semantics,
+      required docstring too). Left here for the record; strike at final review.
 
 ## Plan #3 — `discover` + flywheel *(not started)*

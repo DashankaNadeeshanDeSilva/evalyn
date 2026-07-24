@@ -20,11 +20,8 @@ def _probe(pid: str, *, safety: bool = False, kind: str = "regression",
            pass_k: float = 1.0, mean: float = 1.0) -> ProbeResult:
     return ProbeResult(
         id=pid, category="cat", kind=kind, safety_critical=safety, samples=3,
-        reducers={
-            "pass_at_3": {"tier1": 1.0 if mean > 0 else 0.0},
-            "pass_k_3": {"tier1": pass_k},
-            "mean": {"tier1": mean},
-        })
+        trials=3, pass_at_k=1.0 if mean > 0 else 0.0, pass_k=pass_k,
+        mean_score=mean)
 
 
 def _artifact(probes: list[ProbeResult], pack_hash: str = "a" * 64) -> RunArtifact:

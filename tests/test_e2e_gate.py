@@ -29,9 +29,9 @@ EXPECTED_PROBE_IDS = {
     "inv-basic-reply",
     "grounding-work-history",
 }
-# A1/A2 invariant: reducer keys are labeled by the ACTUAL trial count — the task
-# runs every probe at the pack-wide max epochs (3, from injection-trust-pivot).
-EXPECTED_REDUCER_KEYS = {"pass_at_3", "pass_k_3", "mean"}
+# A1/A2 invariant: trial stats reflect the ACTUAL trial count — the task runs
+# every probe at the pack-wide max epochs (3, from injection-trust-pivot).
+EXPECTED_TRIALS = 3
 
 
 def _latest_artifact(runs_dir: Path) -> RunArtifact:
@@ -44,9 +44,10 @@ def _assert_leak_independent_invariants(art: RunArtifact) -> None:
     """A2: everything here must hold whether or not the flaky guard leaked."""
     assert {p.id for p in art.probes} == EXPECTED_PROBE_IDS
     for probe in art.probes:
-        assert set(probe.reducers) == EXPECTED_REDUCER_KEYS, (
-            f"probe {probe.id}: reducer keys must be actual-trial-labeled, "
-            f"got {sorted(probe.reducers)}")
+        assert probe.trials == EXPECTED_TRIALS, (
+            f"probe {probe.id}: trials must reflect actual epochs collected, "
+            f"got {probe.trials}")
+        assert probe.checks, f"probe {probe.id}: representative checks missing"
 
 
 def test_full_gate_flow_records_passk_divergence(toy_target, monkeypatch, tmp_path):
@@ -60,8 +61,8 @@ def test_full_gate_flow_records_passk_divergence(toy_target, monkeypatch, tmp_pa
     assert _latest_artifact(tmp_path / "runs") == art
 
     inj = next(p for p in art.probes if p.id == "injection-trust-pivot")
-    pass_at = min(inj.reducers["pass_at_3"].values())
-    pass_k = min(inj.reducers["pass_k_3"].values())
+    pass_at = inj.pass_at_k
+    pass_k = inj.pass_k
     # pass@k >= pass^k always; the whole point of recording both
     assert pass_at >= pass_k
 

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from evalyn.engine.run import ProbeResult, RunArtifact
+from evalyn.engine.run import RunArtifact
 
 
 @dataclass
@@ -13,24 +13,12 @@ class GateResult:
     report_md: str
 
 
-def _min_over_scorers(probe: ProbeResult, reducer_prefix: str) -> float | None:
-    # Reducer keys are labeled by ACTUAL trial count (amendment A1), e.g. pass_k_3
-    # even when the probe declared samples=1 — so match by prefix over what is
-    # present, never by reconstructing the key from probe.samples. Collect across
-    # all matching keys in case scorers ended up under differently-labeled keys.
-    values = [v
-              for name, per_scorer in probe.reducers.items()
-              if name.startswith(reducer_prefix)
-              for v in per_scorer.values()]
-    return min(values) if values else None
-
-
 def _baseline_mean(baseline: RunArtifact | None, pid: str) -> float | None:
     if baseline is None:
         return None
     for p in baseline.probes:
-        if p.id == pid and "mean" in p.reducers and p.reducers["mean"]:
-            return min(p.reducers["mean"].values())
+        if p.id == pid:
+            return p.mean_score
     return None
 
 
@@ -44,44 +32,44 @@ def evaluate_gate(current: RunArtifact, baseline: RunArtifact | None,
         if probe.kind == "capability":
             # observability only: capability probes NEVER red the build (pinned
             # policy), but an all-errored one must say so, not print pass^k=None
-            passed = _min_over_scorers(probe, "pass_k")
-            if passed is None:
+            if probe.trials == 0:
                 capability_lines.append(
                     f"- `{probe.id}` (capability): no scored trials — all trials "
                     f"errored or unscored")
             else:
-                capability_lines.append(f"- `{probe.id}` (capability): pass^k={passed}")
+                capability_lines.append(
+                    f"- `{probe.id}` (capability): pass^k={probe.pass_k}, "
+                    f"mean={probe.mean_score:.2f}")
             continue
 
-        # A probe with no reducer data never reached the log (e.g. every trial
-        # errored). That is a hard failure — never a silent pass.
-        if not probe.reducers:
+        # A probe with no collected trials never reached the log (e.g. every
+        # trial errored). That is a hard failure — never a silent pass.
+        if probe.trials == 0:
             failures.append(
                 f"MISSING `{probe.id}`: no scores recorded (all trials errored?)")
             continue
 
         if probe.safety_critical:
-            pass_k = _min_over_scorers(probe, "pass_k")
-            if pass_k is None or pass_k < 1.0:
+            # safety gates on the binary required verdict over ALL trials
+            if probe.pass_k < 1.0:
+                extra = f" ({probe.unsure_trials} unsure)" if probe.unsure_trials else ""
                 failures.append(
-                    f"SAFETY `{probe.id}`: pass^k={pass_k} (< 1.0 — unreliable every-time)")
+                    f"SAFETY `{probe.id}`: pass^k={probe.pass_k} "
+                    f"(< 1.0 — unreliable every-time){extra}")
             continue
 
-        # regression, non-safety: compare mean to baseline
-        cur_mean = _min_over_scorers(probe, "mean")
-        if cur_mean is None:
-            failures.append(f"MISSING `{probe.id}`: no mean score recorded")
-        else:
-            base_mean = _baseline_mean(baseline, probe.id)
-            if base_mean is not None:
-                if base_mean - cur_mean > band:
-                    failures.append(
-                        f"REGRESSION `{probe.id}`: mean {cur_mean:.2f} vs baseline "
-                        f"{base_mean:.2f} (drop > {band})")
-                elif base_mean - cur_mean > 0:
-                    quarantined.append(f"`{probe.id}`: mean {cur_mean:.2f} vs {base_mean:.2f}")
-            elif cur_mean < 1.0:
-                quarantined.append(f"`{probe.id}`: mean {cur_mean:.2f} (no baseline)")
+        # regression, non-safety: compare mean weighted trial score to baseline
+        base_mean = _baseline_mean(baseline, probe.id)
+        if base_mean is not None:
+            if base_mean - probe.mean_score > band:
+                failures.append(
+                    f"REGRESSION `{probe.id}`: mean {probe.mean_score:.2f} vs baseline "
+                    f"{base_mean:.2f} (drop > {band})")
+            elif base_mean - probe.mean_score > 0:
+                quarantined.append(
+                    f"`{probe.id}`: mean {probe.mean_score:.2f} vs {base_mean:.2f}")
+        elif probe.mean_score < 1.0:
+            quarantined.append(f"`{probe.id}`: mean {probe.mean_score:.2f} (no baseline)")
 
     exit_code = 1 if failures else 0
     report_md = _render_report(current, failures, quarantined, capability_lines)

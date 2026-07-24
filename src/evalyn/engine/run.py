@@ -9,9 +9,9 @@ from pathlib import Path
 
 from inspect_ai import eval as inspect_eval
 from inspect_ai.log import read_eval_log
-from inspect_ai.scorer import CORRECT
 
 from evalyn.engine.task_builder import build_task
+from evalyn.scoring.checks import aggregate_trial
 from evalyn.targets.loader import Pack
 
 
@@ -21,8 +21,13 @@ class ProbeResult:
     category: str
     kind: str
     safety_critical: bool
-    samples: int
-    reducers: dict[str, dict[str, float]] = field(default_factory=dict)
+    samples: int              # declared in the pack (actual trials may differ — A1)
+    trials: int = 0           # trials actually collected (epochs with checks)
+    pass_at_k: float = 0.0    # any trial's required checks all passed
+    pass_k: float = 0.0       # EVERY trial's required checks passed (safety gate)
+    mean_score: float = 0.0   # mean weighted trial_score over trials
+    unsure_trials: int = 0    # NOANSWER accounting: required-unsure, not failed
+    checks: list[dict] = field(default_factory=list)  # representative CheckResults
 
 
 @dataclass
@@ -39,7 +44,12 @@ class RunArtifact:
 
     @classmethod
     def from_dict(cls, d: dict) -> "RunArtifact":
-        probes = [ProbeResult(**p) for p in d["probes"]]
+        try:
+            probes = [ProbeResult(**p) for p in d["probes"]]
+        except TypeError as e:
+            raise ValueError(
+                "artifact probe entries do not match the Plan #2a ProbeResult "
+                f"schema ({e}); this artifact predates the current schema") from e
         return cls(**{**d, "probes": probes})
 
 
@@ -54,35 +64,44 @@ def pack_fingerprint(pack: Pack) -> str:
 
 def _reduce_log_to_probes(log, pack: Pack) -> list[ProbeResult]:
     by_id = {p.id: p for p in pack.probes}
-    # per-probe reducer accuracies: the log's results.scores carry reducer name + metrics,
-    # but reducers are task-level, so recompute per-probe from per-sample scores.
-    # Each sample.metadata["id"] identifies the probe; sample.scores[scorer].value is per-epoch.
-    # gather per-probe, per-scorer list of per-epoch pass(1)/fail(0)
-    raw: dict[str, dict[str, list[float]]] = defaultdict(lambda: defaultdict(list))
+    # Group CheckResults per (probe_id, epoch) across ALL scorers present in the
+    # log (tier3 lands later — never hardcode a scorer list). The authority is
+    # each Score's metadata["checks"], never Score.value. An epoch that produced
+    # no checks in ANY scorer (errored trial) is NOT counted as a trial, so a
+    # fully-errored probe keeps trials == 0 and the gate hard-fails it as
+    # MISSING — never a silent pass (fail-closed, Plan #1 rule).
+    trials: dict[str, dict[int, list[dict]]] = defaultdict(lambda: defaultdict(list))
     for sample in log.samples or []:
-        pid = sample.metadata["id"]
-        for scorer_name, sc in (sample.scores or {}).items():
-            raw[pid][scorer_name].append(1.0 if sc.value == CORRECT else 0.0)
+        pid = sample.metadata["id"] if sample.metadata else sample.id
+        for sc in (sample.scores or {}).values():
+            checks = (sc.metadata or {}).get("checks") or []
+            if checks:
+                trials[pid][sample.epoch].extend(checks)
 
     results: list[ProbeResult] = []
     for pid, probe in by_id.items():
-        reducers: dict[str, dict[str, float]] = {}
-        for scorer_name, vals in raw.get(pid, {}).items():
-            # Amendment A1: label reducers by the ACTUAL number of trials collected
-            # (the task runs every probe at the pack-wide max), not the probe's
-            # declared `samples`. pass_at_3 must mean "3 actual trials".
-            n = len(vals)
-            correct = sum(vals)
-            pass_at = 1.0 if correct >= 1 else 0.0                     # pass@k
-            pass_k = 1.0 if correct == n and n > 0 else 0.0            # pass^k (all pass)
-            mean = correct / n if n else 0.0
-            reducers.setdefault(f"pass_at_{n}", {})[scorer_name] = pass_at
-            reducers.setdefault(f"pass_k_{n}", {})[scorer_name] = pass_k
-            reducers.setdefault("mean", {})[scorer_name] = mean
+        # Amendment A1: stats reflect the ACTUAL number of trials collected (the
+        # task runs every probe at the pack-wide max), not declared `samples`.
+        per_epoch = trials.get(pid, {})
+        n = len(per_epoch)
+        req_passes: list[bool] = []
+        unsure_ct = 0
+        scores: list[float] = []
+        for _epoch, crs in per_epoch.items():
+            req_pass, trial_unsure, trial_score = aggregate_trial(crs)
+            req_passes.append(req_pass)
+            unsure_ct += 1 if trial_unsure else 0
+            scores.append(trial_score)
+        pass_at_k = 1.0 if any(req_passes) else 0.0
+        pass_k = 1.0 if (n > 0 and all(req_passes)) else 0.0
+        mean_score = sum(scores) / n if n else 0.0
+        # carry one epoch's checks as representative evidence for the report
+        rep_checks = next(iter(per_epoch.values())) if per_epoch else []
         results.append(ProbeResult(
             id=pid, category=probe.category, kind=probe.kind,
             safety_critical=probe.safety_critical, samples=probe.samples,
-            reducers=reducers))
+            trials=n, pass_at_k=pass_at_k, pass_k=pass_k, mean_score=mean_score,
+            unsure_trials=unsure_ct, checks=rep_checks))
     return results
 
 
