@@ -311,4 +311,48 @@ Triage at the Plan #1 final whole-branch review unless tagged later.
 - pyproject metadata (license/readme/authors/urls) before any PyPI publish.
 - Carry-ins already tagged: TwinCore raw-sse fidelity; budget/auth/state consumers (A3).
 
+---
+
+## Plan #2a — Trusted gate on the real product (`feat/plan2a-real-gate`, cut from `dev` @ `e30afbf`)
+
+Plan doc: [`superpowers/plans/2026-07-24-evalyn-plan2a-real-gate.md`](./superpowers/plans/2026-07-24-evalyn-plan2a-real-gate.md)
+Spec: [`superpowers/specs/2026-07-24-evalyn-plan2a-design.md`](./superpowers/specs/2026-07-24-evalyn-plan2a-design.md)
+Execution: subagent-driven (Fable implementer + Fable reviewer per task); commits automatic
+per verified task (user, 2026-07-24); push/PR ask-first.
+
+### Pre-flight plan amendments (user-approved 2026-07-24)
+
+- **P1 (Tasks 4+5):** Tier-3 judge emits **per-criterion** 1–5 scores per rubric (plan's
+  single-overall-score prompt corrected); check score = mean of normalized criteria;
+  calibration agreement per (anchor × criterion) as specced.
+- **P2 (Task 1):** `scope` semantics per spec — `any_turn` = existential pass, `all_turns` =
+  universal, `final` = last turn; defaults: invariants/`not_contains` → `all_turns`
+  (fail-closed), `contains` → `final`. (Plan's helper + docstring had `any_turn` ≡ `all_turns`.)
+- **P3 (Task 6):** pooled-httpx opener resolved as per-`solve()` client — re-deferred
+  (perf nicety, no correctness impact; Inspect sample-parallelism makes run-scoped sharing
+  invasive).
+- **P4 (Tasks 1/9/10):** `contains` checks gain `values: list[str]` (OR-semantics, mutually
+  exclusive with `value`; exclusivity validated in Task 9) so injection probes can assert
+  "contains one of the Guardian redirect constants" as locked.
+
+### Task status
+
+| Task | What | Commits | Status |
+|------|------|---------|--------|
+| 1 | Transcript access + scope-aware Tier-1 + `CheckResult` (P2+P4 applied) | — | ✅ done, Fable review clean (0 findings above Minor) |
+
+### Deferred findings register (Plan #2a)
+
+- [ ] `schema.py` `weight` docstring still says "not yet used in scoring" — stale once Task 1
+      propagates weight into CheckResults; rewrite in Task 3. *(minor, tagged Task 3)*
+- [ ] `_eval_over_turns` with empty `turns` vacuously passes `all_turns`/`final` — unreachable
+      today (tier1 falls back to `[completion]`), but callers added in Tasks 2/4 must keep the
+      non-empty guarantee. *(minor, tagged Tasks 2/4 dispatches)*
+- [ ] `not_contains` + `values` typo silently ignored until Task 9's exclusivity validation —
+      Task 9 must cover this exact case. *(minor, tagged Task 9)*
+- [ ] `any_turn` failure evidence picks the last turn's string (arbitrary but harmless) — add
+      a comment. *(minor)*
+- [ ] Multi-value check label convention `contains:a|b` — confirm validate-pack reporting
+      (Task 9) uses the same convention. *(minor, tagged Task 9)*
+
 ## Plan #3 — `discover` + flywheel *(not started)*

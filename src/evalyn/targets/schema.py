@@ -11,6 +11,20 @@ class Check(BaseModel):
     question: str | None = None     # for type=classifier
     expect: bool | None = None      # for type=classifier
     value: str | None = None        # for type=contains/not_contains
+    values: list[str] | None = Field(
+        default=None,
+        description="contains only: multi-value OR form — the check passes if ANY "
+                    "listed string is present. Mutually exclusive with `value` "
+                    "(static validation of the exclusivity arrives in Task 9). "
+                    "not_contains does not accept `values`.")
+    scope: Literal["final", "any_turn", "all_turns"] | None = Field(
+        default=None,
+        description="Transcript scope override. final = evaluate against the last "
+                    "assistant turn only; any_turn = existential PASS: passes if ANY "
+                    "assistant turn satisfies the check; all_turns = universal: must "
+                    "hold on EVERY assistant turn (any violating turn fails it). "
+                    "Defaults when unset: invariant/not_contains -> all_turns "
+                    "(fail-closed, every turn scanned); contains -> final.")
     required: bool = Field(
         default=False,
         description="required -> hard pass/fail. The non-required semantics "
