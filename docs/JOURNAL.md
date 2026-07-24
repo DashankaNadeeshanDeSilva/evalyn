@@ -339,7 +339,8 @@ per verified task (user, 2026-07-24); push/PR ask-first.
 
 | Task | What | Commits | Status |
 |------|------|---------|--------|
-| 1 | Transcript access + scope-aware Tier-1 + `CheckResult` (P2+P4 applied) | — | ✅ done, Fable review clean (0 findings above Minor) |
+| 1 | Transcript access + scope-aware Tier-1 + `CheckResult` (P2+P4 applied) | `6de3766` | ✅ done, Fable review clean (0 findings above Minor) |
+| 2 | Tier-2 full-transcript judge + CheckResults + per-check NOANSWER (+ evidence-vs-assistant-turns-only, `_normalize` hardening riders) | — | ✅ done, Fable review clean after 1 fix round (floor-branch test) |
 
 ### Deferred findings register (Plan #2a)
 
@@ -354,5 +355,14 @@ per verified task (user, 2026-07-24); push/PR ask-first.
       a comment. *(minor)*
 - [ ] Multi-value check label convention `contains:a|b` — confirm validate-pack reporting
       (Task 9) uses the same convention. *(minor, tagged Task 9)*
+- [ ] Tier-2 unicode-drift test passes under old code too (0.6-overlap fallback at exactly 3/5)
+      — regression pin only; a discriminating case would pin the unicode strip itself. *(minor)*
+- [ ] Tier-2 `explanation` string omits non-required misses ("all classifier checks passed"
+      while metadata records a miss) — plan-mandated reference code, cosmetic; metadata is
+      authoritative. *(minor)*
+- [ ] INTERIM (must close in Task 3): `run.py` still gates per-epoch on `Score.value ==
+      CORRECT`, so a non-required miss counts as a trial pass and NOANSWER conflates with fail
+      until Task 3's metadata-driven reducer lands — Task 3 review must confirm this window
+      closes. *(tagged Task 3)*
 
 ## Plan #3 — `discover` + flywheel *(not started)*
