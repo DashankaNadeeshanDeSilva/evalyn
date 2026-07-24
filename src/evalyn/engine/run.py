@@ -38,6 +38,9 @@ class RunArtifact:
     created_at: str
     probes: list[ProbeResult]
     log_path: str
+    # True when the run was allowed past a missing/stale judge calibration via
+    # --allow-uncalibrated: rubric-check scores in this artifact are untrusted.
+    rubric_scores_untrusted: bool = False
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -106,8 +109,10 @@ def _reduce_log_to_probes(log, pack: Pack) -> list[ProbeResult]:
 
 
 def run_gate(pack: Pack, judge_model: str = "mockllm/model",
-             log_dir: str = "runs/logs") -> RunArtifact:
-    task = build_task(pack, judge_model=judge_model)
+             log_dir: str = "runs/logs", rubric_judge_model: str | None = None,
+             rubric_scores_untrusted: bool = False) -> RunArtifact:
+    task = build_task(pack, judge_model=judge_model,
+                      rubric_judge_model=rubric_judge_model)
     logs = inspect_eval(task, model="mockllm/model", log_dir=log_dir, display="none")
     log = logs[0]
     if log.status != "success":
@@ -122,6 +127,7 @@ def run_gate(pack: Pack, judge_model: str = "mockllm/model",
         created_at=datetime.now(timezone.utc).isoformat(),
         probes=probes,
         log_path=str(log.location) if log.location else log_dir,
+        rubric_scores_untrusted=rubric_scores_untrusted,
     )
     out_dir = Path("runs")
     out_dir.mkdir(exist_ok=True)

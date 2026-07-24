@@ -342,7 +342,8 @@ per verified task (user, 2026-07-24); push/PR ask-first.
 | 1 | Transcript access + scope-aware Tier-1 + `CheckResult` (P2+P4 applied) | `6de3766` | ✅ done, Fable review clean (0 findings above Minor) |
 | 2 | Tier-2 full-transcript judge + CheckResults + per-check NOANSWER (+ evidence-vs-assistant-turns-only, `_normalize` hardening riders) | `65a36a5` | ✅ done, Fable review clean after 1 fix round (floor-branch test) |
 | 3 | `aggregate_trial` (locked weighted formula) + metadata-driven reducer + `ProbeResult` reshape + gate bands on mean trial score — **design-gap #2 closed at engine level** | `a310844` | ✅ done, Fable review clean after 1 fix round (contract-literal `required_pass`, den==0 pin, corrupt-JSON diagnosis) |
-| 4 | Tier-3 G-Eval rubric scorer (P1 per-criterion 1–5, k=3 medians, spread≥2 ⇒ unsure, cached steps, hash recorded, family-match warning) | — | ✅ done, Fable review clean (0 findings above Minor) |
+| 4 | Tier-3 G-Eval rubric scorer (P1 per-criterion 1–5, k=3 medians, spread≥2 ⇒ unsure, cached steps, hash recorded, family-match warning) | `53c58ee` | ✅ done, Fable review clean (0 findings above Minor) |
+| 5 | Calibration harness + `evalyn calibrate` + fail-closed gate (±1 per anchor×criterion, ≥85%, locked staleness incl. sub-threshold-record rejection, `--allow-uncalibrated` loud + untrusted-marked, steps-cache atomic write + pre-warm) | — | ✅ done, Fable review clean after 1 fix round (unmatched-label reporting + exact-0.85 boundary pins) |
 
 ### Deferred findings register (Plan #2a)
 
@@ -374,12 +375,18 @@ per verified task (user, 2026-07-24); push/PR ask-first.
 - [ ] `rubric: None` on a rubric check fails loud only at scoring time (mid-eval
       FileNotFoundError) — static rubric-ref validation belongs with Task 9's exclusivity
       checks; also document `##`-headings-as-criteria for pack authors. *(minor, tagged Task 9)*
-- [ ] `grading_steps` cache write non-atomic — concurrent first-time samples may grade against
-      divergent steps within one run (plan-mandated code); add async lock or pre-warm once per
-      rubric. *(minor, tagged Task 5 dispatch)*
+- [x] ~~`grading_steps` cache write non-atomic~~ — **CLOSED in Task 5** (atomic
+      `mkstemp`+`os.replace` write + calibrate pre-warms once per rubric; both test-pinned).
 - [ ] `RubricScore.score/.passed` guard with bare `assert` (vanishes under `-O`) — raise
       ValueError instead. *(minor, final review)*
 - [ ] `_median` int-truncates .5 at even k (irrelevant at k=3); `_parse` tolerates extra
       unlisted criteria (undocumented leniency). *(minor)*
+- [ ] Calibrate CLI: malformed anchor YAML (missing `rubric`/`transcript`) raises raw KeyError;
+      missing rubric file raises FileNotFoundError traceback — map both to setup-error exit 2.
+      *(minor, tagged Task 12)*
+- [ ] `run_calibration` `asyncio.gather` has no concurrency cap — bound it before the live-judge
+      run. *(minor, tagged Task 11 checkpoint)*
+- [ ] `agreement()` public function unused by `run_calibration` (inline pooling; only
+      `_within_one` shared) — dead-path drift risk. *(minor, final review)*
 
 ## Plan #3 — `discover` + flywheel *(not started)*

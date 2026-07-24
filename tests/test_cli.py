@@ -290,3 +290,165 @@ def test_gate_warns_on_probes_missing_from_current(monkeypatch, tmp_path):
     warning_line = next(ln for ln in result.stdout.splitlines() if "dropped-probe" in ln)
     assert warning_line.startswith("warning:")
     assert "kept-probe" not in warning_line
+
+
+# ------------------------------------------------- calibrate + fail-closed gate
+
+TONE_RUBRIC = "# Tone\nCalm and professional.\n"
+
+
+def _write_rubric_pack(tmp_path: Path, *, anchors: bool = True) -> str:
+    """Pack with one required rubric check (and optionally one labeled anchor)."""
+    pack_dir = tmp_path / "rpack"
+    (pack_dir / "probes").mkdir(parents=True)
+    (pack_dir / "rubrics").mkdir()
+    (pack_dir / "target.yaml").write_text(
+        "name: rp\n"
+        "sessions:\n"
+        "  open: { method: POST, path: /session }\n"
+        "  message: { method: POST, path: /chat }\n"
+        "env: { base_url: http://localhost:8899 }\n"
+        "allowlist: [http://localhost:8899]\n")
+    (pack_dir / "rubrics" / "tone.md").write_text(TONE_RUBRIC)
+    (pack_dir / "probes" / "p.yaml").write_text(
+        "- id: p1\n  category: c\n  turns: [hi]\n  checks:\n"
+        "    - { type: rubric, rubric: tone, required: true }\n")
+    if anchors:
+        (pack_dir / "anchors").mkdir()
+        (pack_dir / "anchors" / "a1.yaml").write_text(
+            "rubric: tone\ntranscript: |\n  User: hi\n  Assistant: hello\n"
+            "scores:\n  Tone: 4\n")
+    return str(pack_dir)
+
+
+def _stub_calibration(monkeypatch, overall: float, unmatched: dict | None = None):
+    from evalyn.engine.calibrate import CalibrationResult
+
+    async def fake(pack, judge_model, cache_dir, k=3):
+        return CalibrationResult(overall=overall,
+                                 per_criterion={"tone:Tone": overall}, anchors=1,
+                                 unmatched=unmatched or {})
+
+    monkeypatch.setattr("evalyn.engine.calibrate.run_calibration", fake)
+
+
+def test_calibrate_exit_0_and_record_written_when_agreement_passes(monkeypatch, tmp_path):
+    pack_dir = _write_rubric_pack(tmp_path)
+    _stub_calibration(monkeypatch, 1.0)
+    result = runner.invoke(app, ["calibrate", "--target", pack_dir])
+    assert result.exit_code == 0
+    assert "tone:Tone: 100%" in result.stdout
+    assert "overall agreement: 100%" in result.stdout
+    rec = json.loads((Path(pack_dir) / "calibration.json").read_text())
+    assert rec["agreement"] == 1.0
+    assert "tone" in rec["rubric_hashes"]
+
+
+def test_calibrate_exit_0_at_exact_threshold(monkeypatch, tmp_path):
+    # boundary lock: agreement == 0.85 exactly is a PASS (>= threshold)
+    pack_dir = _write_rubric_pack(tmp_path)
+    _stub_calibration(monkeypatch, 0.85)
+    result = runner.invoke(app, ["calibrate", "--target", pack_dir])
+    assert result.exit_code == 0
+
+
+def test_calibrate_warns_about_unmatched_criterion_labels(monkeypatch, tmp_path):
+    # a human label matching no rubric criterion must be surfaced, never
+    # silently excluded from the agreement denominator
+    pack_dir = _write_rubric_pack(tmp_path)
+    _stub_calibration(monkeypatch, 1.0, unmatched={"a1": ["Warmth", "ghost"]})
+    result = runner.invoke(app, ["calibrate", "--target", pack_dir])
+    assert result.exit_code == 0
+    assert "warning:" in result.stderr and "a1" in result.stderr
+    assert "Warmth" in result.stderr and "ghost" in result.stderr
+
+
+def test_calibrate_exit_1_below_threshold_still_writes_record(monkeypatch, tmp_path):
+    # record-on-failure is safe ONLY because is_stale rejects sub-threshold
+    # agreement (pinned in tests/engine/test_calibrate.py)
+    pack_dir = _write_rubric_pack(tmp_path)
+    _stub_calibration(monkeypatch, 0.5)
+    result = runner.invoke(app, ["calibrate", "--target", pack_dir])
+    assert result.exit_code == 1
+    assert (Path(pack_dir) / "calibration.json").exists()
+
+
+def test_calibrate_exit_2_when_pack_has_no_anchors(monkeypatch, tmp_path):
+    pack_dir = _write_rubric_pack(tmp_path, anchors=False)
+
+    async def must_not_run(*a, **k):
+        raise AssertionError("run_calibration must not be called without anchors")
+
+    monkeypatch.setattr("evalyn.engine.calibrate.run_calibration", must_not_run)
+    result = runner.invoke(app, ["calibrate", "--target", pack_dir])
+    assert result.exit_code == 2
+    assert "setup error" in result.stderr and "anchor" in result.stderr
+
+
+def test_calibrate_exit_2_on_unloadable_pack(tmp_path):
+    result = runner.invoke(app, ["calibrate", "--target", str(tmp_path / "nowhere")])
+    assert result.exit_code == 2
+
+
+def test_gate_refuses_rubric_checks_without_calibration(monkeypatch, tmp_path):
+    # fail-closed: missing/stale calibration record is a SETUP error (exit 2)
+    pack_dir = _write_rubric_pack(tmp_path)
+
+    def must_not_run(pack, judge_model="mockllm/model", **kwargs):
+        raise AssertionError("run_gate must not run with uncalibrated rubric checks")
+
+    monkeypatch.setattr("evalyn.engine.run.run_gate", must_not_run)
+    result = runner.invoke(app, ["gate", "--target", pack_dir,
+                                 "--baseline", str(tmp_path / "none.json")])
+    assert result.exit_code == 2
+    assert "setup error" in result.stderr
+    assert "evalyn calibrate" in result.stderr
+    assert "--allow-uncalibrated" in result.stderr
+
+
+def test_gate_allow_uncalibrated_warns_loudly_and_marks_artifact(monkeypatch, tmp_path):
+    pack_dir = _write_rubric_pack(tmp_path)
+    art = _artifact([_probe("p1")])
+    seen = {}
+
+    def fake_run(pack, judge_model="mockllm/model", **kwargs):
+        seen.update(kwargs)
+        return art
+
+    monkeypatch.setattr("evalyn.engine.run.run_gate", fake_run)
+    result = runner.invoke(app, ["gate", "--target", pack_dir,
+                                 "--allow-uncalibrated",
+                                 "--rubric-judge-model", "openai/gpt-4o",
+                                 "--baseline", str(tmp_path / "none.json")])
+    assert result.exit_code == evaluate_gate(art, None).exit_code
+    assert "UNCALIBRATED" in result.stderr  # loud, on stderr
+    assert seen["rubric_scores_untrusted"] is True
+    assert seen["rubric_judge_model"] == "openai/gpt-4o"
+
+
+def test_gate_runs_rubric_checks_with_fresh_calibration_record(monkeypatch, tmp_path):
+    from evalyn.engine.calibrate import write_record
+    from evalyn.targets.loader import load_pack
+
+    pack_dir = _write_rubric_pack(tmp_path)
+    pack = load_pack(pack_dir)
+    write_record(pack, 0.9, {"tone:Tone": 0.9}, pack.spec.judge.rubric_model)
+    art = _artifact([_probe("p1")])
+    seen = {}
+
+    def fake_run(pack, judge_model="mockllm/model", **kwargs):
+        seen.update(kwargs)
+        return art
+
+    monkeypatch.setattr("evalyn.engine.run.run_gate", fake_run)
+    result = runner.invoke(app, ["gate", "--target", pack_dir,
+                                 "--baseline", str(tmp_path / "none.json")])
+    assert result.exit_code == evaluate_gate(art, None).exit_code
+    assert "UNCALIBRATED" not in result.stderr
+    assert seen["rubric_scores_untrusted"] is False
+
+
+def test_gate_dry_run_skips_calibration_check(tmp_path):
+    pack_dir = _write_rubric_pack(tmp_path)
+    result = runner.invoke(app, ["gate", "--target", pack_dir, "--dry-run"])
+    assert result.exit_code == 0

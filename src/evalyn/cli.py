@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 import typer
 
 from evalyn.targets.loader import AllowlistError, PackError, load_pack
@@ -11,6 +13,13 @@ app = typer.Typer(help="Evalyn — evaluation agent for LLM-powered products.", 
 def gate(
     target: str = typer.Option(..., "--target", help="Path to a target pack directory."),
     judge_model: str = typer.Option("mockllm/model", "--judge-model"),
+    rubric_judge_model: str = typer.Option(
+        None, "--rubric-judge-model",
+        help="Tier-3 rubric judge model (default: the pack's judge.rubric_model)."),
+    allow_uncalibrated: bool = typer.Option(
+        False, "--allow-uncalibrated",
+        help="Run rubric checks despite a missing/stale calibration record "
+             "(loud warning; rubric scores marked untrusted in the artifact)."),
     baseline: str = typer.Option("runs/baseline.json", "--baseline"),
     update_baseline: bool = typer.Option(False, "--update-baseline"),
     dry_run: bool = typer.Option(False, "--dry-run"),
@@ -47,13 +56,35 @@ def gate(
                    "(scored UNSURE); pass a real --judge-model for classifier scoring",
                    err=True)
 
+    # Fail-closed judge calibration: rubric checks are refused (setup error)
+    # until `evalyn calibrate` has recorded >= threshold agreement for the
+    # current rubrics + judge model, unless --allow-uncalibrated.
+    has_rubric = any(c.type == "rubric" for p in pack.probes for c in p.checks)
+    rubric_untrusted = False
+    if has_rubric and not dry_run:
+        from evalyn.engine.calibrate import is_stale
+
+        rubric_model = rubric_judge_model or pack.spec.judge.rubric_model
+        stale, why = is_stale(pack, rubric_model)
+        if stale and not allow_uncalibrated:
+            typer.echo(f"gate: setup error: rubric checks require calibration ({why}); "
+                       f"run `evalyn calibrate --target {target}` or pass "
+                       f"--allow-uncalibrated", err=True)
+            raise typer.Exit(2)
+        if stale:
+            typer.echo(f"warning: running UNCALIBRATED rubric checks ({why}) — "
+                       f"rubric scores are untrusted", err=True)
+            rubric_untrusted = True
+
     if dry_run:
         typer.echo(f"gate (dry-run): pack '{pack.spec.name}', {len(pack.probes)} probes, "
                    f"target {base_url}, judge {judge_model}. No calls made.")
         raise typer.Exit(0)
 
     try:
-        art = run_mod.run_gate(pack, judge_model=judge_model)
+        art = run_mod.run_gate(pack, judge_model=judge_model,
+                               rubric_judge_model=rubric_judge_model,
+                               rubric_scores_untrusted=rubric_untrusted)
     except Exception as e:  # connection / infra
         typer.echo(f"gate: run error: {e}", err=True)
         raise typer.Exit(2)
@@ -76,6 +107,57 @@ def gate(
     result = evaluate_gate(art, baseline_art)
     typer.echo(result.report_md)
     raise typer.Exit(result.exit_code)
+
+
+@app.command()
+def calibrate(
+    target: str = typer.Option(..., "--target", help="Path to a target pack directory."),
+    rubric_judge_model: str = typer.Option(
+        None, "--rubric-judge-model",
+        help="Tier-3 rubric judge model (default: the pack's judge.rubric_model)."),
+):
+    """Score anchor transcripts with the rubric judge and record agreement vs
+    human labels (committed to <pack>/calibration.json)."""
+    import asyncio
+
+    from evalyn.engine import calibrate as cal
+
+    try:
+        pack = load_pack(target)
+    except PackError as e:
+        typer.echo(f"calibrate: setup error: {e}", err=True)
+        raise typer.Exit(2)
+    if not cal.load_anchors(pack):
+        typer.echo(f"calibrate: setup error: no anchor transcripts found under "
+                   f"{target}/anchors/ — add human-labeled anchors first", err=True)
+        raise typer.Exit(2)
+    model = rubric_judge_model or pack.spec.judge.rubric_model
+    result = asyncio.run(cal.run_calibration(pack, model, cache_dir=Path(target) / ".cache"))
+    for aid in result.skipped:
+        typer.echo(f"warning: anchor {aid!r} skipped — missing/invalid human scores "
+                   f"(need integer 1-5 per criterion)", err=True)
+    for aid in result.unsure:
+        typer.echo(f"warning: anchor {aid!r}: judge UNSURE — counted as disagreement",
+                   err=True)
+    for aid, crits in result.unmatched.items():
+        typer.echo(f"warning: anchor {aid!r}: human label(s) "
+                   f"{', '.join(repr(c) for c in crits)} match no rubric criterion — "
+                   f"excluded from agreement (check for typos vs the rubric headings)",
+                   err=True)
+    if result.anchors == 0:
+        typer.echo("calibrate: setup error: no anchors with usable human scores", err=True)
+        raise typer.Exit(2)
+    for crit, val in result.per_criterion.items():
+        typer.echo(f"  {crit}: {val:.0%}")
+    typer.echo(f"overall agreement: {result.overall:.0%} over {result.anchors} anchor(s), "
+               f"judge {model} (threshold {cal.AGREEMENT_THRESHOLD:.0%})")
+    cal.write_record(pack, result.overall, result.per_criterion, model)
+    if result.overall >= cal.AGREEMENT_THRESHOLD:
+        typer.echo("calibrate: PASS — rubric judge is calibrated for this pack")
+        raise typer.Exit(0)
+    typer.echo("calibrate: FAIL — agreement below threshold; the gate will refuse "
+               "rubric checks until calibration passes", err=True)
+    raise typer.Exit(1)
 
 
 @app.command("validate-pack")

@@ -96,3 +96,27 @@ async def test_grading_steps_unparseable_falls_back_to_raw_rubric(monkeypatch):
     _stub_steps_model(monkeypatch, ["Sure! Here are some steps: 1. vibe check"])
     steps = await grading_steps(RUBRIC, _hash_text(RUBRIC), "mockllm/model", None)
     assert len(steps) == 1 and "First person" in steps[0]
+
+
+async def test_grading_steps_cache_write_is_atomic(monkeypatch, tmp_path):
+    # Task-5 note: concurrent first-time samples must never observe a partial
+    # cache file — the write goes to a temp file then os.replace, leaving no
+    # temp residue behind
+    import os as _os
+
+    from evalyn.scoring import rubrics as r
+    replaced = []
+    real_replace = _os.replace
+
+    def spy_replace(src, dst):
+        replaced.append((str(src), str(dst)))
+        return real_replace(src, dst)
+
+    monkeypatch.setattr(r.os, "replace", spy_replace)
+    _stub_steps_model(monkeypatch, ['["step a"]'])
+    steps = await grading_steps(RUBRIC, _hash_text(RUBRIC), "mockllm/model", tmp_path)
+    cached = list(tmp_path.iterdir())
+    assert len(cached) == 1 and cached[0].suffix == ".json"  # no temp residue
+    import json
+    assert json.loads(cached[0].read_text()) == steps == ["step a"]
+    assert len(replaced) == 1 and replaced[0][1] == str(cached[0])

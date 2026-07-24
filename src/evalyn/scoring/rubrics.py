@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import re
+import tempfile
 from pathlib import Path
 
 from inspect_ai.model import get_model
@@ -63,5 +65,10 @@ async def grading_steps(rubric_text: str, rubric_hash: str, judge_model: str,
     except Exception:
         steps = [rubric_text.strip()[:500]]  # fallback: score against raw rubric
     if cache_file is not None:
-        cache_file.write_text(json.dumps(steps))
+        # atomic write (temp file + os.replace): concurrent first-time samples
+        # must never observe a partially written cache entry
+        fd, tmp = tempfile.mkstemp(dir=cache_file.parent, suffix=".tmp")
+        with os.fdopen(fd, "w") as f:
+            f.write(json.dumps(steps))
+        os.replace(tmp, cache_file)
     return steps
