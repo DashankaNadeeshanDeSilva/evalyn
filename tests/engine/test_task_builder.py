@@ -23,3 +23,50 @@ def test_build_task_runs_and_records_reducers(toy_target, monkeypatch):
     assert "pass_k_1" in reducers
     assert "mean" in reducers
     assert logs[0].status == "success"
+
+
+def _mem_pack(tmp_path, judge=None):
+    from evalyn.targets.loader import Pack
+    from evalyn.targets.schema import Check, JudgeSpec, Probe, TargetSpec
+
+    url = "http://127.0.0.1:8899"
+    sessions = {"open": {"method": "POST", "path": "/session"},
+                "message": {"method": "POST", "path": "/chat"}}
+    spec = TargetSpec(name="t", sessions=sessions, env={"base_url": url},
+                      allowlist=[url], judge=judge or JudgeSpec())
+    probe = Probe(id="p1", category="persona", turns=["hi"],
+                  checks=[Check(type="rubric", rubric="persona")])
+    return Pack(spec=spec, probes=[probe], root=tmp_path)
+
+
+def test_build_task_includes_tier3_scorer_and_rubric_metadata(tmp_path):
+    from inspect_ai._util.registry import registry_info
+
+    task = build_task(_mem_pack(tmp_path), judge_model="mockllm/model")
+    names = [registry_info(s).name for s in task.scorer]
+    assert names == ["evalyn/tier1", "evalyn/tier2", "evalyn/tier3"] or \
+        [n.split("/")[-1] for n in names] == ["tier1", "tier2", "tier3"]
+    # rubric field rides into sample metadata via Check.model_dump()
+    chk = task.dataset[0].metadata["checks"][0]
+    assert chk["type"] == "rubric" and chk["rubric"] == "persona"
+
+
+def test_judge_family_matching_generator_family_warns(tmp_path):
+    import pytest
+    from evalyn.targets.schema import JudgeSpec
+
+    pack = _mem_pack(tmp_path, judge=JudgeSpec(
+        rubric_model="openai/gpt-4o", generator_family="openai"))
+    with pytest.warns(UserWarning, match="family"):
+        build_task(pack, judge_model="mockllm/model")
+
+
+def test_rubric_judge_model_override_avoids_family_warning(tmp_path, recwarn):
+    from evalyn.targets.schema import JudgeSpec
+
+    pack = _mem_pack(tmp_path, judge=JudgeSpec(
+        rubric_model="openai/gpt-4o", generator_family="openai"))
+    build_task(pack, judge_model="mockllm/model",
+               rubric_judge_model="anthropic/claude-3-5-sonnet-latest")
+    assert not [w for w in recwarn.list if issubclass(w.category, UserWarning)
+                and "family" in str(w.message)]

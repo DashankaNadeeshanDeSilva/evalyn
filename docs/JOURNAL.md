@@ -341,7 +341,8 @@ per verified task (user, 2026-07-24); push/PR ask-first.
 |------|------|---------|--------|
 | 1 | Transcript access + scope-aware Tier-1 + `CheckResult` (P2+P4 applied) | `6de3766` | ✅ done, Fable review clean (0 findings above Minor) |
 | 2 | Tier-2 full-transcript judge + CheckResults + per-check NOANSWER (+ evidence-vs-assistant-turns-only, `_normalize` hardening riders) | `65a36a5` | ✅ done, Fable review clean after 1 fix round (floor-branch test) |
-| 3 | `aggregate_trial` (locked weighted formula) + metadata-driven reducer + `ProbeResult` reshape + gate bands on mean trial score — **design-gap #2 closed at engine level** | — | ✅ done, Fable review clean after 1 fix round (contract-literal `required_pass`, den==0 pin, corrupt-JSON diagnosis) |
+| 3 | `aggregate_trial` (locked weighted formula) + metadata-driven reducer + `ProbeResult` reshape + gate bands on mean trial score — **design-gap #2 closed at engine level** | `a310844` | ✅ done, Fable review clean after 1 fix round (contract-literal `required_pass`, den==0 pin, corrupt-JSON diagnosis) |
+| 4 | Tier-3 G-Eval rubric scorer (P1 per-criterion 1–5, k=3 medians, spread≥2 ⇒ unsure, cached steps, hash recorded, family-match warning) | — | ✅ done, Fable review clean (0 findings above Minor) |
 
 ### Deferred findings register (Plan #2a)
 
@@ -370,5 +371,15 @@ per verified task (user, 2026-07-24); push/PR ask-first.
       flip) — the single composed e2e flow lands in Task 13. *(tagged Task 13)*
 - [ ] `schema.py` `weight` docstring — **CLOSED in Task 3** (rewritten with real semantics,
       required docstring too). Left here for the record; strike at final review.
+- [ ] `rubric: None` on a rubric check fails loud only at scoring time (mid-eval
+      FileNotFoundError) — static rubric-ref validation belongs with Task 9's exclusivity
+      checks; also document `##`-headings-as-criteria for pack authors. *(minor, tagged Task 9)*
+- [ ] `grading_steps` cache write non-atomic — concurrent first-time samples may grade against
+      divergent steps within one run (plan-mandated code); add async lock or pre-warm once per
+      rubric. *(minor, tagged Task 5 dispatch)*
+- [ ] `RubricScore.score/.passed` guard with bare `assert` (vanishes under `-O`) — raise
+      ValueError instead. *(minor, final review)*
+- [ ] `_median` int-truncates .5 at even k (irrelevant at k=3); `_parse` tolerates extra
+      unlisted criteria (undocumented leniency). *(minor)*
 
 ## Plan #3 — `discover` + flywheel *(not started)*

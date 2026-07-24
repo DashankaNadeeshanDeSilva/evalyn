@@ -2,7 +2,7 @@ from __future__ import annotations
 from typing import Literal
 from pydantic import BaseModel, Field
 
-CheckType = Literal["invariant", "classifier", "contains", "not_contains"]
+CheckType = Literal["invariant", "classifier", "contains", "not_contains", "rubric"]
 
 
 class Check(BaseModel):
@@ -11,6 +11,9 @@ class Check(BaseModel):
     question: str | None = None     # for type=classifier
     expect: bool | None = None      # for type=classifier
     value: str | None = None        # for type=contains/not_contains
+    rubric: str | None = Field(
+        default=None,
+        description="for type=rubric: rubric id (file stem under <pack>/rubrics/)")
     values: list[str] | None = Field(
         default=None,
         description="contains only: multi-value OR form — the check passes if ANY "
@@ -87,6 +90,17 @@ class Budget(BaseModel):
         description="Declarative only: parsed but not yet enforced (Plan #2).")
 
 
+class JudgeSpec(BaseModel):
+    """Tier-3 rubric-judge configuration. Judge != generator family by default
+    (self-preference bias); a family match is a warning, never an error."""
+
+    rubric_model: str = "anthropic/claude-3-5-sonnet-latest"
+    generator_family: str | None = Field(
+        default=None,
+        description="Model family of the TARGET's generator (e.g. 'openai') — "
+                    "used only to warn when the rubric judge is the same family.")
+
+
 class TargetSpec(BaseModel):
     name: str
     description: str = ""
@@ -97,4 +111,5 @@ class TargetSpec(BaseModel):
     invariants: list[Invariant] = Field(default_factory=list)
     state: StateSpec | None = None
     budget: Budget = Field(default_factory=Budget)
+    judge: JudgeSpec = Field(default_factory=JudgeSpec)
     concurrency: int = 4

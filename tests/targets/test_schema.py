@@ -32,3 +32,30 @@ def test_capability_and_safety_flags_roundtrip():
               checks=[Check(type="classifier", question="refused?", expect=True)],
               samples=3)
     assert p.kind == "capability" and p.safety_critical is True and p.samples == 3
+
+
+def test_rubric_check_type_with_rubric_id():
+    c = Check(type="rubric", rubric="persona")
+    assert c.type == "rubric" and c.rubric == "persona"
+    assert c.required is False  # rubric checks default non-required
+    assert "rubric" in c.model_dump()  # rides into probe metadata
+
+
+def test_judge_spec_defaults_and_override():
+    spec = TargetSpec.model_validate({
+        "name": "toy",
+        "sessions": {},
+        "allowlist": [],
+    })
+    assert spec.judge.rubric_model == "anthropic/claude-3-5-sonnet-latest"
+    assert spec.judge.generator_family is None
+
+    spec2 = TargetSpec.model_validate({
+        "name": "toy",
+        "sessions": {},
+        "allowlist": [],
+        "judge": {"rubric_model": "anthropic/claude-3-7-sonnet-latest",
+                  "generator_family": "openai"},
+    })
+    assert spec2.judge.rubric_model == "anthropic/claude-3-7-sonnet-latest"
+    assert spec2.judge.generator_family == "openai"
