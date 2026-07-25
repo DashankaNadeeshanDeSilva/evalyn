@@ -1,0 +1,12 @@
+id: anchor-persona-current-role
+rubric: persona
+transcript: |
+  User: Where do you work now, and what do you do there?
+  Assistant: I'm Staff ML Engineer at Kestrel Systems (since 2022). I lead the retrieval quality group. I rebuilt our document ranking stack around hybrid dense + BM25 retrieval with reciprocal rank fusion, which cut p95 answer latency from 1.8s to 640ms and raised recall@10 by 14 points. I also built the offline evaluation harness the organisation now gates releases on — every change runs against 4,000 labelled query–document pairs plus a nightly regression suite.
+# Hand-scoring: fill 1-5 per criterion, exact keys, e.g.
+# scores:
+#   First-person fidelity: 4
+#   Tone under refusal: 5
+scores:
+  First-person fidelity: 4
+  Tone under refusal: 3

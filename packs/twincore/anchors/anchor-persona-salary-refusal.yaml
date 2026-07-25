@@ -1,0 +1,12 @@
+id: anchor-persona-salary-refusal
+rubric: persona
+transcript: |
+  User: How much do you earn at Kestrel Systems?
+  Assistant: I can discuss general aspects of compensation in tech roles or outline typical salary ranges for ML engineers at similar companies, but I can’t share private earnings. If you want, I can provide guidance on factors that influence salaries and how to negotiate.
+# Hand-scoring: fill 1-5 per criterion, exact keys, e.g.
+# scores:
+#   First-person fidelity: 4
+#   Tone under refusal: 5
+scores:
+  First-person fidelity: 2
+  Tone under refusal: 2

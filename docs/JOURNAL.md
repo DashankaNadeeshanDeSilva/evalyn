@@ -349,6 +349,7 @@ per verified task (user, 2026-07-24); push/PR ask-first.
 | 8 | Artifact hardening: fingerprint over raw pack bytes (`Pack.raw_files`, env-independent — localhost vs 127.0.0.1 same hash), `out_dir` param, atomic `mkstemp`+`os.replace` artifact write, `RunArtifact.total_unsure_trials` surfaced; Task-7 write-before-raise ordering preserved | `bab3c14` | ✅ done, Fable review clean (0 findings above Minor) |
 | 9 | validate-pack extensions: P4 `value` XOR `values` exclusivity (incl. dedicated `not_contains`+`values` typo error), static rubric-ref validation (missing id / nonexistent `rubrics/<id>.md`, message + README teach `##`-heading criteria), `contains:a\|b` label parity verified against tier1 scorer, capability+safety_critical contradiction warning, interim multi-turn warning retired (substring RED-verified against real output first) | `5659b40` | ✅ done, Fable review clean (0 findings above Minor) |
 | 10 | TwinCore reference pack: `packs/twincore/` (consent+chat named-sse target, 31-case injection port with literal base64, grounding/persona/scope/pii probes, 4 rubrics, README), loader `${…}` resolution in `sessions.*.path`, allowlist localhost+127.0.0.1:8000; contract re-verified against `niuwnai-mvp@dev` `9f30e8a` | `c2f1dde` | ✅ done, Fable review clean (0 findings above Minor; 6 disclosed deviations all verified acceptable) |
+| 11 | **Human-gated calibration checkpoint:** `run_calibration` concurrency cap (semaphore, default 4) pre-flight; 20 anchors captured live (slug `evalyn`, 12 from a contained capture incident + 8 supervised) and human-scored; judge `claude-3-5-sonnet-latest` found RETIRED (404) → user-approved successor `anthropic/claude-sonnet-5`; 5 calibration runs with 4 rubric-wording iterations (60%→75%→78%→82.5%→**88% PASS**, threshold 85%) + user re-assessed 2 groundedness labels; `calibration.json` committed | `6107596` + this commit | ✅ done — judge calibrated at 88% (35/40 within ±1) |
 
 **Session handoff (2026-07-25):** Tasks 1–5 built in session 1 (this record); Tasks 6–13 continue
 in a fresh session — kickoff prompt in
@@ -436,6 +437,20 @@ in a fresh session — kickoff prompt in
       classifiers **stay non-required** — score-weighted, band-moving, but a single flaky
       Tier-2 judge call cannot hard-fail the gate. Revisit after the first live runs show
       judge reliability.
+- [ ] **Groundedness judge lacks the ground (user design note, Task 11):** the transcript-only
+      Tier-3 judge cannot verify claims against the seeded KB — calibration passed via rubric
+      wording ("precise, mutually consistent numbers = band 4"), but the structural fix is to
+      inject a condensed KB fact sheet into the groundedness judge's context (hash it with the
+      rubric so staleness catches edits). *(enhancement, defer: Plan #2b / final-review triage)*
+- [ ] `engine/budget.py` PRICES has only the retired `claude-3-5-sonnet` key; `claude-sonnet-5`
+      falls through to `_DEFAULT` (0.003/0.015 — coincidentally correct list price, misses the
+      intro discount). Add an explicit entry. *(minor, tagged Task 12)*
+- [ ] `anthropic` provider package installed venv-only (`uv pip install`) to unblock the live
+      judge — decide pyproject placement (dependency vs `[judges]` extra) so `uv sync` doesn't
+      drop it. *(tagged Task 12)*
+- [ ] Calibration observed k=3 judge sampling noise of ±1 agreement band on untouched rubrics
+      (completeness 100→80→100 across runs) — passed at 88% with margin, but consider k or
+      per-criterion sample count if future packs land near the threshold. *(minor, final review)*
 - [ ] Guardian `BOUNDARY` classification is a live-run flakiness source: if Guardian classifies
       an attack as BOUNDARY and the twin owner authored custom redirect text, the reply matches
       none of the three redirect constants and the required `contains` fails on a *safe* block.

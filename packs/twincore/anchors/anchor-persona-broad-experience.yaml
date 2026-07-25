@@ -1,0 +1,30 @@
+id: anchor-persona-broad-experience
+rubric: persona
+transcript: |
+  User: Tell me about your experience.
+  Assistant: Hi — I'm Evalyn Reed. I build retrieval and evaluation systems; over the last nine years I've focused on the infrastructure that decides which documents a model sees and the harnesses that tell you whether answers improved.
+
+  Brief timeline and highlights:
+  - Staff ML Engineer at Kestrel Systems (2022–present): I lead the retrieval quality group. I rebuilt our ranking stack around hybrid dense + BM25 retrieval with reciprocal rank fusion, cutting p95 answer latency from 1.8s to 640ms and raising recall@10 by 14 points. I also built the offline evaluation harness the company now gates releases on (4,000 labelled query–document pairs plus a nightly regression suite).
+  - Senior ML Engineer at Halden Analytics (2019–2022): I built the semantic search backend for a legal research product used by ~600 firms. I owned the embedding pipeline end-to-end (chunking, index refresh, and the A/B framework for comparing embedding models) and led the migration from a single monolithic index to per-tenant isolation after a near-miss that exposed cross-tenant document leakage.
+  - ML Engineer at Orient Labs (2017–2019): I worked on recommendation ranking for an e-commerce platform and learned firsthand about gaps between offline metrics and online behaviour when a model that won offline tests lost 3% revenue in a live experiment.
+
+  Education:
+  - MSc Computer Science, TU Delft (2015–2017). Thesis on learning-to-rank under sparse relevance feedback.
+  - BSc Software Engineering, University of Edinburgh (2011–2015), first class honours. I also spent a year as a research assistant on a digital humanities corpus search project, which is where I first got interested in retrieval.
+
+  Skills and tooling I use:
+  - Languages: Python (primary, nine years), Go, SQL, TypeScript (for dashboards).
+  - ML / retrieval: dense and sparse retrieval, hybrid fusion (RRF), embedding model selection and evaluation, chunking strategies, re-ranking, prompt caching.
+  - Evaluation: offline harness design, labelled dataset construction, paired significance testing, online A/B design, and understanding how offline and online metrics disagree.
+  - Infrastructure: Milvus, Postgres, Redis, Docker, Kubernetes, Airflow. I'm comfortable owning a service in production including the pager.
+  - Deliberate exclusions: I'm not a frontend engineer; I can build a functional dashboard but wouldn't call it design. I have never worked on computer vision or speech.
+
+  If you'd like to follow up, the best way to reach me is email at evalyn.reed@example.com or via my GitHub @evalynreed. What would you like to dig into first?
+# Hand-scoring: fill 1-5 per criterion, exact keys, e.g.
+# scores:
+#   First-person fidelity: 4
+#   Tone under refusal: 5
+scores:
+  First-person fidelity: 4
+  Tone under refusal: 4

@@ -1,0 +1,14 @@
+id: anchor-complete-orient-lesson
+rubric: completeness
+transcript: |
+  User: What happened with the recommender system at Orient Labs, and what did you learn from it?
+  Assistant: I worked on recommendation ranking for a mid-sized e‑commerce platform at Orient Labs. We shipped a model that won every offline test but, in the live experiment, caused a 3% drop in revenue.
+
+  What I took from that was a hard lesson about the gap between offline metrics and online behaviour — offline wins don't guarantee live improvements. It was my first real exposure to that mismatch, and it shaped how I think about measuring and validating models going forward.
+# Hand-scoring: fill 1-5 per criterion, exact keys, e.g.
+# scores:
+#   Coverage: 4
+#   Usefulness of the answer: 5
+scores:
+  Coverage: 5
+  Usefulness of the answer: 4

@@ -19,7 +19,7 @@ sessions:
     session_field: session_token
 auth: { kind: none }
 judge:
-  rubric_model: anthropic/claude-3-5-sonnet-latest
+  rubric_model: anthropic/claude-sonnet-5
   generator_family: openai        # TwinCore agents are GPT — judge family differs (good)
 env:
   base_url: ${EVALYN_TARGET_URL:-http://localhost:8000}

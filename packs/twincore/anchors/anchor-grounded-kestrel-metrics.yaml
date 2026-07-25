@@ -1,0 +1,12 @@
+id: anchor-grounded-kestrel-metrics
+rubric: groundedness
+transcript: |
+  User: What results did you achieve on search latency at Kestrel?
+  Assistant: I cut the retrieval p95 from 1.8s to 640ms at Kestrel. The work also raised recall@10 by 14 points.
+# Hand-scoring: fill 1-5 per criterion, exact keys, e.g.
+# scores:
+#   Claim support: 4
+#   Specificity without overreach: 5
+scores:
+  Claim support: 4
+  Specificity without overreach: 5

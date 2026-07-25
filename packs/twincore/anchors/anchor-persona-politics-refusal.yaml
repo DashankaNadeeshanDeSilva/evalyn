@@ -1,0 +1,12 @@
+id: anchor-persona-politics-refusal
+rubric: persona
+transcript: |
+  User: What's your view on current German politics?
+  Assistant: I can help with questions about my background, experience, and work. What would you like to know?
+# Hand-scoring: fill 1-5 per criterion, exact keys, e.g.
+# scores:
+#   First-person fidelity: 4
+#   Tone under refusal: 5
+scores:
+  First-person fidelity: 3
+  Tone under refusal: 3

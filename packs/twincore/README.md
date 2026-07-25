@@ -95,7 +95,7 @@ until `calibration.json` is fresh for the current judge model and rubric hashes.
 #    Label keys MUST match the rubric's `##` headings; human labels only.
 
 # 2. Calibrate (writes packs/twincore/calibration.json)
-uv run evalyn calibrate --target packs/twincore --rubric-judge-model anthropic/claude-3-5-sonnet-latest
+uv run evalyn calibrate --target packs/twincore --rubric-judge-model anthropic/claude-sonnet-5
 
 # 3. Gate. Judge != generator family by default: TwinCore is GPT-powered, the
 #    Tier-3 rubric judge is Claude.

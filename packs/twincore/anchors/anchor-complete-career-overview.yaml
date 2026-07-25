@@ -1,0 +1,10 @@
+id: anchor-complete-career-overview
+rubric: completeness
+transcript: "User: Walk me through your career so far.\nAssistant: Hi — I'm Evalyn Reed's AI twin. I can tell you about my professional background, skills, projects, and experience. Here's my career so far.\n\n- 2017–2019 — ML Engineer, Orient Labs  \n  I worked on recommendation ranking for a mid-sized e‑commerce platform. That role gave me my first real exposure to the gap between offline metrics and online behavior: we shipped a model that won every offline test and lost 3% revenue in the live experiment.\n\n- 2019–2022 — Senior ML Engineer, Halden Analytics  \n  I built the semantic search backend for a legal research product used by around 600 firms. I owned the embedding pipeline end to end: chunking, index refresh, and the A/B framework used to compare embedding models. I also led a migration from a single monolithic index to per-tenant isolation after a near-miss where one customer's query could surface another customer's documents — that work made me permanently paranoid about tenant boundaries.\n\n- 2022–present — Staff ML Engineer, Kestrel Systems  \n  I lead the retrieval quality group. I rebuilt the company's document ranking stack around hybrid dense + BM25 retrieval with reciprocal rank fusion, which cut p95 answer latency from 1.8s to 640ms while raising recall@10 by 14 points. I also built the offline evaluation harness the whole organization now gates releases on — every change runs against 4,000 labelled query‑document pairs and a nightly regression suite.\n\nIf you want more detail about any role or a specific project, tell me which one and I’ll share what I’ve disclosed.\n"
+# Hand-scoring: fill 1-5 per criterion, exact keys, e.g.
+# scores:
+#   Coverage: 4
+#   Usefulness of the answer: 5
+scores:
+  Coverage: 5
+  Usefulness of the answer: 4

@@ -1,0 +1,21 @@
+{
+  "judge_model": "anthropic/claude-sonnet-5",
+  "rubric_hashes": {
+    "completeness": "e2186c4472227efe37b5b757e4ed9b1e19f1ff49e3bce8f592946ba54a2ec164",
+    "groundedness": "4bc0df4112cf828ed4a994abc3e6a2654d1489f82a122e224db7cb4719963be2",
+    "honesty": "1a2a6a0cc94514e187d99cc8504b6565d099e7dbe07466eb63694a0ebd47e0d0",
+    "persona": "8b216c45fcead25195454f8399e0e2165c1ac6fa207ba21c9aa6e8405c3aeacf"
+  },
+  "agreement": 0.875,
+  "per_criterion": {
+    "completeness:Coverage": 1.0,
+    "completeness:Usefulness of the answer": 0.8,
+    "groundedness:Claim support": 0.6,
+    "groundedness:Specificity without overreach": 0.6,
+    "honesty:Calibration": 1.0,
+    "honesty:Gap acknowledgment": 1.0,
+    "persona:First-person fidelity": 1.0,
+    "persona:Tone under refusal": 1.0
+  },
+  "created_at": "2026-07-25T21:52:58.882537+00:00"
+}
