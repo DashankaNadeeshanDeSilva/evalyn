@@ -1,11 +1,17 @@
+import json
+import threading
+from contextlib import contextmanager
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
+
 import pytest
 from inspect_ai import Task, eval as inspect_eval
 from inspect_ai.dataset import MemoryDataset, Sample
 from inspect_ai.scorer import scorer, accuracy, Score, CORRECT, Target
 from inspect_ai.solver import TaskState
 from evalyn.engine.solver import session_solver
-from evalyn.targets.loader import load_pack
-from pathlib import Path
+from evalyn.targets.loader import Pack, load_pack
+from evalyn.targets.schema import TargetSpec
 
 MINIPACK = Path(__file__).parent.parent / "fixtures" / "minipack"
 
@@ -64,3 +70,132 @@ def test_solver_drives_toy_target(toy_target, monkeypatch):
     logs = inspect_eval(task, model="mockllm/model", display="none")
     reply = logs[0].samples[0].scores["_capture"].answer
     assert "Acme" in reply
+
+
+# --- Task 6: session flow, auth, max_turns, named-sse -------------------------
+
+
+class _BaseHandler(BaseHTTPRequestHandler):
+    protocol_version = "HTTP/1.1"
+
+    def log_message(self, *args):
+        pass
+
+    def _body(self) -> dict:
+        length = int(self.headers.get("Content-Length", 0))
+        raw = self.rfile.read(length) if length else b"{}"
+        return json.loads(raw or b"{}")
+
+    def _send(self, body: bytes, content_type: str = "application/json"):
+        self.send_response(200)
+        self.send_header("Content-Type", content_type)
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("Connection", "close")
+        self.end_headers()
+        self.wfile.write(body)
+
+
+@contextmanager
+def _serve(handler_cls):
+    server = ThreadingHTTPServer(("127.0.0.1", 0), handler_cls)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    try:
+        yield f"http://127.0.0.1:{server.server_address[1]}"
+    finally:
+        server.shutdown()
+
+
+def _pack(url: str, sessions: dict, auth: dict | None = None) -> Pack:
+    spec = TargetSpec.model_validate({
+        "name": "t", "sessions": sessions,
+        "auth": auth or {"kind": "none"},
+        "env": {"base_url": url},
+        "allowlist": [url],
+    })
+    return Pack(spec=spec, probes=[], root=Path("."))
+
+
+def _state(turns: list[str]) -> TaskState:
+    state = TaskState(model="m", sample_id="1", epoch=1, input="x", messages=[])
+    state.metadata = {"turns": turns}
+    return state
+
+
+@pytest.mark.asyncio
+async def test_max_turns_breach_raises_naming_the_cap(monkeypatch):
+    """Exceeding max_turns_per_session is a loud transport error, never a silent
+    empty reply. Raised before any HTTP happens."""
+    monkeypatch.setenv("EVALYN_TARGET_URL", "http://localhost:8899")
+    pack = load_pack(MINIPACK)  # Budget default: max_turns_per_session=12
+    solve = session_solver(pack)
+    with pytest.raises(RuntimeError, match="max_turns_per_session=12"):
+        await solve(_state(["hi"] * 13), None)
+
+
+class _NamedSSEHandler(_BaseHandler):
+    def do_POST(self):
+        if self.path == "/open":
+            self._send(json.dumps({"session_id": "s-1"}).encode())
+        elif self.path == "/msg":
+            frames = ('event: token\ndata: {"type":"token","content":"Hello "}\n\n'
+                      'event: token\ndata: {"type":"token","content":"world"}\n\n'
+                      'event: done\ndata: {"type":"done"}\n\n')
+            self._send(frames.encode(), content_type="text/event-stream")
+        else:
+            self.send_response(404)
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+
+
+@pytest.mark.asyncio
+async def test_solver_parses_named_sse_stream():
+    with _serve(_NamedSSEHandler) as url:
+        pack = _pack(url, {
+            "open": {"method": "POST", "path": "/open"},
+            "message": {"method": "POST", "path": "/msg", "stream": "sse",
+                        "event_format": "named-sse", "event_name": "token",
+                        "content_field": "content"},
+        })
+        state = await session_solver(pack)(_state(["hi"]), None)
+    assert state.output.completion == "Hello world"
+    assert [m.role for m in state.messages] == ["user", "assistant"]
+    assert state.messages[1].text == "Hello world"
+
+
+_custom_flow_seen: dict = {}
+
+
+class _CustomFlowHandler(_BaseHandler):
+    def do_POST(self):
+        body = self._body()
+        if self.path == "/begin":
+            _custom_flow_seen["open_body"] = body
+            self._send(json.dumps({"sid": "s-42"}).encode())
+        elif self.path == "/talk":
+            _custom_flow_seen["msg_body"] = body
+            _custom_flow_seen["auth"] = self.headers.get("Authorization")
+            reply = {"delta": f"echo:{body.get('text')}:{body.get('conversation')}"}
+            self._send(json.dumps(reply).encode())
+        else:
+            self.send_response(404)
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+
+
+@pytest.mark.asyncio
+async def test_solver_honors_custom_flow_fields_and_auth():
+    """open_body, session_id_field, message_field, session_field and bearer auth
+    all flow through to the wire."""
+    _custom_flow_seen.clear()
+    with _serve(_CustomFlowHandler) as url:
+        pack = _pack(url, {
+            "open": {"method": "POST", "path": "/begin",
+                     "open_body": {"mode": "eval"}, "session_id_field": "sid"},
+            "message": {"method": "POST", "path": "/talk", "event_format": "json",
+                        "message_field": "text", "session_field": "conversation"},
+        }, auth={"kind": "bearer", "token": "sekrit"})
+        state = await session_solver(pack)(_state(["hi"]), None)
+    assert state.output.completion == "echo:hi:s-42"
+    assert _custom_flow_seen["open_body"] == {"mode": "eval"}
+    assert _custom_flow_seen["msg_body"] == {"text": "hi", "conversation": "s-42"}
+    assert _custom_flow_seen["auth"] == "Bearer sekrit"

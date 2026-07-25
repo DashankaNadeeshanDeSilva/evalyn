@@ -1,6 +1,6 @@
 from __future__ import annotations
 from typing import Literal
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 CheckType = Literal["invariant", "classifier", "contains", "not_contains", "rubric"]
 
@@ -54,11 +54,33 @@ class Probe(BaseModel):
     reference: str | None = None    # known-good reply, proves solvability (validate-pack)
 
 
+_EVENT_FORMATS = {"vercel-ai", "raw-sse", "named-sse", "json"}
+
+
 class SessionEndpoint(BaseModel):
     method: str
     path: str
     stream: str | None = None       # "sse" | None
-    event_format: str = "json"      # "vercel-ai" | "raw-sse" | "json"
+    event_format: str = "json"      # one of _EVENT_FORMATS
+    event_name: str | None = None       # named-sse: which event carries content
+    content_field: str | None = None    # named-sse: which JSON field holds the token
+    open_body: dict = Field(default_factory=dict)      # body for the open request
+    session_id_field: str = "session_id"               # response field holding the id
+    message_field: str = "message"                     # request field for the user text
+    session_field: str = "session_id"                  # request field for the session id
+
+    @field_validator("event_format")
+    @classmethod
+    def _known_format(cls, v):
+        if v not in _EVENT_FORMATS:
+            raise ValueError(f"event_format {v!r} not in {sorted(_EVENT_FORMATS)}")
+        return v
+
+
+class AuthSpec(BaseModel):
+    kind: Literal["none", "bearer", "header"] = "none"
+    token: str | None = None
+    header_name: str | None = None
 
 
 class StateCheck(BaseModel):
@@ -78,16 +100,15 @@ class Invariant(BaseModel):
 
 
 class Budget(BaseModel):
-    """Run budget caps. Declarative only for now: both fields are parsed and
-    validated but not yet enforced anywhere — the enforcement consumers arrive
-    in Plan #2. Declared caps do not stop or bound a run today."""
+    """Run budget caps."""
 
     max_usd_per_run: float = Field(
         default=5.0,
         description="Declarative only: parsed but not yet enforced (Plan #2).")
     max_turns_per_session: int = Field(
         default=12,
-        description="Declarative only: parsed but not yet enforced (Plan #2).")
+        description="Enforced by the session solver: a probe with more turns "
+                    "than this cap fails loudly (RuntimeError) before any HTTP.")
 
 
 class JudgeSpec(BaseModel):
@@ -105,7 +126,7 @@ class TargetSpec(BaseModel):
     name: str
     description: str = ""
     sessions: dict[str, SessionEndpoint]
-    auth: dict = Field(default_factory=lambda: {"kind": "none"})
+    auth: AuthSpec = Field(default_factory=AuthSpec)
     env: dict[str, str] = Field(default_factory=dict)
     allowlist: list[str]
     invariants: list[Invariant] = Field(default_factory=list)
