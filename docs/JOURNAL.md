@@ -347,7 +347,8 @@ per verified task (user, 2026-07-24); push/PR ask-first.
 | 6 | Solver + adapters: generic `named-sse` (configurable event/field), flexible session flow (`open_body`/`session_id_field`/`message_field`/`session_field`), auth headers (none/bearer/header), `max_turns_per_session` loud transport error, stream hardening (`StreamFormatError` on malformed frames, vercel `3:`/`e:` surfaced, raw-sse one-space fidelity, named-sse `\r` strip) — P3 per-`solve()` client applied | `42e4e57` | ✅ done, Fable review clean (0 findings above Minor) |
 | 7 | Budget: `engine/budget.py` (prices, `estimate_cost`, `BudgetExceeded`), post-hoc judge-spend metering via Inspect `model_usage`, `RunArtifact.judge_usd`, artifact written before raise, CLI budget exit 2; fix round added fail-open guards (import canary tests + `RuntimeWarning` "budget cap not enforced" in the except branch) | `d274e8a` | ✅ done, Fable review clean after 1 fix round (fail-open `_judge_usd` guarded) |
 | 8 | Artifact hardening: fingerprint over raw pack bytes (`Pack.raw_files`, env-independent — localhost vs 127.0.0.1 same hash), `out_dir` param, atomic `mkstemp`+`os.replace` artifact write, `RunArtifact.total_unsure_trials` surfaced; Task-7 write-before-raise ordering preserved | `bab3c14` | ✅ done, Fable review clean (0 findings above Minor) |
-| 9 | validate-pack extensions: P4 `value` XOR `values` exclusivity (incl. dedicated `not_contains`+`values` typo error), static rubric-ref validation (missing id / nonexistent `rubrics/<id>.md`, message + README teach `##`-heading criteria), `contains:a\|b` label parity verified against tier1 scorer, capability+safety_critical contradiction warning, interim multi-turn warning retired (substring RED-verified against real output first) | *(pending commit)* | ✅ done, Fable review clean (0 findings above Minor) |
+| 9 | validate-pack extensions: P4 `value` XOR `values` exclusivity (incl. dedicated `not_contains`+`values` typo error), static rubric-ref validation (missing id / nonexistent `rubrics/<id>.md`, message + README teach `##`-heading criteria), `contains:a\|b` label parity verified against tier1 scorer, capability+safety_critical contradiction warning, interim multi-turn warning retired (substring RED-verified against real output first) | `5659b40` | ✅ done, Fable review clean (0 findings above Minor) |
+| 10 | TwinCore reference pack: `packs/twincore/` (consent+chat named-sse target, 31-case injection port with literal base64, grounding/persona/scope/pii probes, 4 rubrics, README), loader `${…}` resolution in `sessions.*.path`, allowlist localhost+127.0.0.1:8000; contract re-verified against `niuwnai-mvp@dev` `9f30e8a` | *(pending commit)* | ✅ done, Fable review clean (0 findings above Minor; 6 disclosed deviations all verified acceptable) |
 
 **Session handoff (2026-07-25):** Tasks 1–5 built in session 1 (this record); Tasks 6–13 continue
 in a fresh session — kickoff prompt in
@@ -426,6 +427,20 @@ in a fresh session — kickoff prompt in
       umask) — style observation, applies to rubrics.py cache too. *(minor)*
 - [ ] Task 8 flagged for later tasks: CLI `--out-dir` not exposed; human-readable gate
       report doesn't print `total_unsure_trials`. *(tagged Task 12 CLI wiring / Task 13)*
+- [ ] **OPEN USER DECISION (Task 11/13):** TwinCore not-in-KB honesty classifiers are
+      **non-required** (brief Step 3 prescribes this) — they contribute weighted score but do
+      not gate. Flip to `required: true` if hallucination-on-unknown must hard-fail the gate.
+- [ ] Guardian `BOUNDARY` classification is a live-run flakiness source: if Guardian classifies
+      an attack as BOUNDARY and the twin owner authored custom redirect text, the reply matches
+      none of the three redirect constants and the required `contains` fails on a *safe* block.
+      Fail-loud by design and README-documented; expect it as a possible Task 11 surprise.
+- [ ] Guardian redirect constants live in 3 places in the pack (`&attack_checks` anchor, the
+      duplicated inline list in `injection-exfil-boundaries`, README quotes) — a constant change
+      is a 3-site edit, not 1. *(minor)*
+- [ ] `tests/packs/test_twincore_validate.py` assumes repo-root cwd (`PACK = "packs/twincore"`)
+      — anchor via `Path(__file__).parents[2]`. *(minor, tagged Task 12 cleanup)*
+- [ ] `pii-direct-ask-contact` is the only pack probe with neither a rubric check nor a
+      `first-person` invariant, unlike its siblings — confirm deliberate. *(minor)*
 - [ ] Task 9 polish: `not_contains`+`values`-without-`value` emits two errors for one
       mistake; `values` sentinel checks mix `is not None` vs truthy between sections;
       README "Also… Also" phrasing; rubric ids used as file stems unsanitized (path-ish

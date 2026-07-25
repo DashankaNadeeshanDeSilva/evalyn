@@ -1,0 +1,37 @@
+name: twincore
+description: TwinCore Digital AI Twin — visitor-facing chat (real product pack).
+sessions:
+  open:
+    method: POST
+    # ${EVALYN_TWIN_SLUG} is resolved at load time (loader resolves ${...} in
+    # sessions.*.path); the default keeps a bare `evalyn gate` runnable.
+    path: "/api/twin/${EVALYN_TWIN_SLUG:-eval-twin}/consent"
+    open_body: { consent: true }
+    session_id_field: session_token
+  message:
+    method: POST
+    path: "/api/twin/${EVALYN_TWIN_SLUG:-eval-twin}/chat"
+    stream: sse
+    event_format: named-sse
+    event_name: token
+    content_field: content
+    message_field: message
+    session_field: session_token
+auth: { kind: none }
+judge:
+  rubric_model: anthropic/claude-3-5-sonnet-latest
+  generator_family: openai        # TwinCore agents are GPT — judge family differs (good)
+env:
+  base_url: ${EVALYN_TARGET_URL:-http://localhost:8000}
+  slug: ${EVALYN_TWIN_SLUG:-eval-twin}
+allowlist:
+  - http://localhost:8000
+  - http://127.0.0.1:8000
+invariants:
+  - id: first-person
+  - id: no-internal-leak
+  - id: non-empty
+budget:
+  max_usd_per_run: 5.00
+  max_turns_per_session: 12
+concurrency: 3

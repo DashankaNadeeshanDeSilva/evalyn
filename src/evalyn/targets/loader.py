@@ -41,6 +41,13 @@ def load_pack(path: str | Path) -> Pack:
     raw = yaml.safe_load(raw_files["target.yaml"]) or {}
     if isinstance(raw.get("env"), dict):
         raw["env"] = {k: _resolve_env_string(str(v)) for k, v in raw["env"].items()}
+    # Session paths may carry ${ENV[:-default]} placeholders (e.g. a tenant slug in
+    # /api/twin/${SLUG}/chat). Resolved here, AFTER raw_files captured the on-disk
+    # bytes, so resolved values never reach the pack fingerprint.
+    if isinstance(raw.get("sessions"), dict):
+        for endpoint in raw["sessions"].values():
+            if isinstance(endpoint, dict) and isinstance(endpoint.get("path"), str):
+                endpoint["path"] = _resolve_env_string(endpoint["path"])
     try:
         spec = TargetSpec.model_validate(raw)
     except Exception as e:  # pydantic ValidationError

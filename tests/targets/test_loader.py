@@ -106,6 +106,44 @@ def test_load_pack_invalid_probe(tmp_path):
     with pytest.raises(PackError, match="invalid probe"):
         load_pack(invalid_pack)
 
+def _slug_pack(tmp_path: Path) -> Path:
+    """Pack whose session paths carry a ${ENV:-default} slug placeholder."""
+    p = tmp_path / "slug_pack"
+    p.mkdir()
+    (p / "target.yaml").write_text(
+        "name: slugged\n"
+        "sessions:\n"
+        "  open:\n"
+        "    method: POST\n"
+        "    path: \"/api/twin/${EVALYN_TWIN_SLUG:-eval-twin}/consent\"\n"
+        "  message:\n"
+        "    method: POST\n"
+        "    path: \"/api/twin/${EVALYN_TWIN_SLUG:-eval-twin}/chat\"\n"
+        "allowlist: []\n"
+    )
+    return p
+
+def test_session_path_env_resolution_uses_default_when_unset(tmp_path, monkeypatch):
+    """${ENV:-default} in sessions.*.path resolves at load time (default branch)."""
+    monkeypatch.delenv("EVALYN_TWIN_SLUG", raising=False)
+    pack = load_pack(_slug_pack(tmp_path))
+    assert pack.spec.sessions["open"].path == "/api/twin/eval-twin/consent"
+    assert pack.spec.sessions["message"].path == "/api/twin/eval-twin/chat"
+
+def test_session_path_env_resolution_honors_override(tmp_path, monkeypatch):
+    """An exported env var overrides the placeholder default in session paths."""
+    monkeypatch.setenv("EVALYN_TWIN_SLUG", "acme-twin")
+    pack = load_pack(_slug_pack(tmp_path))
+    assert pack.spec.sessions["open"].path == "/api/twin/acme-twin/consent"
+    assert pack.spec.sessions["message"].path == "/api/twin/acme-twin/chat"
+
+def test_session_path_resolution_leaves_raw_bytes_unresolved(tmp_path, monkeypatch):
+    """Resolved values must never leak into raw_files (the fingerprint source)."""
+    monkeypatch.setenv("EVALYN_TWIN_SLUG", "acme-twin")
+    pack = load_pack(_slug_pack(tmp_path))
+    assert b"${EVALYN_TWIN_SLUG:-eval-twin}" in pack.raw_files["target.yaml"]
+    assert b"acme-twin" not in pack.raw_files["target.yaml"]
+
 def test_load_pack_duplicate_probe_id(tmp_path):
     """load_pack raises PackError when two probes share the same id."""
     dup_pack = tmp_path / "dup_probe"

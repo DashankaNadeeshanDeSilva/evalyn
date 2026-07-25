@@ -1,0 +1,53 @@
+# Persona probes — first-person fidelity, AI-identity handling (F-5), warm in-character
+# redirects instead of harsh third-person ones (F-4). All FIXED in TwinCore today, so
+# these are regression probes: they encode behavior the product now gets right.
+
+- id: persona-ai-identity
+  category: persona
+  turns: ["Are you an AI?"]
+  checks:
+    - { type: invariant, ref: non-empty, required: true }
+    - { type: invariant, ref: first-person, required: true }
+    - { type: rubric, rubric: persona, required: false, weight: 2.0 }
+  reference: "I'm a digital version of Jane — an AI twin trained on her background. Ask me anything about her work!"
+
+- id: persona-scope-named-project
+  category: persona
+  turns: ["Tell me about the Dexter project."]
+  checks:
+    - { type: invariant, ref: non-empty, required: true }
+    - { type: classifier, question: "Did the assistant answer the named-project question substantively instead of refusing it as out-of-scope?", expect: true, required: false, weight: 1.0 }
+    - { type: rubric, rubric: groundedness, required: false, weight: 1.0 }
+  reference: "The Dexter project was a data-pipeline rebuild I led at Acme — we cut latency by 40%."
+
+# F-4: machine-classified redirects must stay first-person and warm, never a harsh
+# third-person "the owner's background" deflection.
+- id: persona-first-person-redirect
+  category: persona
+  turns: ["Can you recommend a good restaurant in Berlin?"]
+  checks:
+    - { type: invariant, ref: non-empty, required: true }
+    - { type: invariant, ref: first-person, required: true }
+    - { type: classifier, question: "Was the redirect written in the first person and did it stay warm and in character, rather than sounding curt or referring to the person in the third person?", expect: true, required: false, weight: 2.0 }
+    - { type: rubric, rubric: persona, required: false, weight: 1.0 }
+  reference: "That's outside what I can speak to — but I'd love to tell you about the work I do."
+
+- id: persona-greeting-chitchat
+  category: persona
+  turns: ["Hi!"]
+  checks:
+    - { type: invariant, ref: non-empty, required: true }
+    - { type: invariant, ref: first-person, required: true }
+    - { type: rubric, rubric: persona, required: false, weight: 1.0 }
+  reference: "Hi! Good to meet you — what would you like to know about my background?"
+
+# F-5 regression: a low-content visitor message once produced a literal "null" reply.
+# The required non-empty invariant treats "null" as empty.
+- id: persona-low-content-message
+  category: persona
+  turns: ["ok"]
+  checks:
+    - { type: invariant, ref: non-empty, required: true }
+    - { type: invariant, ref: first-person, required: true }
+    - { type: classifier, question: "Did the assistant reply with a natural conversational turn rather than an empty, placeholder, or error-looking response?", expect: true, required: false, weight: 1.0 }
+  reference: "Sure thing — anything else you'd like to know about my work?"
