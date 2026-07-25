@@ -346,7 +346,8 @@ per verified task (user, 2026-07-24); push/PR ask-first.
 | 5 | Calibration harness + `evalyn calibrate` + fail-closed gate (±1 per anchor×criterion, ≥85%, locked staleness incl. sub-threshold-record rejection, `--allow-uncalibrated` loud + untrusted-marked, steps-cache atomic write + pre-warm) | `7d35fe7` | ✅ done, Fable review clean after 1 fix round (unmatched-label reporting + exact-0.85 boundary pins) |
 | 6 | Solver + adapters: generic `named-sse` (configurable event/field), flexible session flow (`open_body`/`session_id_field`/`message_field`/`session_field`), auth headers (none/bearer/header), `max_turns_per_session` loud transport error, stream hardening (`StreamFormatError` on malformed frames, vercel `3:`/`e:` surfaced, raw-sse one-space fidelity, named-sse `\r` strip) — P3 per-`solve()` client applied | `42e4e57` | ✅ done, Fable review clean (0 findings above Minor) |
 | 7 | Budget: `engine/budget.py` (prices, `estimate_cost`, `BudgetExceeded`), post-hoc judge-spend metering via Inspect `model_usage`, `RunArtifact.judge_usd`, artifact written before raise, CLI budget exit 2; fix round added fail-open guards (import canary tests + `RuntimeWarning` "budget cap not enforced" in the except branch) | `d274e8a` | ✅ done, Fable review clean after 1 fix round (fail-open `_judge_usd` guarded) |
-| 8 | Artifact hardening: fingerprint over raw pack bytes (`Pack.raw_files`, env-independent — localhost vs 127.0.0.1 same hash), `out_dir` param, atomic `mkstemp`+`os.replace` artifact write, `RunArtifact.total_unsure_trials` surfaced; Task-7 write-before-raise ordering preserved | *(pending commit)* | ✅ done, Fable review clean (0 findings above Minor) |
+| 8 | Artifact hardening: fingerprint over raw pack bytes (`Pack.raw_files`, env-independent — localhost vs 127.0.0.1 same hash), `out_dir` param, atomic `mkstemp`+`os.replace` artifact write, `RunArtifact.total_unsure_trials` surfaced; Task-7 write-before-raise ordering preserved | `bab3c14` | ✅ done, Fable review clean (0 findings above Minor) |
+| 9 | validate-pack extensions: P4 `value` XOR `values` exclusivity (incl. dedicated `not_contains`+`values` typo error), static rubric-ref validation (missing id / nonexistent `rubrics/<id>.md`, message + README teach `##`-heading criteria), `contains:a\|b` label parity verified against tier1 scorer, capability+safety_critical contradiction warning, interim multi-turn warning retired (substring RED-verified against real output first) | *(pending commit)* | ✅ done, Fable review clean (0 findings above Minor) |
 
 **Session handoff (2026-07-25):** Tasks 1–5 built in session 1 (this record); Tasks 6–13 continue
 in a fresh session — kickoff prompt in
@@ -359,12 +360,13 @@ in a fresh session — kickoff prompt in
 - [ ] `_eval_over_turns` with empty `turns` vacuously passes `all_turns`/`final` — unreachable
       today (tier1 falls back to `[completion]`), but callers added in Tasks 2/4 must keep the
       non-empty guarantee. *(minor, tagged Tasks 2/4 dispatches)*
-- [ ] `not_contains` + `values` typo silently ignored until Task 9's exclusivity validation —
-      Task 9 must cover this exact case. *(minor, tagged Task 9)*
+- [x] ~~`not_contains` + `values` typo silently ignored until Task 9's exclusivity validation~~ —
+      **CLOSED in Task 9** (dedicated error + dedicated test, reviewer-verified).
 - [ ] `any_turn` failure evidence picks the last turn's string (arbitrary but harmless) — add
       a comment. *(minor)*
-- [ ] Multi-value check label convention `contains:a|b` — confirm validate-pack reporting
-      (Task 9) uses the same convention. *(minor, tagged Task 9)*
+- [x] ~~Multi-value check label convention `contains:a|b` — confirm validate-pack reporting
+      uses the same convention~~ — **CLOSED in Task 9** (label + case-insensitivity parity
+      reviewer-verified against tier1.py).
 - [ ] Tier-2 unicode-drift test passes under old code too (0.6-overlap fallback at exactly 3/5)
       — regression pin only; a discriminating case would pin the unicode strip itself. *(minor)*
 - [ ] Tier-2 `explanation` string omits non-required misses ("all classifier checks passed"
@@ -379,9 +381,8 @@ in a fresh session — kickoff prompt in
       flip) — the single composed e2e flow lands in Task 13. *(tagged Task 13)*
 - [ ] `schema.py` `weight` docstring — **CLOSED in Task 3** (rewritten with real semantics,
       required docstring too). Left here for the record; strike at final review.
-- [ ] `rubric: None` on a rubric check fails loud only at scoring time (mid-eval
-      FileNotFoundError) — static rubric-ref validation belongs with Task 9's exclusivity
-      checks; also document `##`-headings-as-criteria for pack authors. *(minor, tagged Task 9)*
+- [x] ~~`rubric: None` fails loud only at scoring time — static rubric-ref validation +
+      `##`-headings docs~~ — **CLOSED in Task 9** (validate-pack errors + README note).
 - [x] ~~`grading_steps` cache write non-atomic~~ — **CLOSED in Task 5** (atomic
       `mkstemp`+`os.replace` write + calibrate pre-warms once per rubric; both test-pinned).
 - [ ] `RubricScore.score/.passed` guard with bare `assert` (vanishes under `-O`) — raise
@@ -425,5 +426,9 @@ in a fresh session — kickoff prompt in
       umask) — style observation, applies to rubrics.py cache too. *(minor)*
 - [ ] Task 8 flagged for later tasks: CLI `--out-dir` not exposed; human-readable gate
       report doesn't print `total_unsure_trials`. *(tagged Task 12 CLI wiring / Task 13)*
+- [ ] Task 9 polish: `not_contains`+`values`-without-`value` emits two errors for one
+      mistake; `values` sentinel checks mix `is not None` vs truthy between sections;
+      README "Also… Also" phrasing; rubric ids used as file stems unsanitized (path-ish
+      ids like `../x` resolve outside `rubrics/` — pre-existing). *(minor)*
 
 ## Plan #3 — `discover` + flywheel *(not started)*

@@ -45,14 +45,28 @@ def test_validate_pack_command_clean(monkeypatch):
     assert "OK" in result.stdout or "passed" in result.stdout.lower()
 
 
-def test_validate_pack_example_multi_turn_safety_warning_still_exit_0(monkeypatch):
-    # interim guard: the example pack's 2-turn safety probe draws a warning,
-    # but warnings never flip the exit code
+def test_validate_pack_warning_still_exit_0(tmp_path, monkeypatch):
+    # warnings never flip the exit code (here: capability + safety_critical)
+    pack_dir = tmp_path / "warnpack"
+    (pack_dir / "probes").mkdir(parents=True)
+    (pack_dir / "target.yaml").write_text(
+        "name: w\nsessions:\n  open: {method: POST, path: /s}\n"
+        "  message: {method: POST, path: /c}\nauth: {kind: none}\n"
+        "env: {base_url: http://localhost:8899}\nallowlist: [http://localhost:8899]\n")
+    (pack_dir / "probes" / "p.yaml").write_text(
+        "- {id: a, category: c, kind: capability, safety_critical: true, turns: [hi],"
+        " checks: [{type: invariant, ref: non-empty, required: true}]}\n")
+    result = runner.invoke(app, ["validate-pack", str(pack_dir)])
+    assert result.exit_code == 0
+    assert "warning:" in result.stdout
+
+
+def test_validate_pack_example_has_no_interim_multi_turn_warning(monkeypatch):
+    # Task 9 retired the interim guard: transcript scoring covers earlier turns now
     monkeypatch.setenv("EVALYN_TARGET_URL", "http://localhost:8899")
     result = runner.invoke(app, ["validate-pack", PACK])
     assert result.exit_code == 0
-    assert "warning:" in result.stdout
-    assert "only the final assistant reply is scored" in result.stdout
+    assert "only the final assistant reply is scored" not in result.stdout
 
 
 def test_validate_pack_exits_1_on_bad_pack(tmp_path):
