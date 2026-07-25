@@ -77,7 +77,10 @@ def _valid_labels(scores: dict) -> bool:
 
 
 async def run_calibration(pack: Pack, judge_model: str,
-                          cache_dir: str | Path | None, k: int = 3) -> CalibrationResult:
+                          cache_dir: str | Path | None, k: int = 3, *,
+                          max_concurrency: int = 4) -> CalibrationResult:
+    if max_concurrency < 1:
+        raise ValueError(f"max_concurrency must be >= 1, got {max_concurrency}")
     anchors = load_anchors(pack)
     skipped = [a.id for a in anchors if not _valid_labels(a.scores)]
     usable = [a for a in anchors if _valid_labels(a.scores)]
@@ -87,10 +90,17 @@ async def run_calibration(pack: Pack, judge_model: str,
     # so first-time samples cannot race to divergent steps within one run.
     for text, rhash in rubrics.values():
         await grading_steps(text, rhash, judge_model, cache)
-    results = await asyncio.gather(*[
-        score_transcript(rubrics[a.rubric][0], rubrics[a.rubric][1], a.transcript,
-                         judge_model, k=k, cache_dir=cache)
-        for a in usable])
+    # Bound judge concurrency: at most max_concurrency anchors in flight at
+    # once (an unbounded burst risks rate-limit failures against a live API).
+    sem = asyncio.Semaphore(max_concurrency)
+
+    async def _score(a: Anchor):
+        async with sem:
+            return await score_transcript(rubrics[a.rubric][0], rubrics[a.rubric][1],
+                                          a.transcript, judge_model, k=k,
+                                          cache_dir=cache)
+
+    results = await asyncio.gather(*[_score(a) for a in usable])
 
     hits: dict[str, int] = {}
     totals: dict[str, int] = {}

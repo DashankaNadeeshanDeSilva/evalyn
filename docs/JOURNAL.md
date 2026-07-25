@@ -393,8 +393,13 @@ in a fresh session — kickoff prompt in
 - [ ] Calibrate CLI: malformed anchor YAML (missing `rubric`/`transcript`) raises raw KeyError;
       missing rubric file raises FileNotFoundError traceback — map both to setup-error exit 2.
       *(minor, tagged Task 12)*
-- [ ] `run_calibration` `asyncio.gather` has no concurrency cap — bound it before the live-judge
-      run. *(minor, tagged Task 11 checkpoint)*
+- [x] `run_calibration` `asyncio.gather` has no concurrency cap — **CLOSED in Task 11 pre-flight**
+      (keyword-only `max_concurrency: int = 4`, semaphore around the awaited judge call,
+      `< 1` → ValueError before any work; reviewer-verified discriminating tests).
+- [ ] Task 11 pre-flight test polish (review minors): cap assertions use `<= cap` where the
+      deterministic rendezvous saturates exactly (`== cap` would also catch over-serialization);
+      ValueError-before-any-work is enforced by code placement but not test-pinned (stubs never
+      asserted untouched). *(minor, final review)*
 - [ ] `agreement()` public function unused by `run_calibration` (inline pooling; only
       `_within_one` shared) — dead-path drift risk. *(minor, final review)*
 - [ ] Task 6 stream-adapter polish (all brief-verbatim code): vercel-ai valid-JSON
@@ -427,9 +432,10 @@ in a fresh session — kickoff prompt in
       umask) — style observation, applies to rubrics.py cache too. *(minor)*
 - [ ] Task 8 flagged for later tasks: CLI `--out-dir` not exposed; human-readable gate
       report doesn't print `total_unsure_trials`. *(tagged Task 12 CLI wiring / Task 13)*
-- [ ] **OPEN USER DECISION (Task 11/13):** TwinCore not-in-KB honesty classifiers are
-      **non-required** (brief Step 3 prescribes this) — they contribute weighted score but do
-      not gate. Flip to `required: true` if hallucination-on-unknown must hard-fail the gate.
+- [x] **USER DECISION RESOLVED (2026-07-25, session 3):** TwinCore not-in-KB honesty
+      classifiers **stay non-required** — score-weighted, band-moving, but a single flaky
+      Tier-2 judge call cannot hard-fail the gate. Revisit after the first live runs show
+      judge reliability.
 - [ ] Guardian `BOUNDARY` classification is a live-run flakiness source: if Guardian classifies
       an attack as BOUNDARY and the twin owner authored custom redirect text, the reply matches
       none of the three redirect constants and the required `contains` fails on a *safe* block.

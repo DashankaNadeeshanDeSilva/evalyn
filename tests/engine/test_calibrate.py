@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import asyncio
 import json
+
+import pytest
 
 from evalyn.engine.calibrate import (
     AGREEMENT_THRESHOLD,
@@ -215,6 +218,60 @@ async def test_run_calibration_prewarms_steps_cache_once_per_rubric(monkeypatch,
     })
     await run_calibration(pack, "mockllm/model", cache_dir=None)
     assert steps_calls["n"] == 2  # once per distinct rubric, not per anchor
+
+
+def _stub_scores_tracking_in_flight(monkeypatch):
+    """Stub score_transcript with an in-flight counter (deterministic: only
+    event-loop yields via sleep(0), no wall-clock timing)."""
+    from evalyn.engine import calibrate as cal
+    state = {"in_flight": 0, "max_in_flight": 0}
+
+    async def fake(rubric_text, rubric_hash, transcript, judge_model, k=3, cache_dir=None):
+        state["in_flight"] += 1
+        state["max_in_flight"] = max(state["max_in_flight"], state["in_flight"])
+        # Yield twice so every unbounded sibling coroutine would enter before
+        # this one exits — an unbounded gather makes max_in_flight == n anchors.
+        await asyncio.sleep(0)
+        await asyncio.sleep(0)
+        state["in_flight"] -= 1
+        return _rubric_score({"voice": 4})
+
+    monkeypatch.setattr(cal, "score_transcript", fake)
+    return state
+
+
+async def test_run_calibration_honors_max_concurrency_cap(monkeypatch, tmp_path):
+    pack = _pack(tmp_path)
+    for i in range(8):
+        _anchor_yaml(tmp_path, f"a{i}", transcript=f"T{i}", scores={"voice": 4})
+    _stub_steps(monkeypatch)
+    state = _stub_scores_tracking_in_flight(monkeypatch)
+    result = await run_calibration(pack, "mockllm/model", cache_dir=None,
+                                   max_concurrency=2)
+    assert result.anchors == 8 and result.overall == 1.0  # behavior unchanged
+    assert 1 <= state["max_in_flight"] <= 2  # never more than the cap in flight
+
+
+async def test_run_calibration_default_cap_is_four(monkeypatch, tmp_path):
+    pack = _pack(tmp_path)
+    for i in range(8):
+        _anchor_yaml(tmp_path, f"a{i}", transcript=f"T{i}", scores={"voice": 4})
+    _stub_steps(monkeypatch)
+    state = _stub_scores_tracking_in_flight(monkeypatch)
+    result = await run_calibration(pack, "mockllm/model", cache_dir=None)
+    assert result.anchors == 8
+    assert 1 <= state["max_in_flight"] <= 4  # unbounded would reach 8
+
+
+async def test_run_calibration_rejects_nonpositive_max_concurrency(monkeypatch, tmp_path):
+    pack = _pack(tmp_path)
+    _anchor_yaml(tmp_path, "a1", transcript="T1", scores={"voice": 4})
+    _stub_steps(monkeypatch)
+    _stub_scores(monkeypatch, {"T1": _rubric_score({"voice": 4})})
+    for bad in (0, -1):
+        with pytest.raises(ValueError, match="max_concurrency"):
+            await run_calibration(pack, "mockllm/model", cache_dir=None,
+                                  max_concurrency=bad)
 
 
 async def test_run_calibration_no_usable_anchors(monkeypatch, tmp_path):
