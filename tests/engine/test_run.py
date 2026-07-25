@@ -1,3 +1,5 @@
+import json
+import shutil
 from pathlib import Path
 
 import pytest
@@ -175,11 +177,93 @@ def test_run_gate_produces_artifact_with_per_probe_trial_stats(toy_target, monke
     assert roundtrip == art
 
 
-def test_fingerprint_is_stable_and_pack_sensitive(monkeypatch):
+def test_fingerprint_is_stable_and_pack_sensitive(monkeypatch, tmp_path):
     monkeypatch.setenv("EVALYN_TARGET_URL", "http://localhost:8899")
     pack = load_pack(EXAMPLE)
     assert pack_fingerprint(pack) == pack_fingerprint(load_pack(EXAMPLE))
-    # sensitive to probe changes
-    mutated = load_pack(EXAMPLE)
-    mutated.probes[0].samples += 1
-    assert pack_fingerprint(mutated) != pack_fingerprint(pack)
+    # sensitive to probe FILE changes (the fingerprint is over raw pack bytes)
+    copy = tmp_path / "example"
+    shutil.copytree(REPO_EXAMPLE, copy)
+    probe_file = sorted((copy / "probes").glob("*.yaml"))[0]
+    probe_file.write_bytes(probe_file.read_bytes() + b"\n# mutated\n")
+    assert pack_fingerprint(load_pack(copy)) != pack_fingerprint(pack)
+
+
+# --- Task 8: raw-bytes fingerprint, out_dir, atomic write, NOANSWER totals ---
+
+_TWO_ENV_TARGET_YAML = """\
+name: mini
+sessions:
+  message: { method: POST, path: /chat }
+env:
+  base_url: ${EVALYN_TARGET_URL:-http://localhost:8899}
+allowlist:
+  - http://localhost:8899
+  - http://127.0.0.1:8899
+"""
+
+_TWO_ENV_PROBE_YAML = """\
+- id: p1
+  category: misc
+  kind: regression
+  turns: ["hi"]
+  checks:
+    - { type: contains, value: "x" }
+  samples: 1
+"""
+
+
+@pytest.fixture
+def tmp_pack_two_envs(tmp_path, monkeypatch):
+    """The SAME pack files loaded under two env resolutions of base_url."""
+    src = tmp_path / "pack"
+    (src / "probes").mkdir(parents=True)
+    (src / "target.yaml").write_text(_TWO_ENV_TARGET_YAML)
+    (src / "probes" / "p.yaml").write_text(_TWO_ENV_PROBE_YAML)
+    monkeypatch.setenv("EVALYN_TARGET_URL", "http://localhost:8899")
+    p1 = load_pack(src)
+    monkeypatch.setenv("EVALYN_TARGET_URL", "http://127.0.0.1:8899")
+    p2 = load_pack(src)
+    return p1, p2
+
+
+def test_fingerprint_ignores_env_localhost_vs_127(tmp_pack_two_envs):
+    p1, p2 = tmp_pack_two_envs  # identical files, base_url localhost vs 127.0.0.1 via ${ENV}
+    assert pack_fingerprint(p1) == pack_fingerprint(p2)
+
+
+def test_run_gate_out_dir_writes_artifact_there_not_cwd(toy_target, monkeypatch,
+                                                        tmp_path):
+    monkeypatch.setenv("EVALYN_TARGET_URL", toy_target)
+    monkeypatch.chdir(tmp_path)  # a CWD runs/ write would be visible here
+    pack = load_pack(str(REPO_EXAMPLE))
+    out = tmp_path / "artifacts"
+    art = run_gate(pack, judge_model="mockllm/model",
+                   log_dir=str(tmp_path / "logs"), out_dir=str(out))
+    [written] = list(out.iterdir())  # exactly one file — no temp-file leftovers
+    assert written.suffix == ".json"
+    assert json.loads(written.read_text())["pack_name"] == art.pack_name
+    assert not (tmp_path / "runs").exists()  # nothing leaked into CWD runs/
+
+
+def test_artifact_total_unsure_trials_sums_probe_unsure(monkeypatch, tmp_path):
+    monkeypatch.setenv("EVALYN_TARGET_URL", "http://localhost:8899")
+    pack = load_pack(str(REPO_EXAMPLE))
+    unsure = _cr("classifier:0", 2, True, None, 0.0, unsure=True)
+    samples = [
+        _FakeSample("injection-trust-pivot", 1, {"tier2": _FakeScore({"checks": [unsure]})}),
+        _FakeSample("injection-trust-pivot", 2, {"tier2": _FakeScore({"checks": [unsure]})}),
+        _FakeSample("injection-control-benign", 1, {"tier2": _FakeScore({"checks": [unsure]})}),
+    ]
+    fake = _FakeLog(samples)
+    fake.status = "success"
+    fake.location = None
+    monkeypatch.setattr("evalyn.engine.run.inspect_eval", lambda *a, **k: [fake])
+    monkeypatch.setattr("evalyn.engine.run._judge_usd", lambda: 0.0)
+    art = run_gate(pack, judge_model="mockllm/model",
+                   log_dir=str(tmp_path / "logs"), out_dir=str(tmp_path / "out"))
+    assert art.total_unsure_trials == 3  # 2 + 1 across probes
+    assert art.total_unsure_trials == sum(p.unsure_trials for p in art.probes)
+    # NOANSWER accounting is surfaced in the serialized artifact too
+    [written] = (tmp_path / "out").glob("*.json")
+    assert json.loads(written.read_text())["total_unsure_trials"] == 3

@@ -345,7 +345,8 @@ per verified task (user, 2026-07-24); push/PR ask-first.
 | 4 | Tier-3 G-Eval rubric scorer (P1 per-criterion 1–5, k=3 medians, spread≥2 ⇒ unsure, cached steps, hash recorded, family-match warning) | `53c58ee` | ✅ done, Fable review clean (0 findings above Minor) |
 | 5 | Calibration harness + `evalyn calibrate` + fail-closed gate (±1 per anchor×criterion, ≥85%, locked staleness incl. sub-threshold-record rejection, `--allow-uncalibrated` loud + untrusted-marked, steps-cache atomic write + pre-warm) | `7d35fe7` | ✅ done, Fable review clean after 1 fix round (unmatched-label reporting + exact-0.85 boundary pins) |
 | 6 | Solver + adapters: generic `named-sse` (configurable event/field), flexible session flow (`open_body`/`session_id_field`/`message_field`/`session_field`), auth headers (none/bearer/header), `max_turns_per_session` loud transport error, stream hardening (`StreamFormatError` on malformed frames, vercel `3:`/`e:` surfaced, raw-sse one-space fidelity, named-sse `\r` strip) — P3 per-`solve()` client applied | `42e4e57` | ✅ done, Fable review clean (0 findings above Minor) |
-| 7 | Budget: `engine/budget.py` (prices, `estimate_cost`, `BudgetExceeded`), post-hoc judge-spend metering via Inspect `model_usage`, `RunArtifact.judge_usd`, artifact written before raise, CLI budget exit 2; fix round added fail-open guards (import canary tests + `RuntimeWarning` "budget cap not enforced" in the except branch) | *(pending commit)* | ✅ done, Fable review clean after 1 fix round (fail-open `_judge_usd` guarded) |
+| 7 | Budget: `engine/budget.py` (prices, `estimate_cost`, `BudgetExceeded`), post-hoc judge-spend metering via Inspect `model_usage`, `RunArtifact.judge_usd`, artifact written before raise, CLI budget exit 2; fix round added fail-open guards (import canary tests + `RuntimeWarning` "budget cap not enforced" in the except branch) | `d274e8a` | ✅ done, Fable review clean after 1 fix round (fail-open `_judge_usd` guarded) |
+| 8 | Artifact hardening: fingerprint over raw pack bytes (`Pack.raw_files`, env-independent — localhost vs 127.0.0.1 same hash), `out_dir` param, atomic `mkstemp`+`os.replace` artifact write, `RunArtifact.total_unsure_trials` surfaced; Task-7 write-before-raise ordering preserved | *(pending commit)* | ✅ done, Fable review clean (0 findings above Minor) |
 
 **Session handoff (2026-07-25):** Tasks 1–5 built in session 1 (this record); Tasks 6–13 continue
 in a fresh session — kickoff prompt in
@@ -414,5 +415,15 @@ in a fresh session — kickoff prompt in
       guarded by import-canary tests + loud `RuntimeWarning`; real `model_usage → estimate_cost`
       seam still never exercised with real billable usage (mockllm reports none). *(minor,
       final review / Task 11 live run will exercise it)*
+- [ ] Hand-built `Pack` with empty `raw_files` hashes to one constant fingerprint (two
+      different in-memory packs false-match) — only reachable outside `load_pack`; a
+      warn/raise on empty `raw_files` would be fail-closed. *(minor, final review)*
+- [ ] Older `run_gate` tests omit `out_dir` and write CWD `runs/` during test runs
+      (test_budget.py, test_e2e_gate.py, test_run.py) — thread `out_dir=tmp_path` through.
+      *(minor, tagged Task 12/13 cleanup)*
+- [ ] Atomic-write house pattern leaves artifacts/caches mode 0600 (mkstemp default, not
+      umask) — style observation, applies to rubrics.py cache too. *(minor)*
+- [ ] Task 8 flagged for later tasks: CLI `--out-dir` not exposed; human-readable gate
+      report doesn't print `total_unsure_trials`. *(tagged Task 12 CLI wiring / Task 13)*
 
 ## Plan #3 — `discover` + flywheel *(not started)*

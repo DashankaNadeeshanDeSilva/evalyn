@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
+import tempfile
 import warnings
 from collections import defaultdict
 from dataclasses import asdict, dataclass, field
@@ -49,6 +51,10 @@ class RunArtifact:
     # what a run may have spent before its results are trusted, and a breach
     # raises BudgetExceeded AFTER this artifact is written.
     judge_usd: float = 0.0
+    # NOANSWER accounting: total trials (across all probes) whose required
+    # checks came back unsure — judge-infra failures, distinct from product
+    # failures. Sum of per-probe `unsure_trials`.
+    total_unsure_trials: int = 0
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -65,12 +71,18 @@ class RunArtifact:
 
 
 def pack_fingerprint(pack: Pack) -> str:
-    payload = {
-        "spec": pack.spec.model_dump(),
-        "probes": sorted((p.model_dump() for p in pack.probes), key=lambda x: x["id"]),
-    }
-    blob = json.dumps(payload, sort_keys=True, default=str).encode()
-    return hashlib.sha256(blob).hexdigest()
+    """SHA-256 over the RAW pack file bytes (target.yaml + probes + rubrics).
+
+    Hashing raw bytes — not a re-serialization of the resolved spec — keeps the
+    fingerprint independent of ${ENV} resolution (e.g. base_url localhost vs
+    127.0.0.1), so the same pack files always fingerprint identically.
+    """
+    h = hashlib.sha256()
+    for name in sorted(getattr(pack, "raw_files", {})):
+        h.update(name.encode())
+        h.update(b"\0")
+        h.update(pack.raw_files[name])
+    return h.hexdigest()
 
 
 def _reduce_log_to_probes(log, pack: Pack) -> list[ProbeResult]:
@@ -132,7 +144,8 @@ def _judge_usd() -> float:
 
 def run_gate(pack: Pack, judge_model: str = "mockllm/model",
              log_dir: str = "runs/logs", rubric_judge_model: str | None = None,
-             rubric_scores_untrusted: bool = False) -> RunArtifact:
+             rubric_scores_untrusted: bool = False,
+             out_dir: str = "runs") -> RunArtifact:
     task = build_task(pack, judge_model=judge_model,
                       rubric_judge_model=rubric_judge_model)
     logs = inspect_eval(task, model="mockllm/model", log_dir=log_dir, display="none")
@@ -150,15 +163,19 @@ def run_gate(pack: Pack, judge_model: str = "mockllm/model",
         probes=probes,
         log_path=str(log.location) if log.location else log_dir,
         rubric_scores_untrusted=rubric_scores_untrusted,
+        total_unsure_trials=sum(p.unsure_trials for p in probes),
     )
     art.judge_usd = _judge_usd()
     # Write the artifact BEFORE any budget check so a partial/complete artifact
-    # survives a budget breach for inspection.
-    out_dir = Path("runs")
-    out_dir.mkdir(exist_ok=True)
+    # survives a budget breach for inspection. Atomic temp-then-rename so a
+    # crash mid-write never leaves a torn artifact behind.
+    out_path = Path(out_dir)
+    out_path.mkdir(parents=True, exist_ok=True)
     stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S")
-    (out_dir / f"{stamp}-{pack.spec.name}.json").write_text(
-        json.dumps(art.to_dict(), indent=2, default=str))
+    fd, tmp = tempfile.mkstemp(dir=out_path, suffix=".tmp")
+    with os.fdopen(fd, "w") as f:
+        f.write(json.dumps(art.to_dict(), indent=2, default=str))
+    os.replace(tmp, out_path / f"{stamp}-{pack.spec.name}.json")
     # Post-hoc budget gate: there is no mid-run stop, so the run may already
     # have overshot the cap — the breach is raised after metering.
     cap = pack.spec.budget.max_usd_per_run
