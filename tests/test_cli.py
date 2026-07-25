@@ -106,6 +106,22 @@ def test_gate_exit_code_2_on_run_error(monkeypatch, tmp_path):
     assert "run error" in result.stderr  # not a usage error
 
 
+def test_gate_exit_2_with_budget_message_on_budget_exceeded(monkeypatch, tmp_path):
+    monkeypatch.setenv("EVALYN_TARGET_URL", "http://localhost:8899")
+
+    def over_budget(pack, judge_model="mockllm/model", **kwargs):
+        from evalyn.engine.budget import BudgetExceeded
+        raise BudgetExceeded("judge spend $7.5000 exceeded max_usd_per_run $5.00 "
+                             "(partial artifact written)")
+
+    monkeypatch.setattr("evalyn.engine.run.run_gate", over_budget)
+    result = runner.invoke(app, ["gate", "--target", PACK,
+                                 "--baseline", str(tmp_path / "none.json")])
+    assert result.exit_code == 2
+    assert "budget" in result.stderr.lower()
+    assert "max_usd_per_run" in result.stderr
+
+
 def test_gate_dry_run_makes_no_calls(monkeypatch):
     monkeypatch.setenv("EVALYN_TARGET_URL", "http://localhost:8899")
 

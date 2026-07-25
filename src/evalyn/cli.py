@@ -27,6 +27,7 @@ def gate(
     """Run the deterministic probe suite against a target and diff vs baseline."""
     from evalyn.engine import run as run_mod
     from evalyn.engine.baseline import load_baseline, save_baseline
+    from evalyn.engine.budget import BudgetExceeded
     from evalyn.engine.gate import evaluate_gate
     from evalyn.engine.validate import validate_pack
     from evalyn.targets.loader import resolve_base_url
@@ -85,6 +86,10 @@ def gate(
         art = run_mod.run_gate(pack, judge_model=judge_model,
                                rubric_judge_model=rubric_judge_model,
                                rubric_scores_untrusted=rubric_untrusted)
+    except BudgetExceeded as e:
+        typer.echo(f"gate: budget exceeded: {e} — partial run artifact is on "
+                   f"disk under runs/ for inspection", err=True)
+        raise typer.Exit(2)
     except Exception as e:  # connection / infra
         typer.echo(f"gate: run error: {e}", err=True)
         raise typer.Exit(2)

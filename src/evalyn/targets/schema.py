@@ -104,7 +104,11 @@ class Budget(BaseModel):
 
     max_usd_per_run: float = Field(
         default=5.0,
-        description="Declarative only: parsed but not yet enforced (Plan #2).")
+        description="Cap on Evalyn's OWN judge-model spend (Tier-2/3 LLM calls; "
+                    "target-side HTTP spend is not counted). Metered POST-HOC "
+                    "after the eval returns — a run can overshoot; a breach "
+                    "raises BudgetExceeded after the run artifact is written. "
+                    "0 disables the check.")
     max_turns_per_session: int = Field(
         default=12,
         description="Enforced by the session solver: a probe with more turns "

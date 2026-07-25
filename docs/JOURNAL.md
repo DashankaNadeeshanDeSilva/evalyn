@@ -344,6 +344,8 @@ per verified task (user, 2026-07-24); push/PR ask-first.
 | 3 | `aggregate_trial` (locked weighted formula) + metadata-driven reducer + `ProbeResult` reshape + gate bands on mean trial score — **design-gap #2 closed at engine level** | `a310844` | ✅ done, Fable review clean after 1 fix round (contract-literal `required_pass`, den==0 pin, corrupt-JSON diagnosis) |
 | 4 | Tier-3 G-Eval rubric scorer (P1 per-criterion 1–5, k=3 medians, spread≥2 ⇒ unsure, cached steps, hash recorded, family-match warning) | `53c58ee` | ✅ done, Fable review clean (0 findings above Minor) |
 | 5 | Calibration harness + `evalyn calibrate` + fail-closed gate (±1 per anchor×criterion, ≥85%, locked staleness incl. sub-threshold-record rejection, `--allow-uncalibrated` loud + untrusted-marked, steps-cache atomic write + pre-warm) | `7d35fe7` | ✅ done, Fable review clean after 1 fix round (unmatched-label reporting + exact-0.85 boundary pins) |
+| 6 | Solver + adapters: generic `named-sse` (configurable event/field), flexible session flow (`open_body`/`session_id_field`/`message_field`/`session_field`), auth headers (none/bearer/header), `max_turns_per_session` loud transport error, stream hardening (`StreamFormatError` on malformed frames, vercel `3:`/`e:` surfaced, raw-sse one-space fidelity, named-sse `\r` strip) — P3 per-`solve()` client applied | `42e4e57` | ✅ done, Fable review clean (0 findings above Minor) |
+| 7 | Budget: `engine/budget.py` (prices, `estimate_cost`, `BudgetExceeded`), post-hoc judge-spend metering via Inspect `model_usage`, `RunArtifact.judge_usd`, artifact written before raise, CLI budget exit 2; fix round added fail-open guards (import canary tests + `RuntimeWarning` "budget cap not enforced" in the except branch) | *(pending commit)* | ✅ done, Fable review clean after 1 fix round (fail-open `_judge_usd` guarded) |
 
 **Session handoff (2026-07-25):** Tasks 1–5 built in session 1 (this record); Tasks 6–13 continue
 in a fresh session — kickoff prompt in
@@ -392,5 +394,25 @@ in a fresh session — kickoff prompt in
       run. *(minor, tagged Task 11 checkpoint)*
 - [ ] `agreement()` public function unused by `run_calibration` (inline pooling; only
       `_within_one` shared) — dead-path drift risk. *(minor, final review)*
+- [ ] Task 6 stream-adapter polish (all brief-verbatim code): vercel-ai valid-JSON
+      non-string frame (`0:123`) escapes as `TypeError` at join instead of
+      `StreamFormatError`; named-sse `event: error` with no `data:` line silently ignored;
+      `\r`-strip exists only in named-sse branch (raw-sse/vercel/json leave trailing `\r`
+      on CRLF streams); raw-sse joins multi-line `data:` without `\n` (pre-existing).
+      *(minor, later hardening pass / final review)*
+- [ ] Task 6 test style: `_custom_flow_seen` module-level mutable global in
+      `test_solver.py`; dead `or {}` on `open_body`. *(minor)*
+- [ ] Inspect's no-arg `init_model_usage()` does not clear a non-empty usage dict — a second
+      `inspect_eval` in one process inherits run 1's accumulated spend, so `judge_usd` would
+      double-count. Irrelevant for CLI `gate` (one run/process); MUST be handled for `compare`.
+      *(minor here, tagged Plan #2b compare)*
+- [ ] Budget test polish: over-cap test couples to the example pack's implicit default cap
+      (5.0); no-fallback canary assumes empty `model_usage()` context (ordering-sensitive) and
+      `caught == []` trips on any unrelated warning; CLI budget test mildly circular (fake
+      raises the message it asserts). *(minor)*
+- [ ] `_judge_usd` fail-open posture retained by design (brief-verbatim `except → 0.0`), now
+      guarded by import-canary tests + loud `RuntimeWarning`; real `model_usage → estimate_cost`
+      seam still never exercised with real billable usage (mockllm reports none). *(minor,
+      final review / Task 11 live run will exercise it)*
 
 ## Plan #3 — `discover` + flywheel *(not started)*

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import warnings
 from collections import defaultdict
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
@@ -10,6 +11,7 @@ from pathlib import Path
 from inspect_ai import eval as inspect_eval
 from inspect_ai.log import read_eval_log
 
+from evalyn.engine.budget import BudgetExceeded, estimate_cost
 from evalyn.engine.task_builder import build_task
 from evalyn.scoring.checks import aggregate_trial
 from evalyn.targets.loader import Pack
@@ -41,6 +43,12 @@ class RunArtifact:
     # True when the run was allowed past a missing/stale judge calibration via
     # --allow-uncalibrated: rubric-check scores in this artifact are untrusted.
     rubric_scores_untrusted: bool = False
+    # Estimated USD spent on Evalyn's OWN judge models (Tier-2/3 LLM calls;
+    # target-side HTTP spend is never counted). Metered POST-HOC after the eval
+    # returns — a run can overshoot `budget.max_usd_per_run`; the cap bounds
+    # what a run may have spent before its results are trusted, and a breach
+    # raises BudgetExceeded AFTER this artifact is written.
+    judge_usd: float = 0.0
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -108,6 +116,20 @@ def _reduce_log_to_probes(log, pack: Pack) -> list[ProbeResult]:
     return results
 
 
+def _judge_usd() -> float:
+    """Aggregate judge spend for the just-finished eval (post-hoc metering)."""
+    try:
+        from inspect_ai.model._model import model_usage
+        return estimate_cost(model_usage())
+    except Exception as e:
+        # Fail-open by design (brief): metering failure must not kill the run.
+        # But be LOUD about it — a silent 0.0 would quietly disable the cap.
+        warnings.warn(
+            f"judge-spend metering unavailable — budget cap not enforced "
+            f"this run ({type(e).__name__}: {e})", RuntimeWarning, stacklevel=2)
+        return 0.0
+
+
 def run_gate(pack: Pack, judge_model: str = "mockllm/model",
              log_dir: str = "runs/logs", rubric_judge_model: str | None = None,
              rubric_scores_untrusted: bool = False) -> RunArtifact:
@@ -129,9 +151,19 @@ def run_gate(pack: Pack, judge_model: str = "mockllm/model",
         log_path=str(log.location) if log.location else log_dir,
         rubric_scores_untrusted=rubric_scores_untrusted,
     )
+    art.judge_usd = _judge_usd()
+    # Write the artifact BEFORE any budget check so a partial/complete artifact
+    # survives a budget breach for inspection.
     out_dir = Path("runs")
     out_dir.mkdir(exist_ok=True)
     stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S")
     (out_dir / f"{stamp}-{pack.spec.name}.json").write_text(
         json.dumps(art.to_dict(), indent=2, default=str))
+    # Post-hoc budget gate: there is no mid-run stop, so the run may already
+    # have overshot the cap — the breach is raised after metering.
+    cap = pack.spec.budget.max_usd_per_run
+    if cap and art.judge_usd > cap:
+        raise BudgetExceeded(
+            f"judge spend ${art.judge_usd:.4f} exceeded max_usd_per_run ${cap:.2f} "
+            f"(partial artifact written)")
     return art
