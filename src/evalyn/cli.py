@@ -153,6 +153,7 @@ def calibrate(
     import asyncio
 
     from evalyn.engine import calibrate as cal
+    from evalyn.engine.calibrate import per_rubric_agreement
 
     try:
         pack = load_pack(target)
@@ -193,12 +194,26 @@ def calibrate(
         typer.echo(f"  {crit}: {val:.0%}")
     typer.echo(f"overall agreement: {result.overall:.0%} over {result.anchors} anchor(s), "
                f"judge {model} (threshold {cal.AGREEMENT_THRESHOLD:.0%})")
+    # Record-written-on-failure is by design (pinned): is_stale rejects any
+    # record the verdict below would fail, so the gate can never trust it.
     cal.write_record(pack, result.overall, result.per_criterion, model)
-    if result.overall >= cal.AGREEMENT_THRESHOLD:
+    # Verdict mirrors is_stale exactly (PR #4 fix #4 follow-up): overall AND
+    # every rubric's own agreement must clear the threshold — calibrate must
+    # never print PASS on a record the gate would refuse for a weak rubric.
+    weak = {rid: val for rid, val in per_rubric_agreement(result.per_criterion).items()
+            if val < cal.AGREEMENT_THRESHOLD}
+    if result.overall >= cal.AGREEMENT_THRESHOLD and not weak:
         typer.echo("calibrate: PASS — rubric judge is calibrated for this pack")
         raise typer.Exit(0)
-    typer.echo("calibrate: FAIL — agreement below threshold; the gate will refuse "
-               "rubric checks until calibration passes", err=True)
+    if weak:
+        typer.echo(f"calibrate: FAIL — per-rubric agreement below "
+                   f"{cal.AGREEMENT_THRESHOLD:.0%} for "
+                   + ", ".join(f"{rid!r} at {val:.0%}" for rid, val in weak.items())
+                   + "; the gate will refuse rubric checks until calibration passes",
+                   err=True)
+    if result.overall < cal.AGREEMENT_THRESHOLD:
+        typer.echo("calibrate: FAIL — agreement below threshold; the gate will refuse "
+                   "rubric checks until calibration passes", err=True)
     raise typer.Exit(1)
 
 

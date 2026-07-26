@@ -28,6 +28,21 @@ def test_twincore_slug_is_substituted_into_session_paths(monkeypatch):
     assert sessions["message"].path == "/api/twin/acme-twin/chat"
 
 
+def test_twincore_committed_calibration_record_is_stale_per_rubric(monkeypatch):
+    """PR #4 fix #4 (user-ruled, KNOWN CONSEQUENCE): the committed record's
+    groundedness criteria sit at 0.6/0.6 — below the 85% per-rubric bar — so
+    despite the 0.875 overall the record is STALE and the gate must refuse
+    twincore rubric checks until groundedness is re-anchored."""
+    from evalyn.engine.calibrate import is_stale
+
+    monkeypatch.setenv("EVALYN_TARGET_URL", "http://localhost:8000")
+    pack = load_pack(PACK)
+    stale, why = is_stale(pack, "anthropic/claude-sonnet-5")
+    assert stale is True
+    assert "groundedness" in why
+    assert "60%" in why
+
+
 def test_twincore_allowlist_is_localhost_8000_only(monkeypatch):
     monkeypatch.setenv("EVALYN_TARGET_URL", "https://twincore.example.com")
     pack = load_pack(PACK)

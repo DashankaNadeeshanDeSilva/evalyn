@@ -43,7 +43,11 @@ def _normalize_score(s: int) -> float:
 
 
 def _median(xs: list[int]) -> int:
-    return int(statistics.median(sorted(xs)))
+    """DELIBERATELY median_low: at even k the .5 midpoint breaks DOWN to the
+    lower observed score (conservative/fail-closed — int-truncating the mean
+    would invent a score nobody gave, e.g. [3,5] -> 4). Identical to the true
+    median at odd k, so the k=3 calibration semantics are unaffected."""
+    return statistics.median_low(xs)
 
 
 def _spread(xs: list[int]) -> int:

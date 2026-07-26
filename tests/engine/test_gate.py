@@ -151,6 +151,21 @@ def test_report_md_omits_unsure_line_when_zero():
     assert "unsure trial" not in res.report_md
 
 
+def test_report_md_banners_untrusted_rubric_scores():
+    # PR #4 fix #6: --allow-uncalibrated is an informed override — rubric
+    # checks still gate, but the report must carry a prominent banner
+    art = _art([_probe("ok")])
+    art.rubric_scores_untrusted = True
+    res = evaluate_gate(art, baseline=None)
+    assert "UNTRUSTED" in res.report_md
+    assert "uncalibrated" in res.report_md.lower()
+
+
+def test_report_md_has_no_untrusted_banner_by_default():
+    res = evaluate_gate(_art([_probe("ok")]), baseline=None)
+    assert "UNTRUSTED" not in res.report_md
+
+
 def test_exit_code_is_exactly_the_failure_verdict():
     ok = evaluate_gate(_art([_probe("ok")]), baseline=None)
     assert ok.exit_code == 0 and not ok.failures
@@ -191,6 +206,20 @@ def test_load_baseline_predating_plan2a_schema_fails_loudly(tmp_path):
     path = tmp_path / "baseline.json"
     path.write_text(json.dumps(old))
     with pytest.raises(RuntimeError, match=r"(?s)baseline.*predates.*--update-baseline"):
+        load_baseline(str(path))
+
+
+def test_load_baseline_unknown_top_level_field_is_clean_error_not_typeerror(tmp_path):
+    # PR #4 fix #9: an unknown TOP-LEVEL artifact key (e.g. from a future
+    # schema) raised a bare TypeError from RunArtifact(**...) that leaked past
+    # load_baseline's except ValueError — it must surface as the same clean
+    # RuntimeError as any other schema mismatch.
+    art = _art([_probe("g")])
+    d = art.to_dict()
+    d["future_field"] = 42
+    path = tmp_path / "baseline.json"
+    path.write_text(json.dumps(d))
+    with pytest.raises(RuntimeError, match=r"(?s)baseline.*--update-baseline"):
         load_baseline(str(path))
 
 

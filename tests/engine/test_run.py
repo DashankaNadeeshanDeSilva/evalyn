@@ -287,6 +287,125 @@ def test_run_gate_defaults_cache_dir_to_pack_dot_cache(monkeypatch, tmp_path):
     assert captured["cache_dir"] == Path(pack.root) / ".cache"
 
 
+# --- PR #4 fix #1: all-unsure non-required epochs are no-signal, not perfect --
+
+
+def test_reducer_excludes_no_signal_trials_from_mean(minimal_pack_with_probe):
+    # an epoch whose non-required checks ALL came back unsure carries no score
+    # signal — it counts as an unsure trial and is EXCLUDED from mean_score
+    pack = minimal_pack_with_probe("p", samples=2)
+    samples = [
+        _FakeSample("p", 1, {"tier3": _FakeScore(
+            {"checks": [_cr("rubric:x", 3, False, True, 0.5)]})}),
+        _FakeSample("p", 2, {"tier3": _FakeScore(
+            {"checks": [_cr("rubric:x", 3, False, None, 0.0, unsure=True)]})}),
+    ]
+    [pr] = _reduce_log_to_probes(_FakeLog(samples), pack)
+    assert pr.trials == 2
+    assert pr.unsure_trials == 1
+    assert pr.mean_score == 0.5  # NOT (0.5 + 1.0)/2 — unsure is never a 1.0
+
+
+def test_reducer_all_no_signal_trials_is_fail_closed_zero_mean(minimal_pack_with_probe):
+    pack = minimal_pack_with_probe("p", samples=1)
+    sample = _FakeSample("p", 1, {"tier3": _FakeScore(
+        {"checks": [_cr("rubric:x", 3, False, None, 0.0, unsure=True)]})})
+    [pr] = _reduce_log_to_probes(_FakeLog([sample]), pack)
+    assert pr.trials == 1 and pr.unsure_trials == 1
+    assert pr.mean_score == 0.0  # no usable signal must never read as perfect
+
+
+# --- PR #4 fix #2: a sample error must not abort the whole eval ---------------
+
+_ERRPACK_TARGET_YAML = """\
+name: errpack
+sessions:
+  open:    { method: POST, path: /session }
+  message: { method: POST, path: /chat, stream: sse, event_format: vercel-ai }
+auth: { kind: none }
+budget: { max_turns_per_session: 1 }
+env:
+  base_url: ${EVALYN_TARGET_URL:-http://127.0.0.1:8899}
+allowlist:
+  - http://127.0.0.1:8899
+  - http://localhost:8899
+"""
+
+# `doomed` has 2 turns > max_turns_per_session=1 — the solver raises before any
+# HTTP, so its sample ERRORS while `healthy` still runs and scores.
+_ERRPACK_PROBES = """\
+- id: healthy
+  category: misc
+  turns: ["Where did you work?"]
+  checks:
+    - { type: contains, value: "Acme", required: true }
+- id: doomed
+  category: misc
+  turns: ["hi", "hi again"]
+  checks:
+    - { type: contains, value: "x", required: true }
+"""
+
+
+def test_errored_probe_is_missing_gate_fail_not_run_abort(toy_target, monkeypatch,
+                                                          tmp_path):
+    """One probe's sample error must NOT abort the eval: the artifact is still
+    written, the errored probe hard-fails as MISSING (trials == 0), and the
+    healthy probe is still scored."""
+    from evalyn.engine.gate import evaluate_gate
+
+    monkeypatch.setenv("EVALYN_TARGET_URL", toy_target)
+    pack_dir = tmp_path / "errpack"
+    (pack_dir / "probes").mkdir(parents=True)
+    (pack_dir / "target.yaml").write_text(_ERRPACK_TARGET_YAML)
+    (pack_dir / "probes" / "p.yaml").write_text(_ERRPACK_PROBES)
+    out = tmp_path / "runs"
+    art = run_gate(load_pack(pack_dir), judge_model="mockllm/model",
+                   log_dir=str(tmp_path / "logs"), out_dir=str(out))
+    assert list(out.glob("*.json")), "artifact must be written despite the error"
+    by_id = {p.id: p for p in art.probes}
+    assert by_id["doomed"].trials == 0        # errored -> no scored trials
+    assert by_id["healthy"].trials == 1       # the healthy probe still scored
+    assert by_id["healthy"].pass_k == 1.0
+    res = evaluate_gate(art, baseline=None)
+    assert res.exit_code == 1                 # MISSING is a hard gate failure
+    assert any("doomed" in f and "MISSING" in f for f in res.failures)
+    assert not any("healthy" in f for f in res.failures)
+
+
+# --- PR #4 fix #11: artifact filename collisions + unsanitized pack name ------
+
+
+def test_artifact_filenames_do_not_collide_back_to_back(monkeypatch, tmp_path):
+    monkeypatch.setenv("EVALYN_TARGET_URL", "http://localhost:8899")
+    pack = load_pack(str(REPO_EXAMPLE))
+    monkeypatch.setattr("evalyn.engine.run.inspect_eval",
+                        lambda *a, **k: [_fake_success_log()])
+    monkeypatch.setattr("evalyn.engine.run._judge_usd", lambda: 0.0)
+    out = tmp_path / "runs"
+    for _ in range(2):  # same second: a coarse timestamp would os.replace-clobber
+        run_gate(pack, judge_model="mockllm/model",
+                 log_dir=str(tmp_path / "logs"), out_dir=str(out))
+    assert len(list(out.glob("*.json"))) == 2
+
+
+def test_artifact_filename_sanitizes_hostile_pack_name(monkeypatch, tmp_path):
+    monkeypatch.setenv("EVALYN_TARGET_URL", "http://localhost:8899")
+    pack = load_pack(str(REPO_EXAMPLE))
+    pack.spec.name = "../evil/pack name"   # must not escape out_dir or crash
+    monkeypatch.setattr("evalyn.engine.run.inspect_eval",
+                        lambda *a, **k: [_fake_success_log()])
+    monkeypatch.setattr("evalyn.engine.run._judge_usd", lambda: 0.0)
+    out = tmp_path / "runs"
+    run_gate(pack, judge_model="mockllm/model",
+             log_dir=str(tmp_path / "logs"), out_dir=str(out))
+    [written] = list(out.iterdir())
+    assert written.parent == out
+    assert written.suffix == ".json"
+    assert "/" not in written.name and ".." not in written.name
+    assert not (tmp_path / "evil").exists()
+
+
 def test_run_gate_explicit_cache_dir_override_wins(monkeypatch, tmp_path):
     monkeypatch.setenv("EVALYN_TARGET_URL", "http://localhost:8899")
     pack = load_pack(str(REPO_EXAMPLE))

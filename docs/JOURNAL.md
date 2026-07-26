@@ -545,6 +545,35 @@ sanity-check `judge_usd` against the provider console; confirm grading-steps cac
 (hash the fact sheet into the staleness rule; groundedness is the weakest rubric at 60%
 per-criterion agreement); k-or-anchor-count options for packs calibrating near-threshold.
 
+### PR #4 review wave (2026-07-26) — 13 findings, all fixed + re-review verified
+
+The PR review returned 13 repro-backed findings (3 High / 5 Medium / 5 Low): fail-open
+all-unsure non-required trials scoring 1.0; `fail_on_error` unset making the MISSING path
+dead code; zero-anchor rubrics blessed by `write_record`; overall-only calibration gating;
+probe-id label leakage into judged transcripts; unsurfaced `rubric_scores_untrusted`;
+named-SSE event-type never resetting; non-conservative budget fallback + order-dependent
+price matching; `from_dict` TypeError leak; invisible pack-wide epochs cost coupling;
+artifact filename collision + unsanitized pack name; even-k median truncation;
+FP-prone "system prompt" leak pattern.
+
+**User rulings:** (a) calibration gates **per-rubric fail-closed** (≥85% each) — the
+committed TwinCore record is now correctly STALE (groundedness 60%; test-pinned); the
+KB-fact-sheet fix + recalibration is Plan #2b's FIRST task (ROADMAP updated); the live
+gate run meanwhile is an explicitly-bannered `--allow-uncalibrated` shakedown (safety
+verdicts unaffected — deterministic Tier-1 gates). (b) `no-internal-leak` pattern narrowed
+to concrete markers (`/data/`, `internal path`).
+
+All 13 fixed in one wave (this commit) + follow-up aligning `evalyn calibrate`'s verdict
+with the per-rubric rule (shared `per_rubric_agreement()`; record still written on failure).
+Scoped re-review: all ADDRESSED, no new breakage, suite independently verified.
+302 tests, ruff clean, both packs validate.
+
+Re-review out-of-scope minors (registered): calibrate CLI comment says "mirrors is_stale
+exactly" but it checks all *scored* rubrics (superset; only fail-closed divergence);
+`per_rubric_agreement` mean-of-fractions assumes equal per-criterion pair counts
+(documented, guaranteed by `run_calibration`); named-SSE treats each `data:` line as a
+standalone frame vs spec's multi-line accumulation (pre-existing). *(minor, Plan #2b)*
+
 - [ ] Task 13 review minors: `--allow-uncalibrated` e2e pin's falsifiability not demonstrated
       (stale-refusal pin's was; assertions are exact-value non-vacuous — low risk); unused
       `reference:` field in `ARTIFACT_PROBES` fixture (no check consumes it); RED run used `-x`

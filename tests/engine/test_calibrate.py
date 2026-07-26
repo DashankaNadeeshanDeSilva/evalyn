@@ -323,9 +323,11 @@ def test_write_record_and_load_record_roundtrip(tmp_path):
     assert rec["judge_model"] == "anthropic/claude-x"
     assert rec["agreement"] == 0.9
     assert rec["per_criterion"] == {"persona:voice": 0.9}
-    # hashes cover BOTH the anchors' rubrics and the pack's rubric-check rubrics
-    assert rec["rubric_hashes"] == {"persona": _hash_text(PERSONA),
-                                    "tone": _hash_text(TONE)}
+    # PR #4 fix #3: hashes cover ONLY rubrics with scored anchor pairs (the
+    # per_criterion keys) — never pack rubrics that were never calibrated
+    # ("tone" here has a pack rubric check AND an anchors dir, but no scored
+    # pairs, so blessing its hash would let is_stale call it covered)
+    assert rec["rubric_hashes"] == {"persona": _hash_text(PERSONA)}
     assert "created_at" in rec
     json.loads(path.read_text())  # committed record is plain JSON
 
@@ -352,28 +354,26 @@ def test_is_stale_judge_model_change(tmp_path):
 
 def test_is_stale_rubric_hash_change(tmp_path):
     pack = _pack(tmp_path, rubric_check="tone")
-    write_record(pack, 0.9, {}, "anthropic/claude-x")
+    write_record(pack, 0.9, {"tone:Calm": 0.9}, "anthropic/claude-x")
     (tmp_path / "rubrics" / "tone.md").write_text("# Tone\nEdited since calibration.\n")
     stale, why = is_stale(pack, "anthropic/claude-x")
     assert stale and "tone" in why and "changed" in why
 
 
-def test_is_stale_rubric_not_covered_by_record(tmp_path):
-    # locked staleness rule (note 2): a pack rubric check whose rubric the
-    # record never calibrated is stale, not silently trusted
+def test_is_stale_rubric_without_anchor_coverage(tmp_path):
+    # locked staleness rule + PR #4 fix #3: a pack rubric check whose rubric
+    # was never scored against anchors is stale ("no anchor coverage"), not
+    # silently trusted — even when anchors exist for OTHER rubrics
     pack = _pack(tmp_path, rubric_check="tone")
     _anchor_yaml(tmp_path, "a1", scores={"voice": 4})  # anchors only cover persona
-    write_record(pack, 0.9, {}, "anthropic/claude-x")
-    rec = json.loads((tmp_path / "calibration.json").read_text())
-    del rec["rubric_hashes"]["tone"]
-    (tmp_path / "calibration.json").write_text(json.dumps(rec))
+    write_record(pack, 0.9, {"persona:voice": 0.9}, "anthropic/claude-x")
     stale, why = is_stale(pack, "anthropic/claude-x")
-    assert stale and "tone" in why
+    assert stale and "tone" in why and "no anchor coverage" in why
 
 
 def test_is_stale_rubric_file_missing(tmp_path):
     pack = _pack(tmp_path, rubric_check="tone")
-    write_record(pack, 0.9, {}, "anthropic/claude-x")
+    write_record(pack, 0.9, {"tone:Calm": 0.9}, "anthropic/claude-x")
     (tmp_path / "rubrics" / "tone.md").unlink()
     stale, why = is_stale(pack, "anthropic/claude-x")
     assert stale and "tone" in why and "missing" in why
@@ -383,7 +383,8 @@ def test_is_stale_agreement_below_threshold(tmp_path):
     # note 1 pin: a failing calibrate run's record must NEVER be accepted by
     # the gate — sub-threshold agreement is stale/invalid
     pack = _pack(tmp_path, rubric_check="tone")
-    write_record(pack, AGREEMENT_THRESHOLD - 0.01, {}, "anthropic/claude-x")
+    write_record(pack, AGREEMENT_THRESHOLD - 0.01, {"tone:Calm": 0.9},
+                 "anthropic/claude-x")
     stale, why = is_stale(pack, "anthropic/claude-x")
     assert stale and "agreement" in why
 
@@ -391,14 +392,46 @@ def test_is_stale_agreement_below_threshold(tmp_path):
 def test_is_stale_agreement_exactly_at_threshold_is_not_stale(tmp_path):
     # boundary lock: >= threshold passes calibrate AND satisfies is_stale
     pack = _pack(tmp_path, rubric_check="tone")
-    write_record(pack, AGREEMENT_THRESHOLD, {}, "anthropic/claude-x")
+    write_record(pack, AGREEMENT_THRESHOLD, {"tone:Calm": AGREEMENT_THRESHOLD},
+                 "anthropic/claude-x")
     stale, why = is_stale(pack, "anthropic/claude-x")
     assert stale is False and why == "calibrated"
 
 
 def test_is_stale_fresh_record_is_not_stale(tmp_path):
     pack = _pack(tmp_path, rubric_check="tone")
-    write_record(pack, 0.9, {}, "anthropic/claude-x")
+    write_record(pack, 0.9, {"tone:Calm": 0.9}, "anthropic/claude-x")
+    stale, why = is_stale(pack, "anthropic/claude-x")
+    assert stale is False and why == "calibrated"
+
+
+# ------------------------------------- PR #4 fix #4: PER-RUBRIC fail-closed
+
+
+def test_is_stale_flags_weak_rubric_despite_strong_overall(tmp_path):
+    # user ruling: a strong OVERALL mean must not hide a weak rubric — each
+    # pack rubric's own agreement (mean of its per-criterion values) gates too
+    pack = _pack(tmp_path, rubric_check="tone")
+    write_record(pack, 0.95, {"tone:Calm": 0.8, "tone:Firm": 0.8},
+                 "anthropic/claude-x")
+    stale, why = is_stale(pack, "anthropic/claude-x")
+    assert stale
+    assert "tone" in why and "80%" in why  # names the weak rubric and its value
+
+
+def test_per_rubric_agreement_pools_each_rubrics_criteria():
+    from evalyn.engine.calibrate import per_rubric_agreement
+
+    assert per_rubric_agreement(
+        {"a:x": 1.0, "a:y": 0.5, "b:z": 0.9}) == {"a": 0.75, "b": 0.9}
+    assert per_rubric_agreement({}) == {}
+
+
+def test_is_stale_per_rubric_check_ignores_non_pack_rubrics(tmp_path):
+    # a weak rubric that NO pack probe references must not stale the record
+    pack = _pack(tmp_path, rubric_check="tone")
+    write_record(pack, 0.9, {"tone:Calm": 0.9, "persona:voice": 0.2},
+                 "anthropic/claude-x")
     stale, why = is_stale(pack, "anthropic/claude-x")
     assert stale is False and why == "calibrated"
 

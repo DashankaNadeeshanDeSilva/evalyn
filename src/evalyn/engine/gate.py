@@ -82,6 +82,12 @@ def _render_report(current: RunArtifact, failures: list[str], quarantined: list[
              f"judge: `{current.judge_model}` · pack: `{current.pack_hash[:12]}`", ""]
     lines.append(f"**{'FAIL' if failures else 'PASS'}** — "
                  f"{len(failures)} failure(s), {len(quarantined)} quarantined.")
+    if current.rubric_scores_untrusted:
+        # informed override (--allow-uncalibrated): rubric checks still gate,
+        # but the report must be LOUD about the missing/stale calibration
+        lines.append("**WARNING: rubric scores UNTRUSTED** — this run bypassed "
+                     "a missing/stale judge calibration (`--allow-uncalibrated`); "
+                     "rubric checks still gate but their scores are uncalibrated.")
     if current.total_unsure_trials:
         lines.append(f"{current.total_unsure_trials} unsure trial(s) "
                      f"(judge NOANSWER — undecided, not product failures).")

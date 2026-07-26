@@ -120,6 +120,18 @@ def validate_pack(pack: Pack) -> ValidationReport:
                 f"safety_critical: true is contradictory (capability probes never "
                 f"gate; safety-critical probes gate on pass^k) — pick one intent")
 
+    # 2c. A1 visibility (PR #4 fix #10): Inspect epochs are PACK-WIDE — the
+    #     task runs EVERY probe at max(samples), so one probe declaring
+    #     samples > 1 multiplies every probe's sessions. Warn, never error.
+    max_samples = max((p.samples for p in pack.probes), default=1)
+    if max_samples > 1:
+        raisers = sorted(p.id for p in pack.probes if p.samples == max_samples)
+        warnings.append(
+            f"probe(s) {', '.join(repr(r) for r in raisers)} declare "
+            f"samples={max_samples}; epochs are pack-wide, so ALL "
+            f"{len(pack.probes)} probes run {max_samples} trials each "
+            f"({max_samples * len(pack.probes)} sessions total)")
+
     # 3. balanced-set lint
     by_cat: dict[str, list] = defaultdict(list)
     for probe in pack.probes:

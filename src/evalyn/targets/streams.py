@@ -40,13 +40,22 @@ def parse_stream(event_format: str, lines: Iterable[str], *,
         out = []
         for line in lines:
             line = line.rstrip("\r")
+            if line == "":
+                # SSE spec: a blank line dispatches the event and RESETS the
+                # event type — a later unnamed data frame must not inherit it
+                # (PR #4 fix #7)
+                cur_event = None
+                continue
             if line.startswith("event:"):
                 cur_event = _strip_one_space(line[len("event:"):])
             elif line.startswith("data:"):
                 payload = _strip_one_space(line[len("data:"):])
-                if cur_event == "error":
+                # per spec, a data frame with no event name is the default
+                # "message" event (matched only when the pack asks for it)
+                frame_event = cur_event if cur_event is not None else "message"
+                if frame_event == "error":
                     raise StreamFormatError(f"named-sse error event: {payload}")
-                if cur_event == ev:
+                if frame_event == ev:
                     try:
                         obj = json.loads(payload)
                     except json.JSONDecodeError as e:

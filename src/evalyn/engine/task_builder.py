@@ -53,4 +53,10 @@ def build_task(pack: Pack, judge_model: str = "mockllm/model",
         scorer=[tier1_scorer(pack), tier2_scorer(judge_model),
                 tier3_scorer(pack, rubric_model, cache_dir=cache_dir)],
         epochs=Epochs(k, [pass_at(k), pass_k(k), "mean"]),
+        # A sample error (target hiccup on ONE probe) must not abort the whole
+        # eval: with fail_on_error=False the errored sample lands in the log
+        # with no checks, its probe keeps trials == 0, and the gate hard-fails
+        # it as MISSING (fail-closed, PR #4 fix #2). Real infra failure still
+        # raises via run_gate's log.status check.
+        fail_on_error=False,
     )

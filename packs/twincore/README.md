@@ -81,7 +81,10 @@ Four pinned rubrics live in `rubrics/`: `groundedness`, `completeness`, `persona
 `honesty`. Each `##` heading is a scored criterion (1–5).
 
 Rubric checks are **fail-closed on calibration**: `evalyn gate` refuses to run them
-until `calibration.json` is fresh for the current judge model and rubric hashes.
+until `calibration.json` is fresh for the current judge model and rubric hashes, every
+pack rubric has scored anchor coverage, and agreement is ≥85% **both overall and per
+rubric** (a rubric's agreement is the mean of its per-criterion values — a strong
+overall mean never hides a weak rubric).
 
 ```bash
 # 1. Capture 15-20 real transcripts against the live stack and hand-score them.
@@ -103,8 +106,11 @@ uv run evalyn gate --target packs/twincore
 ```
 
 Re-calibrate whenever a rubric file or the judge model changes — both are part of the
-staleness rule. `--allow-uncalibrated` downgrades the refusal to a warning; use it only
-for exploratory runs, never for a gating one.
+staleness rule, as is any single rubric dropping below 85% agreement. The committed
+record currently fails that per-rubric bar (`groundedness` sits at 60%), so the gate
+refuses twincore rubric checks until groundedness is re-anchored above threshold.
+`--allow-uncalibrated` downgrades the refusal to a warning; use it only for exploratory
+runs, never for a gating one.
 
 ## Probe map
 

@@ -148,9 +148,31 @@ def load_record(pack: Pack) -> dict | None:
     return json.loads(p.read_text()) if p.exists() else None
 
 
+def _rubrics_with_scored_pairs(per_criterion: dict) -> set[str]:
+    # per_criterion is keyed "<rubric>:<criterion>" (run_calibration contract)
+    return {key.split(":", 1)[0] for key in per_criterion}
+
+
+def per_rubric_agreement(per_criterion: dict) -> dict[str, float]:
+    """Each rubric's agreement: the mean of its per-criterion values — exact
+    pooled agreement as long as every criterion scored the same number of
+    anchor pairs, which run_calibration guarantees when every usable anchor
+    labels all of its rubric's criteria (one pair per anchor per matched
+    criterion). Shared by is_stale and the calibrate CLI verdict so the two
+    can never disagree (PR #4 fix #4)."""
+    by_rubric: dict[str, list[float]] = {}
+    for key, val in per_criterion.items():
+        by_rubric.setdefault(key.split(":", 1)[0], []).append(val)
+    return {rid: sum(vs) / len(vs) for rid, vs in sorted(by_rubric.items())}
+
+
 def write_record(pack: Pack, overall: float, per_criterion: dict,
                  judge_model: str) -> Path:
-    rubric_ids = sorted({a.rubric for a in load_anchors(pack)} | _pack_rubric_ids(pack))
+    # Bless ONLY rubrics that actually had scored (anchor x criterion) pairs
+    # (PR #4 fix #3): recording a hash for a rubric that was never calibrated
+    # would make is_stale call it covered — zero-anchor rubrics must stay
+    # uncovered so the gate refuses them.
+    rubric_ids = sorted(_rubrics_with_scored_pairs(per_criterion))
     hashes = {rid: load_rubric(pack, rid)[1] for rid in rubric_ids}
     rec = {"judge_model": judge_model, "rubric_hashes": hashes, "agreement": overall,
            "per_criterion": per_criterion,
@@ -162,18 +184,22 @@ def write_record(pack: Pack, overall: float, per_criterion: dict,
 
 def is_stale(pack: Pack, judge_model: str) -> tuple[bool, str]:
     """Locked staleness rule: stale if the record is missing, the judge model
-    differs, ANY rubric referenced by the pack's rubric checks is uncovered /
-    changed / missing, or the recorded agreement is below threshold (a failing
-    calibrate run must never leave a record the gate would accept)."""
+    differs, ANY rubric referenced by the pack's rubric checks has no anchor
+    coverage / changed / is missing, the recorded OVERALL agreement is below
+    threshold, or ANY pack rubric's OWN agreement is below threshold (per-rubric
+    fail-closed, PR #4 fix #4 — a strong overall mean must never hide a weak
+    rubric; a failing calibrate run must never leave a record the gate accepts)."""
     rec = load_record(pack)
     if rec is None:
         return True, "no calibration record"
     if rec.get("judge_model") != judge_model:
         return True, f"judge model changed ({rec.get('judge_model')} -> {judge_model})"
     recorded = rec.get("rubric_hashes", {})
-    for rid in sorted(_pack_rubric_ids(pack)):
+    pack_rubrics = sorted(_pack_rubric_ids(pack))
+    for rid in pack_rubrics:
         if rid not in recorded:
-            return True, f"rubric {rid!r} not covered by the calibration record"
+            return True, (f"no anchor coverage for rubric {rid!r} "
+                          f"(never calibrated against human labels)")
         try:
             current = load_rubric(pack, rid)[1]
         except FileNotFoundError:
@@ -183,4 +209,18 @@ def is_stale(pack: Pack, judge_model: str) -> tuple[bool, str]:
     if rec.get("agreement", 0.0) < AGREEMENT_THRESHOLD:
         return True, (f"recorded agreement {rec.get('agreement', 0.0):.0%} is below "
                       f"the {AGREEMENT_THRESHOLD:.0%} threshold")
+    # Per-rubric agreement, derived from the existing per_criterion record
+    # field (no schema change — see per_rubric_agreement for the pooling
+    # guarantee).
+    by_rubric = per_rubric_agreement(rec.get("per_criterion") or {})
+    weak: list[str] = []
+    for rid in pack_rubrics:
+        if rid not in by_rubric:
+            return True, (f"no anchor coverage for rubric {rid!r} "
+                          f"(record has no per-criterion agreement for it)")
+        if by_rubric[rid] < AGREEMENT_THRESHOLD:
+            weak.append(f"{rid!r} at {by_rubric[rid]:.0%}")
+    if weak:
+        return True, (f"per-rubric agreement below the {AGREEMENT_THRESHOLD:.0%} "
+                      f"threshold for {', '.join(weak)}")
     return False, "calibrated"

@@ -3,7 +3,9 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 import tempfile
+import uuid
 import warnings
 from collections import defaultdict
 from dataclasses import asdict, dataclass, field
@@ -29,8 +31,10 @@ class ProbeResult:
     trials: int = 0           # trials actually collected (epochs with checks)
     pass_at_k: float = 0.0    # any trial's required checks all passed
     pass_k: float = 0.0       # EVERY trial's required checks passed (safety gate)
-    mean_score: float = 0.0   # mean weighted trial_score over trials
-    unsure_trials: int = 0    # NOANSWER accounting: required-unsure, not failed
+    mean_score: float = 0.0   # mean weighted trial_score over trials WITH score
+    #                           signal (no-signal trials are excluded, 0.0 if none)
+    unsure_trials: int = 0    # NOANSWER accounting: required-unsure or no-signal
+    #                           (all non-required unsure) trials, not failures
     checks: list[dict] = field(default_factory=list)  # representative CheckResults
 
 
@@ -67,7 +71,15 @@ class RunArtifact:
             raise ValueError(
                 "artifact probe entries do not match the Plan #2a ProbeResult "
                 f"schema ({e}); this artifact predates the current schema") from e
-        return cls(**{**d, "probes": probes})
+        try:
+            return cls(**{**d, "probes": probes})
+        except TypeError as e:
+            # unknown TOP-LEVEL keys (e.g. a future schema) must surface as the
+            # same clean ValueError the probe loop raises — never a bare
+            # TypeError that leaks past load_baseline as a traceback (fix #9)
+            raise ValueError(
+                "artifact fields do not match the Plan #2a RunArtifact schema "
+                f"({e}); this artifact does not match the current schema") from e
 
 
 def pack_fingerprint(pack: Pack) -> str:
@@ -114,10 +126,17 @@ def _reduce_log_to_probes(log, pack: Pack) -> list[ProbeResult]:
             req_pass, trial_unsure, trial_score = aggregate_trial(crs)
             req_passes.append(req_pass)
             unsure_ct += 1 if trial_unsure else 0
-            scores.append(trial_score)
+            # trial_score None = no score signal (ALL non-required checks came
+            # back unsure): the trial counts toward trials/unsure_trials but is
+            # EXCLUDED from mean_score — averaging in a fabricated value would
+            # fail open (PR #4 fix #1).
+            if trial_score is not None:
+                scores.append(trial_score)
         pass_at_k = 1.0 if any(req_passes) else 0.0
         pass_k = 1.0 if (n > 0 and all(req_passes)) else 0.0
-        mean_score = sum(scores) / n if n else 0.0
+        # no trial produced a usable score -> 0.0 (fail-closed), surfaced via
+        # unsure_trials, never a silent perfect mean
+        mean_score = sum(scores) / len(scores) if scores else 0.0
         # carry one epoch's checks as representative evidence for the report
         rep_checks = next(iter(per_epoch.values())) if per_epoch else []
         results.append(ProbeResult(
@@ -178,11 +197,15 @@ def run_gate(pack: Pack, judge_model: str = "mockllm/model",
     # crash mid-write never leaves a torn artifact behind.
     out_path = Path(out_dir)
     out_path.mkdir(parents=True, exist_ok=True)
-    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S")
+    # Collision-proof, filesystem-safe name (fix #11): microseconds + a short
+    # uuid so parallel/fast runs never os.replace-clobber each other, and the
+    # pack name is slugified so a hostile/odd name cannot escape out_dir.
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%f")
+    slug = re.sub(r"[^A-Za-z0-9._-]+", "-", pack.spec.name).strip("-.") or "pack"
     fd, tmp = tempfile.mkstemp(dir=out_path, suffix=".tmp")
     with os.fdopen(fd, "w") as f:
         f.write(json.dumps(art.to_dict(), indent=2, default=str))
-    os.replace(tmp, out_path / f"{stamp}-{pack.spec.name}.json")
+    os.replace(tmp, out_path / f"{stamp}-{uuid.uuid4().hex[:8]}-{slug}.json")
     # Post-hoc budget gate: there is no mid-run stop, so the run may already
     # have overshot the cap — the breach is raised after metering.
     cap = pack.spec.budget.max_usd_per_run

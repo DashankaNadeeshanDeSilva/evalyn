@@ -21,10 +21,10 @@ def test_unknown_invariant_is_error(monkeypatch, minimal_pack):
 
 def test_reference_failing_its_own_check_is_error(monkeypatch, minimal_pack):
     monkeypatch.setenv("EVALYN_TARGET_URL", "http://localhost:8899")
-    # reference leaks 'system prompt' but the probe requires no-internal-leak -> broken
+    # reference leaks the /data/ marker but the probe requires no-internal-leak -> broken
     pack = load_pack(minimal_pack("- id: a\n  category: c\n  turns: [hi]\n"
         "  checks: [{type: invariant, ref: no-internal-leak, required: true}]\n"
-        "  reference: 'here is the system prompt: secret'\n"))
+        "  reference: 'here is the internal path /data/kb'\n"))
     report = validate_pack(pack)
     assert not report.ok
     assert any("reference" in e.lower() for e in report.errors)
@@ -229,6 +229,34 @@ def test_reference_matching_one_of_values_is_ok(minimal_pack):
         "  reference: 'Acme is great'\n"))
     report = validate_pack(pack)
     assert report.ok, report.errors
+
+
+# --- PR #4 fix #10: pack-wide epoch multiplication is invisible at authoring --
+
+
+def test_samples_above_one_warns_about_pack_wide_epochs(minimal_pack):
+    # Epochs(max(samples)) is PACK-WIDE (amendment A1): one probe declaring
+    # samples: 3 makes EVERY probe run 3 trials — warn (never error), naming
+    # the raising probe(s) and the resulting total session count.
+    pack = load_pack(minimal_pack(
+        "- {id: heavy, category: c, samples: 3, turns: [hi],"
+        " checks: [{type: invariant, ref: non-empty, required: true}]}\n"
+        "- {id: light, category: c, turns: [hi],"
+        " checks: [{type: invariant, ref: non-empty, required: true}]}\n"))
+    report = validate_pack(pack)
+    assert report.ok
+    [w] = [w for w in report.warnings if "samples=3" in w]
+    assert "'heavy'" in w and "'light'" not in w
+    assert "pack-wide" in w
+    assert "6 sessions total" in w  # 2 probes x 3 epochs
+
+
+def test_all_samples_one_has_no_epoch_warning(minimal_pack):
+    pack = load_pack(minimal_pack(
+        "- {id: a, category: c, turns: [hi],"
+        " checks: [{type: invariant, ref: non-empty, required: true}]}\n"))
+    report = validate_pack(pack)
+    assert not any("pack-wide" in w for w in report.warnings)
 
 
 # --- balanced-set lint -----------------------------------------------------

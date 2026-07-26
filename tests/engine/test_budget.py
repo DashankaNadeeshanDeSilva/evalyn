@@ -30,6 +30,21 @@ def test_price_table_has_claude_sonnet_5_and_keeps_retired_key():
     assert price_for("anthropic/claude-sonnet-5") == (0.003, 0.015)
 
 
+def test_unknown_model_warns_and_gets_conservative_upper_bound():
+    # PR #4 fix #8: the fallback must be a genuine UPPER bound (opus-tier), not
+    # mid-tier sonnet pricing (an opus judge would cost ~5x and never trip the
+    # cap) — and it must warn loudly instead of silently guessing.
+    with pytest.warns(RuntimeWarning, match="no price entry"):
+        assert price_for("someprovider/never-heard-of-this-model") == (0.015, 0.075)
+
+
+def test_price_for_matches_longest_key_first_not_dict_order():
+    # "gpt-4o-mini" contains "gpt-4o": correctness must come from longest-key
+    # matching, never from dict insertion order (alphabetizing must not break it)
+    assert price_for("openai/gpt-4o-mini") == (0.00015, 0.0006)
+    assert price_for("openai/gpt-4o") == (0.0025, 0.010)
+
+
 def test_estimate_cost_sums_models():
     usage = {"anthropic/claude-3-5-sonnet-latest": _U(1000, 1000)}
     cost = estimate_cost(usage)

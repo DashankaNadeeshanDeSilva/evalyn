@@ -47,6 +47,12 @@ def session_solver(pack: Pack) -> Solver:
         if len(turns) > max_turns:
             raise RuntimeError(
                 f"probe has {len(turns)} turns > max_turns_per_session={max_turns}")
+        # Inspect seeds state.messages from Sample.input (the probe id, kept
+        # for log/viewer identity). That fabricated "user turn" must never
+        # reach the judged transcript — Tier-2/3 prompts would leak probe-id
+        # labels the calibration anchors never saw (PR #4 fix #5). The real
+        # conversation is rebuilt below from the probe's turns.
+        state.messages.clear()
         last = ""
         async with concurrency("evalyn-target-http", pack.spec.concurrency):
             async with httpx.AsyncClient(timeout=30, headers=headers) as client:

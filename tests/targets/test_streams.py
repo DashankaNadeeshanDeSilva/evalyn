@@ -32,6 +32,32 @@ def test_named_sse_error_event_raises():
         parse_stream("named-sse", lines, event="token", field="content")
 
 
+def test_named_sse_event_type_resets_at_dispatch_boundary():
+    # PR #4 fix #7 (SSE spec): the event type resets after each blank-line
+    # dispatch — a later UNNAMED data frame must NOT inherit `event: token`
+    lines = ['event: token', 'data: {"content":"hello"}', '',
+             'data: {"content":" world"}', '']
+    assert parse_stream("named-sse", lines, event="token", field="content") == "hello"
+
+
+def test_named_sse_unnamed_frame_belongs_to_default_message_event():
+    # per SSE spec a data frame with no event name is the "message" event —
+    # matched only when the pack asks for event_name "message"
+    lines = ['data: {"content":"hi"}', '']
+    assert parse_stream("named-sse", lines, event="message", field="content") == "hi"
+    assert parse_stream("named-sse", lines, event="token", field="content") == ""
+
+
+def test_named_sse_early_error_event_does_not_poison_later_unnamed_frames():
+    # a dispatched `event: error` block must not make every later unnamed
+    # data frame raise
+    lines = ['event: error', 'data: {"message":"transient"}']
+    with pytest.raises(StreamFormatError):
+        parse_stream("named-sse", lines, event="token", field="content")
+    lines = ['event: error', '', 'data: {"content":"ok"}', '']
+    assert parse_stream("named-sse", lines, event="token", field="content") == ""
+
+
 def test_vercel_malformed_frame_raises_streamformaterror():
     with pytest.raises(StreamFormatError):
         parse_stream("vercel-ai", ['0:{not json'])

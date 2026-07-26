@@ -83,6 +83,21 @@ def test_spread_flags_disagreement():
     assert _spread([1, 3, 5]) == 4 and _median([1, 3, 5]) == 3
 
 
+def test_median_is_median_low_at_even_k():
+    # PR #4 fix #12: deliberate median_low — at even k the tie breaks DOWN to
+    # the lower observed score (conservative/fail-closed), never int-truncation
+    # of the midpoint mean ([3,5] -> 3, where int(median)=int(4.0) would say 4).
+    assert _median([4, 5]) == 4
+    assert _median([3, 5]) == 3
+    assert _median([2, 4, 4, 5]) == 4
+
+
+def test_median_odd_k_unchanged_by_median_low():
+    # identical to the true median at odd k, so k=3 calibration is unaffected
+    assert _median([1, 3, 5]) == 3
+    assert _median([4, 4, 5]) == 4
+
+
 # --- strict per-criterion parsing (P1) ------------------------------------
 
 

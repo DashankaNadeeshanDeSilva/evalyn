@@ -61,6 +61,29 @@ async def test_open_response_without_session_id_raises(monkeypatch):
         await solve(state, None)
 
 
+@pytest.mark.asyncio
+async def test_solver_drops_seeded_input_message_from_transcript(toy_target, monkeypatch):
+    """PR #4 fix #5: Inspect seeds state.messages with Sample.input (the probe
+    id). That fabricated 'user turn' must never reach the judged transcript —
+    after solve, the messages are EXACTLY the real session turns."""
+    from inspect_ai.model import ChatMessageUser
+    from evalyn.scoring.transcript import assistant_turns, labeled_transcript
+
+    monkeypatch.setenv("EVALYN_TARGET_URL", toy_target)
+    pack = load_pack(MINIPACK)
+    state = TaskState(model="m", sample_id="inv-nonempty", epoch=1,
+                      input="inv-nonempty",
+                      messages=[ChatMessageUser(content="inv-nonempty")])
+    state.metadata = {"turns": ["Where did you work?"]}
+    state = await session_solver(pack)(state, None)
+    transcript = labeled_transcript(state)
+    assert "inv-nonempty" not in transcript          # no probe-id label leakage
+    assert transcript.startswith("User: Where did you work?")
+    assert [m.role for m in state.messages] == ["user", "assistant"]
+    # tier1 turn scanning sees the same assistant turns as before
+    assert assistant_turns(state) == [state.output.completion]
+
+
 def test_solver_drives_toy_target(toy_target, monkeypatch):
     monkeypatch.setenv("EVALYN_TARGET_URL", toy_target)
     pack = load_pack(MINIPACK)

@@ -334,13 +334,14 @@ def _write_rubric_pack(tmp_path: Path, *, anchors: bool = True) -> str:
     return str(pack_dir)
 
 
-def _stub_calibration(monkeypatch, overall: float, unmatched: dict | None = None):
+def _stub_calibration(monkeypatch, overall: float, unmatched: dict | None = None,
+                      per_criterion: dict | None = None):
     from evalyn.engine.calibrate import CalibrationResult
 
     async def fake(pack, judge_model, cache_dir, k=3):
         return CalibrationResult(overall=overall,
-                                 per_criterion={"tone:Tone": overall}, anchors=1,
-                                 unmatched=unmatched or {})
+                                 per_criterion=per_criterion or {"tone:Tone": overall},
+                                 anchors=1, unmatched=unmatched or {})
 
     monkeypatch.setattr("evalyn.engine.calibrate.run_calibration", fake)
 
@@ -383,6 +384,22 @@ def test_calibrate_exit_1_below_threshold_still_writes_record(monkeypatch, tmp_p
     _stub_calibration(monkeypatch, 0.5)
     result = runner.invoke(app, ["calibrate", "--target", pack_dir])
     assert result.exit_code == 1
+    assert (Path(pack_dir) / "calibration.json").exists()
+
+
+def test_calibrate_fails_when_a_rubric_is_weak_despite_strong_overall(monkeypatch, tmp_path):
+    # PR #4 fix #4 follow-up: calibrate's verdict must apply the SAME per-rubric
+    # rule as is_stale — otherwise calibrate prints PASS while the gate refuses
+    # the very record it just wrote. tone pools to (1.0 + 0.6)/2 = 0.8 < 0.85.
+    pack_dir = _write_rubric_pack(tmp_path)
+    _stub_calibration(monkeypatch, 0.9,
+                      per_criterion={"tone:Calm": 1.0, "tone:Firm": 0.6})
+    result = runner.invoke(app, ["calibrate", "--target", pack_dir])
+    assert result.exit_code == 1
+    assert "PASS" not in result.stdout
+    assert "'tone'" in result.stderr and "80%" in result.stderr  # weak rubric named
+    assert "overall agreement: 90%" in result.stdout             # overall still shown
+    # record-written-on-failure is pinned by-design behavior (is_stale rejects it)
     assert (Path(pack_dir) / "calibration.json").exists()
 
 
@@ -484,6 +501,23 @@ def test_gate_exit_2_on_old_schema_baseline(monkeypatch, tmp_path):
                                  "--baseline", str(old_baseline)])
     assert result.exit_code == 2
     assert "predates" in result.stderr and "baseline" in result.stderr
+
+
+def test_gate_exit_2_on_baseline_with_unknown_top_level_field(monkeypatch, tmp_path):
+    # PR #4 fix #9: an unknown top-level baseline key must be a clean setup
+    # error (exit 2), never a TypeError traceback that reads as exit-1 gate FAIL
+    monkeypatch.setenv("EVALYN_TARGET_URL", "http://localhost:8899")
+    monkeypatch.setattr("evalyn.engine.run.run_gate",
+                        _fake_run_gate(_artifact([_probe("ok-probe")])))
+    future = _artifact([_probe("ok-probe")]).to_dict()
+    future["future_field"] = "from-a-newer-evalyn"
+    baseline = tmp_path / "future.json"
+    baseline.write_text(json.dumps(future))
+    result = runner.invoke(app, ["gate", "--target", PACK,
+                                 "--baseline", str(baseline)])
+    assert result.exit_code == 2
+    assert result.exception is None or not isinstance(result.exception, TypeError)
+    assert "baseline error" in result.stderr
 
 
 def test_gate_debug_reraises_run_error(monkeypatch, tmp_path):

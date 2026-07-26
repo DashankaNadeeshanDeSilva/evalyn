@@ -23,6 +23,13 @@ def test_build_task_runs_and_records_reducers(toy_target, monkeypatch):
     assert "pass_k_1" in reducers
     assert "mean" in reducers
     assert logs[0].status == "success"
+    # PR #4 fix #5 (e2e): the judged transcript is EXACTLY the real turns — the
+    # probe id seeded via Sample.input must not survive as a fabricated first
+    # user turn (label leakage into Tier-2/3 judge prompts)
+    sample = logs[0].samples[0]
+    user_texts = [m.text for m in sample.messages if m.role == "user"]
+    assert user_texts == ["Hello"]  # minipack probe inv-nonempty's real turn
+    assert all("inv-nonempty" not in t for t in user_texts)
 
 
 def _mem_pack(tmp_path, judge=None):

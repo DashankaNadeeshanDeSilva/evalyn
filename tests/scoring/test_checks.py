@@ -74,6 +74,34 @@ def test_all_zero_weight_nonrequired_falls_back_to_one():
     assert score == 1.0
 
 
+def test_all_nonrequired_unsure_is_no_signal_not_perfect_score():
+    # PR #4 fix #1 (fail-open): non-required checks EXIST but ALL are unsure —
+    # there is no score signal at all, so the trial must come back unsure with
+    # score None (excluded from mean_score downstream), never a perfect 1.0.
+    crs = [check_result("classifier:0", 2, False, 1.0, None, 0.0, unsure=True),
+           check_result("classifier:1", 2, False, 1.0, None, 0.0, unsure=True)]
+    req_pass, unsure, score = aggregate_trial(crs)
+    assert req_pass is True      # no required checks -> trivially satisfied
+    assert unsure is True        # no-signal trial is NOANSWER, not a pass
+    assert score is None         # excluded from mean_score, never 1.0
+
+
+def test_required_pass_with_all_nonrequired_unsure_is_still_no_signal():
+    crs = [check_result("req", 1, True, 1.0, True, 1.0),
+           check_result("classifier:0", 2, False, 1.0, None, 0.0, unsure=True)]
+    req_pass, unsure, score = aggregate_trial(crs)
+    assert req_pass is True and unsure is True and score is None
+
+
+def test_required_failure_dominates_all_nonrequired_unsure():
+    # a definite required failure zeroes the trial even when every non-required
+    # check is unsure — product failure beats NOANSWER
+    crs = [check_result("req", 1, True, 1.0, False, 0.0),
+           check_result("classifier:0", 2, False, 1.0, None, 0.0, unsure=True)]
+    req_pass, unsure, score = aggregate_trial(crs)
+    assert req_pass is False and unsure is False and score == 0.0
+
+
 def test_required_false_beats_required_unsure_for_trial_unsure():
     # a definite required failure is a product failure, not a NOANSWER
     crs = [check_result("r1", 1, True, 1.0, False, 0.0),

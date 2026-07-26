@@ -11,27 +11,40 @@ test and is never counted.
 
 from __future__ import annotations
 
-# (usd per 1k input tokens, usd per 1k output tokens). Substring match on model id.
-# Static, conservative upper-bound table; update as pricing changes.
+import warnings
+
+# (usd per 1k input tokens, usd per 1k output tokens). Substring match on model
+# id, LONGEST key first (never dict order — "gpt-4o-mini" must beat "gpt-4o").
+# Static table, alphabetized; update as pricing changes.
 PRICES: dict[str, tuple[float, float]] = {
-    "claude-sonnet-5": (0.003, 0.015),
-    "claude-3-5-sonnet": (0.003, 0.015),  # retired id: old baselines/records
     "claude-3-5-haiku": (0.0008, 0.004),
-    "gpt-4o-mini": (0.00015, 0.0006),
+    "claude-3-5-sonnet": (0.003, 0.015),  # retired id: old baselines/records
+    "claude-sonnet-5": (0.003, 0.015),
     "gpt-4o": (0.0025, 0.010),
+    "gpt-4o-mini": (0.00015, 0.0006),
     "gpt-5-mini": (0.00025, 0.002),
     "gpt-5-nano": (0.00005, 0.0004),
 }
-_DEFAULT = (0.003, 0.015)  # assume a mid-tier model if unknown
+# Unknown-model fallback: a genuine conservative UPPER bound (opus-tier). A
+# mid-tier guess would under-meter an expensive judge ~5x and silently keep the
+# cap from ever tripping (PR #4 fix #8).
+_DEFAULT = (0.015, 0.075)
 
 
 class BudgetExceeded(Exception): ...
 
 
 def price_for(model_id: str) -> tuple[float, float]:
-    for key, price in PRICES.items():
+    # longest key first so the most specific substring wins regardless of
+    # dict insertion order
+    for key in sorted(PRICES, key=len, reverse=True):
         if key in model_id:
-            return price
+            return PRICES[key]
+    warnings.warn(
+        f"no price entry for model {model_id!r} — metering with the "
+        f"conservative upper-bound default {_DEFAULT} USD per 1k tokens; add "
+        f"the model to evalyn.engine.budget.PRICES for accurate budgeting",
+        RuntimeWarning, stacklevel=2)
     return _DEFAULT
 
 

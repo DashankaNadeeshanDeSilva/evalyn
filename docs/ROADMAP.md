@@ -74,7 +74,8 @@ and add the A/B `compare` job.
 2. **Tier-3 rubric judge** (the strong AI judge for nuance like tone, completeness, staying in
    character), using the G-Eval method (judge writes its own grading steps first).
 3. **Judge calibration harness** + a small **human-labeled anchor set**: prove the AI judge agrees
-   with human judgment (≥85%) before we trust it, and re-check on every judge/rubric change.
+   with human judgment (≥85%, overall and per rubric) before we trust it, and re-check on every
+   judge/rubric change.
 4. **`compare` (blind A/B)** — the mode that decides which of two versions is better, order-shuffled
    and judged blind, per category, with a flip-means-tie rule.
 5. **CI automation** — a GitHub Action that runs `gate` on relevant pull requests, diffs against a
@@ -90,6 +91,13 @@ produces trustworthy A/B verdicts; CI catches regressions on PRs automatically.
   The gate now runs full 3-tier, transcript-aware, calibrated (fail-closed) scoring against the
   real TwinCore pack, with stream adapters, budget metering, and hardened artifacts.
 - **Plan #2b — `compare` + CI** (items 4–5 above): the **next stage**; its plan is not yet written.
+  **Its FIRST task (decided 2026-07-26, PR #4 review):** the KB-fact-sheet groundedness fix +
+  recalibration — inject a condensed twin-KB fact sheet into the groundedness judge's context,
+  hash it into the staleness rule, recalibrate (existing 20 hand-scored anchors reusable).
+  Rationale: PR #4 adopted **per-rubric fail-closed calibration gating**, which correctly marks
+  the current record stale (groundedness 60% agreement — the judge can't verify claims against a
+  KB it can't see). Front-loading this makes `--allow-uncalibrated` a brief interim state, not
+  the resting state; safety verdicts (deterministic Tier-1 gates) are unaffected meanwhile.
 
 ---
 
