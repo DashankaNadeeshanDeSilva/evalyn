@@ -14,7 +14,8 @@ from __future__ import annotations
 # (usd per 1k input tokens, usd per 1k output tokens). Substring match on model id.
 # Static, conservative upper-bound table; update as pricing changes.
 PRICES: dict[str, tuple[float, float]] = {
-    "claude-3-5-sonnet": (0.003, 0.015),
+    "claude-sonnet-5": (0.003, 0.015),
+    "claude-3-5-sonnet": (0.003, 0.015),  # retired id: old baselines/records
     "claude-3-5-haiku": (0.0008, 0.004),
     "gpt-4o-mini": (0.00015, 0.0006),
     "gpt-4o": (0.0025, 0.010),

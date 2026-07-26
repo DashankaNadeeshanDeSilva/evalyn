@@ -19,6 +19,17 @@ def test_price_for_known_model():
     assert price_for("anthropic/claude-3-5-sonnet-latest")[0] > 0
 
 
+def test_price_table_has_claude_sonnet_5_and_keeps_retired_key():
+    # Task 12: current-generation judge model priced EXPLICITLY (not via the
+    # unknown-model default); the retired claude-3-5-sonnet key stays (old
+    # baselines/records may still name it)
+    from evalyn.engine.budget import PRICES
+
+    assert PRICES.get("claude-sonnet-5") == (0.003, 0.015)
+    assert "claude-3-5-sonnet" in PRICES
+    assert price_for("anthropic/claude-sonnet-5") == (0.003, 0.015)
+
+
 def test_estimate_cost_sums_models():
     usage = {"anthropic/claude-3-5-sonnet-latest": _U(1000, 1000)}
     cost = estimate_cost(usage)
@@ -70,7 +81,8 @@ def test_run_gate_over_cap_writes_artifact_then_raises(toy_target, monkeypatch,
     monkeypatch.setattr("evalyn.engine.run._judge_usd", lambda: 7.5)
     pack = load_pack(str(REPO_EXAMPLE))
     with pytest.raises(BudgetExceeded, match="max_usd_per_run"):
-        run_gate(pack, judge_model="mockllm/model", log_dir=str(tmp_path / "logs"))
+        run_gate(pack, judge_model="mockllm/model", log_dir=str(tmp_path / "logs"),
+                 out_dir=str(tmp_path / "runs"))
     # the partial artifact survives the breach, with the spend recorded
     [artifact] = (tmp_path / "runs").glob("*.json")
     assert json.loads(artifact.read_text())["judge_usd"] == 7.5
@@ -83,5 +95,6 @@ def test_run_gate_under_cap_records_judge_usd(toy_target, monkeypatch, tmp_path)
     monkeypatch.chdir(tmp_path)
     monkeypatch.setattr("evalyn.engine.run._judge_usd", lambda: 0.25)
     pack = load_pack(str(REPO_EXAMPLE))
-    art = run_gate(pack, judge_model="mockllm/model", log_dir=str(tmp_path / "logs"))
+    art = run_gate(pack, judge_model="mockllm/model", log_dir=str(tmp_path / "logs"),
+                   out_dir=str(tmp_path / "runs"))
     assert art.judge_usd == 0.25

@@ -151,51 +151,34 @@ def test_gate_dry_run_makes_no_calls(monkeypatch):
 # -------------------------------------------- gate: validate-pack fail-closed
 
 
-def _write_pack_dir(tmp_path: Path, probes_yaml: str) -> str:
-    pack_dir = tmp_path / "pack"
-    (pack_dir / "probes").mkdir(parents=True)
-    (pack_dir / "target.yaml").write_text(
-        "name: t\n"
-        "sessions:\n"
-        "  open: { method: POST, path: /session }\n"
-        "  message: { method: POST, path: /chat }\n"
-        "env: { base_url: http://localhost:8899 }\n"
-        "allowlist: [http://localhost:8899]\n")
-    (pack_dir / "probes" / "p.yaml").write_text(probes_yaml)
-    return str(pack_dir)
-
-
-def test_gate_exit_2_on_dangling_invariant_ref(tmp_path):
+def test_gate_exit_2_on_dangling_invariant_ref(minimal_pack):
     # A required invariant check with a dangling ref silently no-ops at scoring
     # time — the gate must fail closed (exit 2) before evaluating, incl. dry-run.
-    pack_dir = _write_pack_dir(
-        tmp_path,
+    pack_dir = str(minimal_pack(
         "- id: p1\n  category: c\n  turns: [hi]\n  checks:\n"
-        "    - { type: invariant, ref: no-such-invariant, required: true }\n")
+        "    - { type: invariant, ref: no-such-invariant, required: true }\n"))
     result = runner.invoke(app, ["gate", "--target", pack_dir, "--dry-run"])
     assert result.exit_code == 2
     assert "no-such-invariant" in result.stderr
     assert "setup error" in result.stderr
 
 
-def test_gate_exit_2_on_contains_check_missing_value(tmp_path):
-    pack_dir = _write_pack_dir(
-        tmp_path,
+def test_gate_exit_2_on_contains_check_missing_value(minimal_pack):
+    pack_dir = str(minimal_pack(
         "- id: p1\n  category: c\n  turns: [hi]\n  checks:\n"
-        "    - { type: contains, required: true }\n")
+        "    - { type: contains, required: true }\n"))
     result = runner.invoke(app, ["gate", "--target", pack_dir, "--dry-run"])
     assert result.exit_code == 2
     assert "value" in result.stderr
     assert "setup error" in result.stderr
 
 
-def test_gate_validation_warnings_do_not_abort(tmp_path):
+def test_gate_validation_warnings_do_not_abort(minimal_pack):
     # attack-only category triggers a validate-pack warning; warnings must
     # print but never abort the gate
-    pack_dir = _write_pack_dir(
-        tmp_path,
+    pack_dir = str(minimal_pack(
         "- id: atk\n  category: injection\n  safety_critical: true\n  turns: [hi]\n"
-        "  checks:\n    - { type: invariant, ref: non-empty, required: true }\n")
+        "  checks:\n    - { type: invariant, ref: non-empty, required: true }\n"))
     result = runner.invoke(app, ["gate", "--target", pack_dir, "--dry-run"])
     assert result.exit_code == 0
     assert "warning:" in result.stdout
@@ -482,3 +465,103 @@ def test_gate_dry_run_skips_calibration_check(tmp_path):
     pack_dir = _write_rubric_pack(tmp_path)
     result = runner.invoke(app, ["gate", "--target", pack_dir, "--dry-run"])
     assert result.exit_code == 0
+
+
+# ------------------------------- Task 12: exit-2 mappings, --debug, --out-dir
+
+def test_gate_exit_2_on_old_schema_baseline(monkeypatch, tmp_path):
+    # a pre-Plan-#2a baseline must be a clean exit-2 message, not a traceback
+    monkeypatch.setenv("EVALYN_TARGET_URL", "http://localhost:8899")
+    monkeypatch.setattr("evalyn.engine.run.run_gate",
+                        _fake_run_gate(_artifact([_probe("ok-probe")])))
+    old_baseline = tmp_path / "old.json"
+    old_baseline.write_text(json.dumps({
+        "pack_name": "example", "pack_hash": "a" * 64, "judge_model": "m",
+        "created_at": "2026-01-01T00:00:00+00:00", "log_path": "runs/logs",
+        "probes": [{"id": "p", "passed": True}],  # Plan #1 shape
+    }))
+    result = runner.invoke(app, ["gate", "--target", PACK,
+                                 "--baseline", str(old_baseline)])
+    assert result.exit_code == 2
+    assert "predates" in result.stderr and "baseline" in result.stderr
+
+
+def test_gate_debug_reraises_run_error(monkeypatch, tmp_path):
+    monkeypatch.setenv("EVALYN_TARGET_URL", "http://localhost:8899")
+
+    def boom(pack, judge_model="mockllm/model", **kwargs):
+        raise ConnectionError("target unreachable")
+
+    monkeypatch.setattr("evalyn.engine.run.run_gate", boom)
+    result = runner.invoke(app, ["gate", "--target", PACK, "--debug",
+                                 "--baseline", str(tmp_path / "none.json")])
+    assert isinstance(result.exception, ConnectionError)
+
+
+def test_calibrate_exit_2_on_malformed_anchor(monkeypatch, tmp_path):
+    # an anchor missing `rubric`/`transcript` keys is a clean setup error,
+    # never a raw KeyError traceback
+    pack_dir = _write_rubric_pack(tmp_path)
+    (Path(pack_dir) / "anchors" / "a1.yaml").write_text("scores:\n  Tone: 4\n")
+    result = runner.invoke(app, ["calibrate", "--target", pack_dir])
+    assert result.exit_code == 2
+    assert "setup error" in result.stderr
+    assert "a1.yaml" in result.stderr and "rubric" in result.stderr
+
+
+def test_calibrate_exit_2_on_missing_rubric_file(monkeypatch, tmp_path):
+    # anchor references a rubric whose file is gone -> clean exit 2, no traceback
+    pack_dir = _write_rubric_pack(tmp_path)
+    (Path(pack_dir) / "rubrics" / "tone.md").unlink()
+    result = runner.invoke(app, ["calibrate", "--target", pack_dir])
+    assert result.exit_code == 2
+    assert "setup error" in result.stderr and "tone" in result.stderr
+
+
+def test_calibrate_debug_reraises_missing_rubric_file(monkeypatch, tmp_path):
+    pack_dir = _write_rubric_pack(tmp_path)
+    (Path(pack_dir) / "rubrics" / "tone.md").unlink()
+    result = runner.invoke(app, ["calibrate", "--target", pack_dir, "--debug"])
+    assert isinstance(result.exception, FileNotFoundError)
+
+
+def test_gate_update_baseline_echoes_pass_verdict(monkeypatch, tmp_path):
+    monkeypatch.setenv("EVALYN_TARGET_URL", "http://localhost:8899")
+    art = _artifact([_probe("ok-probe", safety=True, pass_k=1.0)])
+    monkeypatch.setattr("evalyn.engine.run.run_gate", _fake_run_gate(art))
+    result = runner.invoke(app, ["gate", "--target", PACK,
+                                 "--baseline", str(tmp_path / "b.json"),
+                                 "--update-baseline"])
+    assert result.exit_code == 0
+    assert "PASS" in result.stdout  # the verdict being blessed is echoed
+
+
+def test_gate_update_baseline_echoes_fail_verdict_but_still_saves(monkeypatch, tmp_path):
+    monkeypatch.setenv("EVALYN_TARGET_URL", "http://localhost:8899")
+    art = _artifact([_probe("leaky", safety=True, pass_k=0.0, mean=0.5)])
+    monkeypatch.setattr("evalyn.engine.run.run_gate", _fake_run_gate(art))
+    baseline_path = tmp_path / "b.json"
+    result = runner.invoke(app, ["gate", "--target", PACK,
+                                 "--baseline", str(baseline_path),
+                                 "--update-baseline"])
+    assert result.exit_code == 0  # blessing is explicit; verdict never blocks it
+    assert "FAIL" in result.stdout
+    assert baseline_path.exists()
+
+
+def test_gate_out_dir_threads_to_run_gate(monkeypatch, tmp_path):
+    monkeypatch.setenv("EVALYN_TARGET_URL", "http://localhost:8899")
+    art = _artifact([_probe("ok-probe")])
+    seen = {}
+
+    def fake_run(pack, judge_model="mockllm/model", **kwargs):
+        seen.update(kwargs)
+        return art
+
+    monkeypatch.setattr("evalyn.engine.run.run_gate", fake_run)
+    out = tmp_path / "artifacts"
+    result = runner.invoke(app, ["gate", "--target", PACK,
+                                 "--baseline", str(tmp_path / "none.json"),
+                                 "--out-dir", str(out)])
+    assert result.exit_code == 0
+    assert seen["out_dir"] == str(out)

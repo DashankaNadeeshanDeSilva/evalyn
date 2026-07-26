@@ -152,6 +152,17 @@ def test_load_anchors_missing_dir_returns_empty(tmp_path):
     assert load_anchors(_pack(tmp_path)) == []
 
 
+def test_load_anchors_missing_required_key_raises_packerror(tmp_path):
+    # Task 12: malformed anchors surface as PackError (clean CLI exit 2),
+    # never a raw KeyError
+    from evalyn.targets.loader import PackError
+
+    pack = _pack(tmp_path)
+    _anchor_yaml(tmp_path, "bad", body="scores:\n  Tone: 4\n")
+    with pytest.raises(PackError, match="bad.yaml.*'rubric'"):
+        load_anchors(pack)
+
+
 # ------------------------------------------------------------ run_calibration
 
 

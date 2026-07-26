@@ -138,6 +138,19 @@ def test_report_md_marks_pass_and_fail():
     assert "inj" in res.report_md
 
 
+def test_report_md_prints_total_unsure_trials():
+    # Task 12: NOANSWER accounting is part of the human-readable report
+    art = _art([_probe("ok")])
+    art.total_unsure_trials = 3
+    res = evaluate_gate(art, baseline=None)
+    assert "3 unsure trial(s)" in res.report_md
+
+
+def test_report_md_omits_unsure_line_when_zero():
+    res = evaluate_gate(_art([_probe("ok")]), baseline=None)
+    assert "unsure trial" not in res.report_md
+
+
 def test_exit_code_is_exactly_the_failure_verdict():
     ok = evaluate_gate(_art([_probe("ok")]), baseline=None)
     assert ok.exit_code == 0 and not ok.failures

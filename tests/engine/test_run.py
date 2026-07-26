@@ -6,8 +6,7 @@ import pytest
 
 from evalyn.engine.run import (RunArtifact, _reduce_log_to_probes,
                                pack_fingerprint, run_gate)
-from evalyn.targets.loader import Pack, load_pack
-from evalyn.targets.schema import Probe, TargetSpec
+from evalyn.targets.loader import load_pack
 
 EXAMPLE = "packs/example"
 REPO_EXAMPLE = Path(__file__).resolve().parent.parent.parent / "packs" / "example"
@@ -40,21 +39,9 @@ def _cr(check, tier, required, passed, score, weight=1.0, unsure=False):
             "unsure": unsure}
 
 
-# Local stand-in for Task 12's shared `minimal_pack_with_probe` fixture.
-def _mini_pack(pid="p", *, safety_critical=False, kind="regression", samples=2):
-    spec = TargetSpec(
-        name="mini",
-        sessions={"chat": {"method": "POST", "path": "/chat"}},
-        allowlist=["http://localhost:1"])
-    probe = Probe(id=pid, category="misc", kind=kind, safety_critical=safety_critical,
-                  turns=["hi"], checks=[{"type": "contains", "value": "x"}],
-                  samples=samples)
-    return Pack(spec=spec, probes=[probe], root=Path("."))
-
-
-def test_reducer_combines_tiers_per_trial():
+def test_reducer_combines_tiers_per_trial(minimal_pack_with_probe):
     # probe "p": required tier1 pass + non-required tier3 score 0.5, over 2 epochs
-    pack = _mini_pack("p", samples=2)
+    pack = minimal_pack_with_probe("p", samples=2)
     samples = []
     for epoch in (1, 2):
         samples.append(_FakeSample("p", epoch, {
@@ -67,10 +54,10 @@ def test_reducer_combines_tiers_per_trial():
     assert pr.checks  # representative checks carried for the report
 
 
-def test_reducer_nonrequired_miss_lowers_mean_not_pass_k():
+def test_reducer_nonrequired_miss_lowers_mean_not_pass_k(minimal_pack_with_probe):
     # closes the Task-2 interim window: Score.value is ignored; a non-required
     # miss must lower mean_score while the binary required verdict stays a pass
-    pack = _mini_pack("p", samples=1)
+    pack = minimal_pack_with_probe("p", samples=1)
     sample = _FakeSample("p", 1, {
         "tier1": _FakeScore({"checks": [_cr("inv", 1, True, True, 1.0)]}),
         "tier2": _FakeScore({"checks": [_cr("classifier:0", 2, False, False, 0.0)]}),
@@ -80,8 +67,8 @@ def test_reducer_nonrequired_miss_lowers_mean_not_pass_k():
     assert pr.mean_score == 0.0      # but the non-required miss drags the mean
 
 
-def test_reducer_required_unsure_counts_noanswer_not_pass():
-    pack = _mini_pack("p", samples=1)
+def test_reducer_required_unsure_counts_noanswer_not_pass(minimal_pack_with_probe):
+    pack = minimal_pack_with_probe("p", samples=1)
     sample = _FakeSample("p", 1, {
         "tier2": _FakeScore({"checks": [_cr("classifier:0", 2, True, None, 0.0,
                                             unsure=True)]}),
@@ -91,8 +78,8 @@ def test_reducer_required_unsure_counts_noanswer_not_pass():
     assert pr.unsure_trials == 1                      # but is counted distinctly
 
 
-def test_reducer_mixed_epochs_pass_at_k_vs_pass_k():
-    pack = _mini_pack("p", samples=2)
+def test_reducer_mixed_epochs_pass_at_k_vs_pass_k(minimal_pack_with_probe):
+    pack = minimal_pack_with_probe("p", samples=2)
     samples = [
         _FakeSample("p", 1, {"tier1": _FakeScore(
             {"checks": [_cr("inv", 1, True, True, 1.0)]})}),
@@ -105,11 +92,11 @@ def test_reducer_mixed_epochs_pass_at_k_vs_pass_k():
     assert pr.mean_score == 0.5  # (1.0 + 0.0) / 2 (required fail zeroes epoch 2)
 
 
-def test_reducer_sample_with_no_checks_anywhere_is_not_a_trial():
+def test_reducer_sample_with_no_checks_anywhere_is_not_a_trial(minimal_pack_with_probe):
     # fail-closed: an errored trial (scores present but NO checks metadata in
     # any scorer) must leave trials == 0 so the gate hard-fails it as MISSING —
     # never a silent pass
-    pack = _mini_pack("p", samples=1)
+    pack = minimal_pack_with_probe("p", samples=1)
     sample = _FakeSample("p", 1, {
         "tier1": _FakeScore(None),   # Score.metadata defaults to None
         "tier2": _FakeScore({}),     # or metadata without "checks"
@@ -119,9 +106,9 @@ def test_reducer_sample_with_no_checks_anywhere_is_not_a_trial():
     assert pr.pass_at_k == 0.0 and pr.pass_k == 0.0 and pr.mean_score == 0.0
 
 
-def test_reducer_tolerates_unknown_scorer_names():
+def test_reducer_tolerates_unknown_scorer_names(minimal_pack_with_probe):
     # tier3 arrives in Task 4; the reducer must consume whatever scorers exist
-    pack = _mini_pack("p", samples=1)
+    pack = minimal_pack_with_probe("p", samples=1)
     sample = _FakeSample("p", 1, {
         "some-future-scorer": _FakeScore(
             {"checks": [_cr("rubric:tone", 3, False, True, 0.8)]}),
@@ -150,7 +137,8 @@ def test_run_gate_produces_artifact_with_per_probe_trial_stats(toy_target, monke
                                                                tmp_path):
     monkeypatch.setenv("EVALYN_TARGET_URL", toy_target)
     pack = load_pack(EXAMPLE)
-    art = run_gate(pack, judge_model="mockllm/model", log_dir=str(tmp_path / "logs"))
+    art = run_gate(pack, judge_model="mockllm/model", log_dir=str(tmp_path / "logs"),
+                   out_dir=str(tmp_path / "runs"))  # keep runs/ out of the repo CWD
     ids = {p.id for p in art.probes}
     assert "injection-trust-pivot" in ids
     inj = next(p for p in art.probes if p.id == "injection-trust-pivot")

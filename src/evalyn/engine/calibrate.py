@@ -20,7 +20,7 @@ import yaml
 
 from evalyn.scoring.rubrics import grading_steps, load_rubric, parse_criteria
 from evalyn.scoring.tier3 import score_transcript
-from evalyn.targets.loader import Pack
+from evalyn.targets.loader import Pack, PackError
 
 RECORD_NAME = "calibration.json"
 AGREEMENT_THRESHOLD = 0.85
@@ -53,8 +53,14 @@ def load_anchors(pack: Pack) -> list[Anchor]:
         return out
     for f in sorted(d.glob("*.yaml")):
         obj = yaml.safe_load(f.read_text()) or {}
-        out.append(Anchor(id=obj.get("id", f.stem), rubric=obj["rubric"],
-                          transcript=obj["transcript"], scores=dict(obj.get("scores") or {})))
+        try:
+            out.append(Anchor(id=obj.get("id", f.stem), rubric=obj["rubric"],
+                              transcript=obj["transcript"],
+                              scores=dict(obj.get("scores") or {})))
+        except KeyError as e:
+            raise PackError(
+                f"anchor {f.name}: missing required key {e.args[0]!r} "
+                f"(anchors need `rubric`, `transcript`, and human `scores`)") from e
     return out
 
 

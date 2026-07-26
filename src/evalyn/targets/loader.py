@@ -5,10 +5,11 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 import yaml
+from pydantic import ValidationError
 
 from evalyn.targets.schema import Probe, TargetSpec
 
-_ENV_RE = re.compile(r"\$\{(?P<name>[A-Z0-9_]+)(?::-(?P<default>[^}]*))?\}")
+_ENV_RE = re.compile(r"\$\{(?P<name>[A-Za-z0-9_]+)(?::-(?P<default>[^}]*))?\}")
 
 
 class PackError(Exception): ...
@@ -27,8 +28,14 @@ class Pack:
 
 
 def _resolve_env_string(value: str) -> str:
+    """Resolve ``${VAR}`` / ``${VAR:-default}`` placeholders (upper- or
+    lowercase names). Bash ``:-`` semantics: a var that is UNSET **or set but
+    empty** falls back to the default (empty string when no default given)."""
     def repl(m: re.Match) -> str:
-        return os.environ.get(m.group("name"), m.group("default") or "")
+        val = os.environ.get(m.group("name"))
+        if not val:  # unset OR set-but-empty -> default
+            return m.group("default") or ""
+        return val
     return _ENV_RE.sub(repl, value)
 
 
@@ -50,7 +57,7 @@ def load_pack(path: str | Path) -> Pack:
                 endpoint["path"] = _resolve_env_string(endpoint["path"])
     try:
         spec = TargetSpec.model_validate(raw)
-    except Exception as e:  # pydantic ValidationError
+    except ValidationError as e:
         raise PackError(f"invalid target.yaml: {e}") from e
 
     probes: list[Probe] = []
@@ -63,7 +70,7 @@ def load_pack(path: str | Path) -> Pack:
         for entry in entries:
             try:
                 probes.append(Probe.model_validate(entry))
-            except Exception as e:
+            except ValidationError as e:
                 raise PackError(f"invalid probe in {pf.name}: {e}") from e
 
     seen: set[str] = set()

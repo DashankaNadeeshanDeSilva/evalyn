@@ -349,7 +349,8 @@ per verified task (user, 2026-07-24); push/PR ask-first.
 | 8 | Artifact hardening: fingerprint over raw pack bytes (`Pack.raw_files`, env-independent — localhost vs 127.0.0.1 same hash), `out_dir` param, atomic `mkstemp`+`os.replace` artifact write, `RunArtifact.total_unsure_trials` surfaced; Task-7 write-before-raise ordering preserved | `bab3c14` | ✅ done, Fable review clean (0 findings above Minor) |
 | 9 | validate-pack extensions: P4 `value` XOR `values` exclusivity (incl. dedicated `not_contains`+`values` typo error), static rubric-ref validation (missing id / nonexistent `rubrics/<id>.md`, message + README teach `##`-heading criteria), `contains:a\|b` label parity verified against tier1 scorer, capability+safety_critical contradiction warning, interim multi-turn warning retired (substring RED-verified against real output first) | `5659b40` | ✅ done, Fable review clean (0 findings above Minor) |
 | 10 | TwinCore reference pack: `packs/twincore/` (consent+chat named-sse target, 31-case injection port with literal base64, grounding/persona/scope/pii probes, 4 rubrics, README), loader `${…}` resolution in `sessions.*.path`, allowlist localhost+127.0.0.1:8000; contract re-verified against `niuwnai-mvp@dev` `9f30e8a` | `c2f1dde` | ✅ done, Fable review clean (0 findings above Minor; 6 disclosed deviations all verified acceptable) |
-| 11 | **Human-gated calibration checkpoint:** `run_calibration` concurrency cap (semaphore, default 4) pre-flight; 20 anchors captured live (slug `evalyn`, 12 from a contained capture incident + 8 supervised) and human-scored; judge `claude-3-5-sonnet-latest` found RETIRED (404) → user-approved successor `anthropic/claude-sonnet-5`; 5 calibration runs with 4 rubric-wording iterations (60%→75%→78%→82.5%→**88% PASS**, threshold 85%) + user re-assessed 2 groundedness labels; `calibration.json` committed | `6107596` + this commit | ✅ done — judge calibrated at 88% (35/40 within ±1) |
+| 11 | **Human-gated calibration checkpoint:** `run_calibration` concurrency cap (semaphore, default 4) pre-flight; 20 anchors captured live (slug `evalyn`, 12 from a contained capture incident + 8 supervised) and human-scored; judge `claude-3-5-sonnet-latest` found RETIRED (404) → user-approved successor `anthropic/claude-sonnet-5`; 5 calibration runs with 4 rubric-wording iterations (60%→75%→78%→82.5%→**88% PASS**, threshold 85%) + user re-assessed 2 groundedness labels; `calibration.json` committed | `6107596` + `ab53694` | ✅ done — judge calibrated at 88% (35/40 within ±1) |
+| 12 | CLI wiring + cleanup bundle: `--debug` re-raise on all exit-2 paths, exit-2 mappings (old-schema baseline `RuntimeError`, malformed-anchor `KeyError`→`PackError` at source, missing-rubric `FileNotFoundError`), `--update-baseline` echoes verdict, `--out-dir` threads `run_gate(out_dir=…)`, `total_unsure_trials` printed when nonzero; loader hardening (`ValidationError`-narrowed, `${VAR:-}` set-but-empty semantics, lowercase env names, `extra="forbid"` + typo'd-key tests, `load_anchors` unbroken); PRICES `claude-sonnet-5` entry (retired key kept); `anthropic>=0.120` + `click>=8.2` in pyproject (survives `uv sync`); shared `minimal_pack`/`minimal_pack_with_probe` conftest fixtures; older tests threaded `out_dir=tmp_path` | this commit | ✅ done, Fable review clean (0 findings above Minor; verify-only items confirmed: Task 6 `event_format` validator, Task 10 `${…}` session-path test pins) |
 
 **Session handoff (2026-07-25):** Tasks 1–5 built in session 1 (this record); Tasks 6–13 continue
 in a fresh session — kickoff prompt in
@@ -377,8 +378,8 @@ in a fresh session — kickoff prompt in
 - [x] ~~INTERIM: `run.py` gates per-epoch on `Score.value == CORRECT`~~ — **CLOSED in Task 3**
       (reviewer-verified: `CORRECT` import removed, reducer reads only metadata CheckResults,
       tests prove `Score.value` is ignored).
-- [ ] Old-baseline RuntimeError surfaces via typer traceback (message + non-zero exit intact) —
-      clean exit-2 mapping belongs to CLI polish. *(minor, tagged Task 12)*
+- [x] ~~Old-baseline RuntimeError surfaces via typer traceback~~ — **CLOSED in Task 12**
+      (exit-2 mapping + `--debug` re-raise, test-pinned).
 - [ ] Design-gap #2 pin is two engine tests in composition (reducer partial score; gate band
       flip) — the single composed e2e flow lands in Task 13. *(tagged Task 13)*
 - [ ] `schema.py` `weight` docstring — **CLOSED in Task 3** (rewritten with real semantics,
@@ -391,9 +392,9 @@ in a fresh session — kickoff prompt in
       ValueError instead. *(minor, final review)*
 - [ ] `_median` int-truncates .5 at even k (irrelevant at k=3); `_parse` tolerates extra
       unlisted criteria (undocumented leniency). *(minor)*
-- [ ] Calibrate CLI: malformed anchor YAML (missing `rubric`/`transcript`) raises raw KeyError;
-      missing rubric file raises FileNotFoundError traceback — map both to setup-error exit 2.
-      *(minor, tagged Task 12)*
+- [x] ~~Calibrate CLI: malformed anchor raw KeyError; missing rubric FileNotFoundError
+      traceback~~ — **CLOSED in Task 12** (KeyError wrapped as `PackError` in `load_anchors`
+      itself so library callers benefit too; both mapped to exit 2, tested at unit + CLI level).
 - [x] `run_calibration` `asyncio.gather` has no concurrency cap — **CLOSED in Task 11 pre-flight**
       (keyword-only `max_concurrency: int = 4`, semaphore around the awaited judge call,
       `< 1` → ValueError before any work; reviewer-verified discriminating tests).
@@ -426,13 +427,13 @@ in a fresh session — kickoff prompt in
 - [ ] Hand-built `Pack` with empty `raw_files` hashes to one constant fingerprint (two
       different in-memory packs false-match) — only reachable outside `load_pack`; a
       warn/raise on empty `raw_files` would be fail-closed. *(minor, final review)*
-- [ ] Older `run_gate` tests omit `out_dir` and write CWD `runs/` during test runs
-      (test_budget.py, test_e2e_gate.py, test_run.py) — thread `out_dir=tmp_path` through.
-      *(minor, tagged Task 12/13 cleanup)*
+- [x] ~~Older `run_gate` tests write CWD `runs/`~~ — **CLOSED in Task 12** (`out_dir=tmp_path`
+      threaded through test_budget.py, test_e2e_gate.py, test_run.py).
 - [ ] Atomic-write house pattern leaves artifacts/caches mode 0600 (mkstemp default, not
       umask) — style observation, applies to rubrics.py cache too. *(minor)*
-- [ ] Task 8 flagged for later tasks: CLI `--out-dir` not exposed; human-readable gate
-      report doesn't print `total_unsure_trials`. *(tagged Task 12 CLI wiring / Task 13)*
+- [x] ~~Task 8 flagged: CLI `--out-dir` not exposed; gate report doesn't print
+      `total_unsure_trials`~~ — **CLOSED in Task 12** (both landed, test-pinned incl.
+      omitted-at-zero behavior).
 - [x] **USER DECISION RESOLVED (2026-07-25, session 3):** TwinCore not-in-KB honesty
       classifiers **stay non-required** — score-weighted, band-moving, but a single flaky
       Tier-2 judge call cannot hard-fail the gate. Revisit after the first live runs show
@@ -442,12 +443,11 @@ in a fresh session — kickoff prompt in
       wording ("precise, mutually consistent numbers = band 4"), but the structural fix is to
       inject a condensed KB fact sheet into the groundedness judge's context (hash it with the
       rubric so staleness catches edits). *(enhancement, defer: Plan #2b / final-review triage)*
-- [ ] `engine/budget.py` PRICES has only the retired `claude-3-5-sonnet` key; `claude-sonnet-5`
-      falls through to `_DEFAULT` (0.003/0.015 — coincidentally correct list price, misses the
-      intro discount). Add an explicit entry. *(minor, tagged Task 12)*
-- [ ] `anthropic` provider package installed venv-only (`uv pip install`) to unblock the live
-      judge — decide pyproject placement (dependency vs `[judges]` extra) so `uv sync` doesn't
-      drop it. *(tagged Task 12)*
+- [x] ~~PRICES lacks explicit `claude-sonnet-5` entry~~ — **CLOSED in Task 12**
+      (`"claude-sonnet-5": (0.003, 0.015)` added, retired key kept; test asserts on PRICES
+      directly since `_DEFAULT` equals the same tuple).
+- [x] ~~`anthropic` package venv-only, dropped by `uv sync`~~ — **CLOSED in Task 12**
+      (`anthropic>=0.120` as a plain dependency; controller-verified surviving `uv sync`).
 - [ ] Calibration observed k=3 judge sampling noise of ±1 agreement band on untouched rubrics
       (completeness 100→80→100 across runs) — passed at 88% with margin, but consider k or
       per-criterion sample count if future packs land near the threshold. *(minor, final review)*
@@ -459,12 +459,27 @@ in a fresh session — kickoff prompt in
       duplicated inline list in `injection-exfil-boundaries`, README quotes) — a constant change
       is a 3-site edit, not 1. *(minor)*
 - [ ] `tests/packs/test_twincore_validate.py` assumes repo-root cwd (`PACK = "packs/twincore"`)
-      — anchor via `Path(__file__).parents[2]`. *(minor, tagged Task 12 cleanup)*
+      — anchor via `Path(__file__).parents[2]`. *(minor; was tagged Task 12 but not in its
+      dispatched scope — re-deferred to final review)*
 - [ ] `pii-direct-ask-contact` is the only pack probe with neither a rubric check nor a
       `first-person` invariant, unlike its siblings — confirm deliberate. *(minor)*
 - [ ] Task 9 polish: `not_contains`+`values`-without-`value` emits two errors for one
       mistake; `values` sentinel checks mix `is not None` vs truthy between sections;
       README "Also… Also" phrasing; rubric ids used as file stems unsanitized (path-ish
       ids like `../x` resolve outside `rubrics/` — pre-existing). *(minor)*
+- [ ] Task 12 review minors: `load_anchors` malformed-anchor error message says anchors need
+      `scores` but a missing `scores` never raises (handled downstream as skipped) — message
+      overstates; and a non-dict `scores` (e.g. `scores: "high"`) still escapes as a raw
+      `ValueError`/`TypeError` traceback (only `KeyError` is wrapped). *(minor, final review)*
+- [ ] Task 12 test polish: cramped one-line formatting at migrated `minimal_pack` call sites
+      (test_validate.py); `minimal_pack` factory hardcodes `tmp_path / "pack"` + `mkdir()` so a
+      second call in one test would fail — fine today, decide `exist_ok`/comment if reuse grows.
+      *(minor)*
+- [ ] `stream:` field has NO static validator (only `event_format` does) — a typo like
+      `stream: ssse` silently degrades to non-streaming. Pre-existing omission discovered during
+      Task 12's verify step, correctly not patched there (verify-only note). *(minor, final
+      review triage — candidate quick fix or Plan #2b)*
+- [ ] `anthropic>=0.120` floor is tight for PyPI consumers (pinned to the venv-validated
+      version) — loosen before a public PyPI cut. *(minor, pre-release checklist)*
 
 ## Plan #3 — `discover` + flywheel *(not started)*

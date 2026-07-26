@@ -1,11 +1,12 @@
 from __future__ import annotations
 from typing import Literal
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 CheckType = Literal["invariant", "classifier", "contains", "not_contains", "rubric"]
 
 
 class Check(BaseModel):
+    model_config = ConfigDict(extra="forbid")
     type: CheckType
     ref: str | None = None          # for type=invariant: which invariant id
     question: str | None = None     # for type=classifier
@@ -44,6 +45,7 @@ class Check(BaseModel):
 
 
 class Probe(BaseModel):
+    model_config = ConfigDict(extra="forbid")
     id: str
     category: str
     kind: Literal["regression", "capability"] = "regression"
@@ -58,6 +60,7 @@ _EVENT_FORMATS = {"vercel-ai", "raw-sse", "named-sse", "json"}
 
 
 class SessionEndpoint(BaseModel):
+    model_config = ConfigDict(extra="forbid")
     method: str
     path: str
     stream: str | None = None       # "sse" | None
@@ -78,29 +81,35 @@ class SessionEndpoint(BaseModel):
 
 
 class AuthSpec(BaseModel):
+    model_config = ConfigDict(extra="forbid")
     kind: Literal["none", "bearer", "header"] = "none"
     token: str | None = None
     header_name: str | None = None
 
 
 class StateCheck(BaseModel):
+    model_config = ConfigDict(extra="forbid")
     id: str
     request: dict
     expect: dict
 
 
 class StateSpec(BaseModel):
+    model_config = ConfigDict(extra="forbid")
     checks: list[StateCheck] = Field(default_factory=list)
     seed_fingerprint: dict | None = None
     reset: dict | None = None
 
 
 class Invariant(BaseModel):
+    model_config = ConfigDict(extra="forbid")
     id: str
 
 
 class Budget(BaseModel):
     """Run budget caps."""
+
+    model_config = ConfigDict(extra="forbid")
 
     max_usd_per_run: float = Field(
         default=5.0,
@@ -119,6 +128,8 @@ class JudgeSpec(BaseModel):
     """Tier-3 rubric-judge configuration. Judge != generator family by default
     (self-preference bias); a family match is a warning, never an error."""
 
+    model_config = ConfigDict(extra="forbid")
+
     rubric_model: str = "anthropic/claude-3-5-sonnet-latest"
     generator_family: str | None = Field(
         default=None,
@@ -127,6 +138,7 @@ class JudgeSpec(BaseModel):
 
 
 class TargetSpec(BaseModel):
+    model_config = ConfigDict(extra="forbid")
     name: str
     description: str = ""
     sessions: dict[str, SessionEndpoint]

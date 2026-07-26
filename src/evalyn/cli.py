@@ -23,6 +23,11 @@ def gate(
     baseline: str = typer.Option("runs/baseline.json", "--baseline"),
     update_baseline: bool = typer.Option(False, "--update-baseline"),
     dry_run: bool = typer.Option(False, "--dry-run"),
+    out_dir: str = typer.Option(
+        "runs", "--out-dir", help="Directory the run artifact is written to."),
+    debug: bool = typer.Option(
+        False, "--debug",
+        help="Re-raise errors with full tracebacks instead of clean exit-2 messages."),
 ):
     """Run the deterministic probe suite against a target and diff vs baseline."""
     from evalyn.engine import run as run_mod
@@ -36,6 +41,8 @@ def gate(
         pack = load_pack(target)
         base_url = resolve_base_url(pack)  # enforces allowlist
     except (PackError, AllowlistError) as e:
+        if debug:
+            raise
         typer.echo(f"gate: setup error: {e}", err=True)
         raise typer.Exit(2)
 
@@ -85,21 +92,38 @@ def gate(
     try:
         art = run_mod.run_gate(pack, judge_model=judge_model,
                                rubric_judge_model=rubric_judge_model,
-                               rubric_scores_untrusted=rubric_untrusted)
+                               rubric_scores_untrusted=rubric_untrusted,
+                               out_dir=out_dir)
     except BudgetExceeded as e:
+        if debug:
+            raise
         typer.echo(f"gate: budget exceeded: {e} — partial run artifact is on "
-                   f"disk under runs/ for inspection", err=True)
+                   f"disk under {out_dir}/ for inspection", err=True)
         raise typer.Exit(2)
     except Exception as e:  # connection / infra
+        if debug:
+            raise
         typer.echo(f"gate: run error: {e}", err=True)
         raise typer.Exit(2)
 
     if update_baseline:
+        # Echo the verdict being blessed — an explicit bless never blocks, but
+        # blessing a FAIL should be a visible, deliberate act.
+        verdict = evaluate_gate(art, None)
+        typer.echo(f"gate: blessing {'FAIL' if verdict.exit_code else 'PASS'} verdict "
+                   f"({len(verdict.failures)} failure(s), "
+                   f"{len(verdict.quarantined)} quarantined)")
         save_baseline(art, baseline)
         typer.echo(f"gate: baseline updated at {baseline}")
         raise typer.Exit(0)
 
-    baseline_art = load_baseline(baseline)
+    try:
+        baseline_art = load_baseline(baseline)
+    except RuntimeError as e:  # corrupt JSON or pre-Plan-#2a schema
+        if debug:
+            raise
+        typer.echo(f"gate: baseline error: {e}", err=True)
+        raise typer.Exit(2)
     if baseline_art is not None:
         if baseline_art.pack_hash != art.pack_hash:
             typer.echo(f"warning: baseline pack hash `{baseline_art.pack_hash[:12]}` differs "
@@ -120,6 +144,9 @@ def calibrate(
     rubric_judge_model: str = typer.Option(
         None, "--rubric-judge-model",
         help="Tier-3 rubric judge model (default: the pack's judge.rubric_model)."),
+    debug: bool = typer.Option(
+        False, "--debug",
+        help="Re-raise errors with full tracebacks instead of clean exit-2 messages."),
 ):
     """Score anchor transcripts with the rubric judge and record agreement vs
     human labels (committed to <pack>/calibration.json)."""
@@ -129,15 +156,25 @@ def calibrate(
 
     try:
         pack = load_pack(target)
-    except PackError as e:
+        anchors = cal.load_anchors(pack)
+    except PackError as e:  # unloadable pack OR malformed anchor
+        if debug:
+            raise
         typer.echo(f"calibrate: setup error: {e}", err=True)
         raise typer.Exit(2)
-    if not cal.load_anchors(pack):
+    if not anchors:
         typer.echo(f"calibrate: setup error: no anchor transcripts found under "
                    f"{target}/anchors/ — add human-labeled anchors first", err=True)
         raise typer.Exit(2)
     model = rubric_judge_model or pack.spec.judge.rubric_model
-    result = asyncio.run(cal.run_calibration(pack, model, cache_dir=Path(target) / ".cache"))
+    try:
+        result = asyncio.run(
+            cal.run_calibration(pack, model, cache_dir=Path(target) / ".cache"))
+    except FileNotFoundError as e:  # anchor references a missing rubric file
+        if debug:
+            raise
+        typer.echo(f"calibrate: setup error: {e}", err=True)
+        raise typer.Exit(2)
     for aid in result.skipped:
         typer.echo(f"warning: anchor {aid!r} skipped — missing/invalid human scores "
                    f"(need integer 1-5 per criterion)", err=True)
