@@ -76,6 +76,10 @@ class Handler(BaseHTTPRequestHandler):
         if self.path == "/chat":
             reply = _reply_for(self._body().get("message", ""))
             frames = [f'0:{json.dumps(tok + " ")}\n' for tok in reply.split(" ")]
+            # real AI SDK streams end each step with an `e:` finish-step frame
+            # before the `d:` finish-message — emit both so the e2e path
+            # exercises the true wire shape (round-2 N5)
+            frames.append('e:{"finishReason":"stop"}\n')
             frames.append('d:{"finishReason":"stop"}\n')
             self._send(200, "text/event-stream", "".join(frames).encode())
             return

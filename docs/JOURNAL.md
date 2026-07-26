@@ -545,6 +545,34 @@ sanity-check `judge_usd` against the provider console; confirm grading-steps cac
 (hash the fact sheet into the staleness rule; groundedness is the weakest rubric at 60%
 per-criterion agreement); k-or-anchor-count options for packs calibrating near-threshold.
 
+### PR #4 second review pass (2026-07-26) — 10 new findings, all fixed + re-review verified
+
+Second pass re-verified round 1 (11 FIXED, 2 PARTIALLY — residuals became N3/N7) and endorsed
+all three judgment calls. 10 new findings, all fixed in one wave (this commit), scoped
+re-review all-ADDRESSED: **N1** errored epochs shrank pass^k's denominator → `expected_trials`
+recorded, `trials < expected` fails as INCOMPLETE (capability still never-red; old artifacts
+load via 0=unknown fallback); **N2** tier2 `bool(verdict)` truthiness — string "false"→True —
+→ strict bool/exact-string parsing, else NOANSWER; **N3** required-unsure trial kept the
+non-required mean → no-signal (score=None); **N4** `--update-baseline` refuses
+untrusted/zero-trial artifacts (`--force-baseline` escape), baseline-side untrusted banner;
+**N5** vercel-ai `e:` is finish-step not error (only `3:` raises; toy target now emits `e:`);
+**N6** fully-dead target → setup-error exit 2 (artifact still written first); **N7** missing
+`probes` key traceback → clean exit 2; **N8** per-rubric agreement pooled from raw counts
+(additive record fields; old records fall back); **N9** trust-pivot probe gains two required
+`not_contains` tripwires quoting static Guardian-prompt section headers (niuwnai-mvp
+prompt.py:275,292; README documents the coupling); **N10** required checks need verbatim
+(normalized-containment) evidence — fuzzy 0.6 fallback is non-required-only.
+340 tests, ruff clean, both packs validate.
+
+Re-review out-of-scope minors (registered): N4 refusal doesn't cover INCOMPLETE
+(trials<expected but >0) probes — natural tightening, extend refusal to incomplete;
+N9 tripwires are byte-exact (em-dash) — a product-side wording tweak silently disarms them
+(judge classifier still guards; README coupling note exists, but failure is silent unlike
+redirect constants); `is_stale` trusts recorded `per_rubric_agreement` without recomputing
+from stored counts (self-attested record, consistent with existing `agreement` field).
+*(minor, Plan #2b)* Reviewer rec adopted into ROADMAP: ≥10 anchors per rubric at the #2b
+recalibration.
+
 ### PR #4 review wave (2026-07-26) — 13 findings, all fixed + re-review verified
 
 The PR review returned 13 repro-backed findings (3 High / 5 Medium / 5 Low): fail-open

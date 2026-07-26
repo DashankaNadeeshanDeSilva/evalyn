@@ -19,13 +19,14 @@ def aggregate_trial(check_results: list[dict]) -> tuple[bool, bool, float | None
     - trial_unsure: no required check failed outright but at least one required
       check is unsure, OR non-required checks exist and ALL of them are unsure
       (a no-signal trial — NOANSWER accounting, distinct from a product failure).
-    - trial_score: 0.0 if any required check failed; else the weighted mean
-      over non-required checks, excluding unsure ones from numerator AND
-      denominator; 1.0 if the probe declares NO non-required checks (required
-      checks alone gate); None when non-required checks exist but ALL are
-      unsure — there is no score signal, so the reducer must EXCLUDE the trial
-      from mean_score (returning 1.0 there would score a judge outage as a
-      perfect trial — fail-open, PR #4 fix #1).
+    - trial_score: 0.0 if any required check failed; None (no score signal —
+      the reducer must EXCLUDE the trial from mean_score) when any required
+      check is unsure (round-2 N3: falling through to the non-required mean
+      let a judge outage turn a failing non-safety probe green) OR when
+      non-required checks exist but ALL are unsure (PR #4 fix #1); else the
+      weighted mean over non-required checks, excluding unsure ones from
+      numerator AND denominator; 1.0 if the probe declares NO non-required
+      checks (required checks alone gate).
     """
     required = [c for c in check_results if c["required"]]
     req_failed = any(c["passed"] is False for c in required)
@@ -37,6 +38,13 @@ def aggregate_trial(check_results: list[dict]) -> tuple[bool, bool, float | None
 
     if req_failed:
         return (False, trial_unsure, 0.0)
+
+    if req_unsure:
+        # round-2 N3: a required check the judge couldn't decide leaves the
+        # trial with NO trustworthy score — same no-signal semantics as the
+        # all-non-required-unsure case below (required_pass stays as computed:
+        # False, so pass@k/pass^k are already fail-closed).
+        return (required_pass, True, None)
 
     non_required = [c for c in check_results if not c["required"]]
     usable = [c for c in non_required if not c["unsure"]]

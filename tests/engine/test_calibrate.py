@@ -427,6 +427,72 @@ def test_per_rubric_agreement_pools_each_rubrics_criteria():
     assert per_rubric_agreement({}) == {}
 
 
+# -------------- round-2 N8: pooled per-rubric agreement from raw counts
+
+
+async def test_run_calibration_captures_per_criterion_counts(monkeypatch, tmp_path):
+    # divergent pair counts: a1 labels both criteria, a2 labels voice only
+    pack = _pack(tmp_path)
+    _anchor_yaml(tmp_path, "a1", transcript="T1", scores={"voice": 4, "warmth": 5})
+    _anchor_yaml(tmp_path, "a2", transcript="T2", scores={"voice": 1})
+    _stub_steps(monkeypatch)
+    _stub_scores(monkeypatch, {
+        "T1": _rubric_score({"voice": 4, "warmth": 4}),   # both within +/-1
+        "T2": _rubric_score({"voice": 4, "warmth": 3}),   # voice off by 3
+    })
+    result = await run_calibration(pack, "mockllm/model", cache_dir=None)
+    assert result.per_criterion_counts == {
+        "persona:voice": (1, 2), "persona:warmth": (1, 1)}
+
+
+def test_pooled_rubric_agreement_pools_counts_not_fractions():
+    from evalyn.engine.calibrate import pooled_rubric_agreement
+
+    # mean-of-fractions would say (0.5 + 1.0)/2 = 0.75; pooling the raw pairs
+    # gives 2/3 — the unenforced equal-pair-count precondition erred fail-OPEN
+    counts = {"persona:voice": (1, 2), "persona:warmth": (1, 1)}
+    assert pooled_rubric_agreement(counts) == {"persona": 2 / 3}
+    assert pooled_rubric_agreement({}) == {}
+
+
+def test_write_record_with_counts_stores_pooled_per_rubric_agreement(tmp_path):
+    pack = _pack(tmp_path)
+    write_record(pack, 0.9, {"persona:voice": 1.0, "persona:warmth": 0.8},
+                 "anthropic/claude-x",
+                 per_criterion_counts={"persona:voice": (1, 1),
+                                       "persona:warmth": (8, 10)})
+    rec = load_record(pack)
+    # additive, backward-compatible fields only
+    assert rec["per_rubric_agreement"] == {"persona": 9 / 11}
+    assert rec["per_criterion_counts"] == {"persona:voice": [1, 1],
+                                           "persona:warmth": [8, 10]}
+    assert rec["per_criterion"] == {"persona:voice": 1.0, "persona:warmth": 0.8}
+
+
+def test_is_stale_prefers_recorded_pooled_agreement(tmp_path):
+    # divergent counts: mean-of-fractions (1.0 + 0.8)/2 = 0.9 clears 85%, but
+    # the pooled truth 9/11 = 81.8% does not — the record must be STALE
+    pack = _pack(tmp_path, rubric_check="persona")
+    write_record(pack, 0.9, {"persona:voice": 1.0, "persona:warmth": 0.8},
+                 "anthropic/claude-x",
+                 per_criterion_counts={"persona:voice": (1, 1),
+                                       "persona:warmth": (8, 10)})
+    stale, why = is_stale(pack, "anthropic/claude-x")
+    assert stale is True
+    assert "persona" in why and "82%" in why
+
+
+def test_is_stale_falls_back_to_mean_of_fractions_for_old_records(tmp_path):
+    # pre-N8 records (e.g. the committed packs/twincore/calibration.json) have
+    # no pooled field — is_stale must still evaluate them via per_criterion
+    pack = _pack(tmp_path, rubric_check="tone")
+    write_record(pack, 0.9, {"tone:Calm": 0.9}, "anthropic/claude-x")
+    rec = load_record(pack)
+    assert "per_rubric_agreement" not in rec  # old-format shape preserved
+    stale, why = is_stale(pack, "anthropic/claude-x")
+    assert stale is False and why == "calibrated"
+
+
 def test_is_stale_per_rubric_check_ignores_non_pack_rubrics(tmp_path):
     # a weak rubric that NO pack probe references must not stale the record
     pack = _pack(tmp_path, rubric_check="tone")

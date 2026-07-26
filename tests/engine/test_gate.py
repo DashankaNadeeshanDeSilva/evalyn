@@ -173,6 +173,91 @@ def test_exit_code_is_exactly_the_failure_verdict():
     assert bad.exit_code == 1 and bad.failures
 
 
+# --- round-2 N1: incomplete probes (errored epochs) must not pass the gate ---
+
+def test_incomplete_safety_probe_fails_even_when_scored_trials_pass():
+    # repro: samples=3, 2 epochs errored, 1 passed -> trials=1, pass_k=1.0 over
+    # a shrunken denominator. The gate must FAIL it as INCOMPLETE.
+    p = _probe("inj", category="injection", safety=True, samples=3, trials=1,
+               pass_at_k=1.0, pass_k=1.0, mean_score=1.0)
+    p.expected_trials = 3
+    res = evaluate_gate(_art([p]), baseline=None)
+    assert res.exit_code == 1
+    assert any("inj" in f and "INCOMPLETE" in f and "1/3" in f for f in res.failures)
+
+
+def test_incomplete_default_kind_probe_fails_too():
+    p = _probe("g", category="grounding", samples=3, trials=1, mean_score=1.0)
+    p.expected_trials = 3
+    res = evaluate_gate(_art([p]), baseline=None)
+    assert res.exit_code == 1
+    assert any("`g`" in f and "INCOMPLETE" in f for f in res.failures)
+
+
+def test_incomplete_capability_probe_is_never_a_failure():
+    # pinned kind semantics: capability probes NEVER red the build
+    p = _probe("cap", category="grounding", kind="capability", samples=3, trials=1,
+               pass_k=1.0, mean_score=1.0)
+    p.expected_trials = 3
+    res = evaluate_gate(_art([p]), baseline=None)
+    assert res.exit_code == 0
+    assert not res.failures
+
+
+def test_complete_probe_with_expected_trials_is_not_incomplete():
+    p = _probe("ok", category="grounding", samples=3, trials=3, mean_score=1.0)
+    p.expected_trials = 3
+    res = evaluate_gate(_art([p]), baseline=None)
+    assert res.exit_code == 0
+
+
+def test_unknown_expected_trials_skips_incompleteness_check():
+    # documented fallback: pre-round-2 artifacts load with expected_trials=0
+    # ("unknown") — only the trials == 0 MISSING rule applies to them
+    p = _probe("old", category="grounding", samples=3, trials=1, mean_score=1.0)
+    assert p.expected_trials == 0
+    res = evaluate_gate(_art([p]), baseline=None)
+    assert res.exit_code == 0
+
+
+def test_zero_trials_is_still_missing_not_incomplete():
+    p = _probe("gone", category="grounding", samples=3, trials=0)
+    p.expected_trials = 3
+    res = evaluate_gate(_art([p]), baseline=None)
+    assert res.exit_code == 1
+    assert any("MISSING" in f for f in res.failures)
+    assert not any("INCOMPLETE" in f for f in res.failures)
+
+
+# --- round-2 N4c: the BASELINE side of the untrusted-rubric banner ------------
+
+def test_report_md_banners_untrusted_baseline_distinctly():
+    base = _art([_probe("g", category="grounding", mean_score=1.0)])
+    base.rubric_scores_untrusted = True
+    cur = _art([_probe("g", category="grounding", mean_score=1.0)])
+    res = evaluate_gate(cur, baseline=base)
+    assert "BASELINE" in res.report_md and "UNTRUSTED" in res.report_md
+    # distinct wording: the current-side banner must NOT appear
+    assert "this run bypassed" not in res.report_md
+
+
+def test_report_md_no_baseline_banner_when_baseline_is_trusted():
+    base = _art([_probe("g", category="grounding", mean_score=1.0)])
+    cur = _art([_probe("g", category="grounding", mean_score=1.0)])
+    res = evaluate_gate(cur, baseline=base)
+    assert "BASELINE" not in res.report_md
+
+
+def test_current_and_baseline_untrusted_banners_are_both_shown():
+    base = _art([_probe("g", category="grounding", mean_score=1.0)])
+    base.rubric_scores_untrusted = True
+    cur = _art([_probe("g", category="grounding", mean_score=1.0)])
+    cur.rubric_scores_untrusted = True
+    res = evaluate_gate(cur, baseline=base)
+    assert "this run bypassed" in res.report_md          # current-side banner
+    assert "BASELINE" in res.report_md                   # baseline-side banner
+
+
 # --- baseline persistence ---
 
 def test_baseline_round_trip(tmp_path):

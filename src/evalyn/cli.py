@@ -22,6 +22,11 @@ def gate(
              "(loud warning; rubric scores marked untrusted in the artifact)."),
     baseline: str = typer.Option("runs/baseline.json", "--baseline"),
     update_baseline: bool = typer.Option(False, "--update-baseline"),
+    force_baseline: bool = typer.Option(
+        False, "--force-baseline",
+        help="With --update-baseline: bless the run even when its artifact is "
+             "untrusted (uncalibrated rubric scores) or incomplete (probes "
+             "with zero scored trials). Loud warning; use deliberately."),
     dry_run: bool = typer.Option(False, "--dry-run"),
     out_dir: str = typer.Option(
         "runs", "--out-dir", help="Directory the run artifact is written to."),
@@ -107,6 +112,27 @@ def gate(
         raise typer.Exit(2)
 
     if update_baseline:
+        # Round-2 N4: refuse to bless artifacts every future gate diff would
+        # silently trust — untrusted rubric scores or probes with zero scored
+        # trials. --force-baseline is the loud, deliberate escape hatch.
+        problems = []
+        if art.rubric_scores_untrusted:
+            problems.append("its rubric scores are UNTRUSTED "
+                            "(--allow-uncalibrated run)")
+        zero_trials = sorted(p.id for p in art.probes if p.trials == 0)
+        if zero_trials:
+            problems.append("probe(s) with zero scored trials: "
+                            + ", ".join(zero_trials))
+        if problems and not force_baseline:
+            typer.echo("gate: refusing --update-baseline: "
+                       + "; ".join(problems)
+                       + " — a blessed baseline must come from a trusted, "
+                         "fully-scored run (pass --force-baseline to bless "
+                         "anyway)", err=True)
+            raise typer.Exit(2)
+        if problems:
+            typer.echo("warning: FORCING baseline update despite: "
+                       + "; ".join(problems), err=True)
         # Echo the verdict being blessed — an explicit bless never blocks, but
         # blessing a FAIL should be a visible, deliberate act.
         verdict = evaluate_gate(art, None)
@@ -196,11 +222,17 @@ def calibrate(
                f"judge {model} (threshold {cal.AGREEMENT_THRESHOLD:.0%})")
     # Record-written-on-failure is by design (pinned): is_stale rejects any
     # record the verdict below would fail, so the gate can never trust it.
-    cal.write_record(pack, result.overall, result.per_criterion, model)
+    cal.write_record(pack, result.overall, result.per_criterion, model,
+                     per_criterion_counts=result.per_criterion_counts)
     # Verdict mirrors is_stale exactly (PR #4 fix #4 follow-up): overall AND
     # every rubric's own agreement must clear the threshold — calibrate must
     # never print PASS on a record the gate would refuse for a weak rubric.
-    weak = {rid: val for rid, val in per_rubric_agreement(result.per_criterion).items()
+    # Round-2 N8: pool from raw pair counts when available (exact under
+    # divergent counts); mean-of-fractions only as the legacy fallback.
+    by_rubric = (cal.pooled_rubric_agreement(result.per_criterion_counts)
+                 if result.per_criterion_counts
+                 else per_rubric_agreement(result.per_criterion))
+    weak = {rid: val for rid, val in by_rubric.items()
             if val < cal.AGREEMENT_THRESHOLD}
     if result.overall >= cal.AGREEMENT_THRESHOLD and not weak:
         typer.echo("calibrate: PASS — rubric judge is calibrated for this pack")

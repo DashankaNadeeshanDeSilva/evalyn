@@ -335,13 +335,15 @@ def _write_rubric_pack(tmp_path: Path, *, anchors: bool = True) -> str:
 
 
 def _stub_calibration(monkeypatch, overall: float, unmatched: dict | None = None,
-                      per_criterion: dict | None = None):
+                      per_criterion: dict | None = None,
+                      per_criterion_counts: dict | None = None):
     from evalyn.engine.calibrate import CalibrationResult
 
     async def fake(pack, judge_model, cache_dir, k=3):
         return CalibrationResult(overall=overall,
                                  per_criterion=per_criterion or {"tone:Tone": overall},
-                                 anchors=1, unmatched=unmatched or {})
+                                 anchors=1, unmatched=unmatched or {},
+                                 per_criterion_counts=per_criterion_counts or {})
 
     monkeypatch.setattr("evalyn.engine.calibrate.run_calibration", fake)
 
@@ -401,6 +403,22 @@ def test_calibrate_fails_when_a_rubric_is_weak_despite_strong_overall(monkeypatc
     assert "overall agreement: 90%" in result.stdout             # overall still shown
     # record-written-on-failure is pinned by-design behavior (is_stale rejects it)
     assert (Path(pack_dir) / "calibration.json").exists()
+
+
+def test_calibrate_verdict_uses_pooled_counts_when_available(monkeypatch, tmp_path):
+    # round-2 N8: with divergent pair counts the mean-of-fractions rubric value
+    # (0.9) clears the bar but the pooled truth (9/11 = 82%) does not — the
+    # verdict must FAIL and the record must carry the pooled value
+    pack_dir = _write_rubric_pack(tmp_path)
+    _stub_calibration(monkeypatch, 0.9,
+                      per_criterion={"tone:Calm": 1.0, "tone:Firm": 0.8},
+                      per_criterion_counts={"tone:Calm": (1, 1),
+                                            "tone:Firm": (8, 10)})
+    result = runner.invoke(app, ["calibrate", "--target", pack_dir])
+    assert result.exit_code == 1
+    assert "'tone'" in result.stderr and "82%" in result.stderr
+    rec = json.loads((Path(pack_dir) / "calibration.json").read_text())
+    assert rec["per_rubric_agreement"] == {"tone": 9 / 11}
 
 
 def test_calibrate_exit_2_when_pack_has_no_anchors(monkeypatch, tmp_path):
@@ -581,6 +599,112 @@ def test_gate_update_baseline_echoes_fail_verdict_but_still_saves(monkeypatch, t
     assert result.exit_code == 0  # blessing is explicit; verdict never blocks it
     assert "FAIL" in result.stdout
     assert baseline_path.exists()
+
+
+# ---------------- round-2 N4: --update-baseline must not bless bad artifacts
+
+def test_update_baseline_refuses_untrusted_rubric_artifact(monkeypatch, tmp_path):
+    monkeypatch.setenv("EVALYN_TARGET_URL", "http://localhost:8899")
+    art = _artifact([_probe("ok-probe")])
+    art.rubric_scores_untrusted = True
+    monkeypatch.setattr("evalyn.engine.run.run_gate", _fake_run_gate(art))
+    baseline_path = tmp_path / "b.json"
+    result = runner.invoke(app, ["gate", "--target", PACK,
+                                 "--baseline", str(baseline_path),
+                                 "--update-baseline"])
+    assert result.exit_code == 2
+    assert "UNTRUSTED" in result.stderr or "untrusted" in result.stderr.lower()
+    assert "--force-baseline" in result.stderr
+    assert not baseline_path.exists()
+
+
+def test_update_baseline_refuses_artifact_with_zero_trial_probe(monkeypatch, tmp_path):
+    monkeypatch.setenv("EVALYN_TARGET_URL", "http://localhost:8899")
+    dead = _probe("dead-probe")
+    dead.trials = 0
+    art = _artifact([_probe("ok-probe"), dead])
+    monkeypatch.setattr("evalyn.engine.run.run_gate", _fake_run_gate(art))
+    baseline_path = tmp_path / "b.json"
+    result = runner.invoke(app, ["gate", "--target", PACK,
+                                 "--baseline", str(baseline_path),
+                                 "--update-baseline"])
+    assert result.exit_code == 2
+    assert "dead-probe" in result.stderr
+    assert not baseline_path.exists()
+
+
+def test_update_baseline_force_blesses_anyway_with_loud_warning(monkeypatch, tmp_path):
+    monkeypatch.setenv("EVALYN_TARGET_URL", "http://localhost:8899")
+    art = _artifact([_probe("ok-probe")])
+    art.rubric_scores_untrusted = True
+    monkeypatch.setattr("evalyn.engine.run.run_gate", _fake_run_gate(art))
+    baseline_path = tmp_path / "b.json"
+    result = runner.invoke(app, ["gate", "--target", PACK,
+                                 "--baseline", str(baseline_path),
+                                 "--update-baseline", "--force-baseline"])
+    assert result.exit_code == 0
+    assert "warning" in result.stderr.lower()
+    assert baseline_path.exists()
+    saved = RunArtifact.from_dict(json.loads(baseline_path.read_text()))
+    assert saved == art
+
+
+def test_gate_report_banners_untrusted_baseline(monkeypatch, tmp_path):
+    # N4c end-to-end: gating against a --force-baseline'd untrusted baseline
+    # must banner the BASELINE side in the report
+    monkeypatch.setenv("EVALYN_TARGET_URL", "http://localhost:8899")
+    baseline_art = _artifact([_probe("ok-probe")])
+    baseline_art.rubric_scores_untrusted = True
+    baseline_path = tmp_path / "b.json"
+    save_baseline(baseline_art, str(baseline_path))
+    monkeypatch.setattr("evalyn.engine.run.run_gate",
+                        _fake_run_gate(_artifact([_probe("ok-probe")])))
+    result = runner.invoke(app, ["gate", "--target", PACK,
+                                 "--baseline", str(baseline_path)])
+    assert "BASELINE" in result.stdout and "UNTRUSTED" in result.stdout
+
+
+# ------- round-2 N7: baseline artifact missing the `probes` key entirely
+
+def test_gate_exit_2_on_baseline_without_probes_key(monkeypatch, tmp_path):
+    monkeypatch.setenv("EVALYN_TARGET_URL", "http://localhost:8899")
+    monkeypatch.setattr("evalyn.engine.run.run_gate",
+                        _fake_run_gate(_artifact([_probe("ok-probe")])))
+    d = _artifact([_probe("ok-probe")]).to_dict()
+    del d["probes"]
+    baseline = tmp_path / "noprobes.json"
+    baseline.write_text(json.dumps(d))
+    result = runner.invoke(app, ["gate", "--target", PACK,
+                                 "--baseline", str(baseline)])
+    assert result.exit_code == 2
+    assert result.exception is None or not isinstance(result.exception, KeyError)
+    assert "baseline error" in result.stderr
+
+
+# ------- round-2 N6: fully-dead target is a setup error (exit 2), not exit 1
+
+def test_gate_exit_2_when_no_probe_scored_any_trial(monkeypatch, tmp_path):
+    # fail_on_error=False + dead target => log.status "success" with zero
+    # scored trials everywhere; that must surface as a run error (exit 2),
+    # never an all-MISSING gate FAIL (exit 1)
+    monkeypatch.setenv("EVALYN_TARGET_URL", "http://localhost:8899")
+
+    class _EmptyLog:
+        status = "success"
+        samples = []
+        location = None
+
+    monkeypatch.setattr("evalyn.engine.run.inspect_eval",
+                        lambda *a, **k: [_EmptyLog()])
+    monkeypatch.setattr("evalyn.engine.run._judge_usd", lambda: 0.0)
+    out = tmp_path / "runs"
+    result = runner.invoke(app, ["gate", "--target", PACK,
+                                 "--baseline", str(tmp_path / "none.json"),
+                                 "--out-dir", str(out)])
+    assert result.exit_code == 2
+    assert "run error" in result.stderr and "no probe" in result.stderr
+    # write-before-raise house pattern: the artifact is on disk for inspection
+    assert list(out.glob("*.json"))
 
 
 def test_gate_out_dir_threads_to_run_gate(monkeypatch, tmp_path):

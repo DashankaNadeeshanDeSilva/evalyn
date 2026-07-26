@@ -98,6 +98,9 @@ produces trustworthy A/B verdicts; CI catches regressions on PRs automatically.
   the current record stale (groundedness 60% agreement — the judge can't verify claims against a
   KB it can't see). Front-loading this makes `--allow-uncalibrated` a brief interim state, not
   the resting state; safety verdicts (deterministic Tier-1 gates) are unaffected meanwhile.
+  The recalibration should also grow the anchor set to **≥10 anchors per rubric** (PR #4
+  second-pass recommendation: at 5 anchors, per-criterion agreement moves in 20% steps, so an
+  85% bar is a de-facto 100% bar).
 
 ---
 

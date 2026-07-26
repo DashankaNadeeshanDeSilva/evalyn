@@ -21,8 +21,13 @@ def parse_stream(event_format: str, lines: Iterable[str], *,
                     out.append(json.loads(line[2:]))
                 except (json.JSONDecodeError, TypeError) as e:
                     raise StreamFormatError(f"bad vercel-ai frame: {line!r}") from e
-            elif line.startswith(("3:", "e:")):
+            elif line.startswith("3:"):
+                # `3:` is the AI SDK error part — the ONLY error frame.
                 raise StreamFormatError(f"vercel-ai error frame: {line!r}")
+            # `f:` (start-step), `e:` (finish-step) and `d:` (finish-message)
+            # are lifecycle frames every real AI SDK stream emits — consumed
+            # silently as no-ops (round-2 N5: treating `e:` as an error made
+            # every real stream raise on its finish-step frame).
         return "".join(out).strip()
     if event_format == "raw-sse":
         out = []

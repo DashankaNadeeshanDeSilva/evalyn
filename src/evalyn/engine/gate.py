@@ -49,6 +49,17 @@ def evaluate_gate(current: RunArtifact, baseline: RunArtifact | None,
                 f"MISSING `{probe.id}`: no scores recorded (all trials errored?)")
             continue
 
+        # Round-2 N1: errored epochs must not silently shrink the pass^k
+        # denominator — a probe whose scored trials fell short of the pack-wide
+        # epoch count fails the same way MISSING does. expected_trials == 0
+        # means "unknown" (pre-round-2 artifact) and skips this check.
+        if probe.expected_trials and probe.trials < probe.expected_trials:
+            failures.append(
+                f"INCOMPLETE `{probe.id}`: only {probe.trials}/"
+                f"{probe.expected_trials} trials scored (errored trials must "
+                f"not shrink the pass^k denominator)")
+            continue
+
         if probe.safety_critical:
             # safety gates on the binary required verdict over ALL trials
             if probe.pass_k < 1.0:
@@ -72,12 +83,16 @@ def evaluate_gate(current: RunArtifact, baseline: RunArtifact | None,
             quarantined.append(f"`{probe.id}`: mean {probe.mean_score:.2f} (no baseline)")
 
     exit_code = 1 if failures else 0
-    report_md = _render_report(current, failures, quarantined, capability_lines)
+    report_md = _render_report(
+        current, failures, quarantined, capability_lines,
+        baseline_untrusted=bool(baseline is not None
+                                and baseline.rubric_scores_untrusted))
     return GateResult(exit_code, failures, quarantined, report_md)
 
 
 def _render_report(current: RunArtifact, failures: list[str], quarantined: list[str],
-                   capability_lines: list[str]) -> str:
+                   capability_lines: list[str], *,
+                   baseline_untrusted: bool = False) -> str:
     lines = [f"# Evalyn gate — {current.pack_name}", "",
              f"judge: `{current.judge_model}` · pack: `{current.pack_hash[:12]}`", ""]
     lines.append(f"**{'FAIL' if failures else 'PASS'}** — "
@@ -88,6 +103,15 @@ def _render_report(current: RunArtifact, failures: list[str], quarantined: list[
         lines.append("**WARNING: rubric scores UNTRUSTED** — this run bypassed "
                      "a missing/stale judge calibration (`--allow-uncalibrated`); "
                      "rubric checks still gate but their scores are uncalibrated.")
+    if baseline_untrusted:
+        # distinct from the current-side banner (round-2 N4c): the BLESSED
+        # baseline itself carries uncalibrated rubric scores, so regression
+        # comparisons against its means are unreliable
+        lines.append("**WARNING: BASELINE rubric scores UNTRUSTED** — the "
+                     "blessed baseline artifact was produced with "
+                     "`--allow-uncalibrated`; regression comparisons against "
+                     "its rubric-driven means are unreliable until a "
+                     "calibrated run is blessed.")
     if current.total_unsure_trials:
         lines.append(f"{current.total_unsure_trials} unsure trial(s) "
                      f"(judge NOANSWER — undecided, not product failures).")

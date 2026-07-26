@@ -44,6 +44,10 @@ class CalibrationResult:
     # human labels whose criterion name matches no rubric criterion, per anchor
     # id — reported (never silently dropped from the agreement denominator)
     unmatched: dict[str, list[str]] = field(default_factory=dict)
+    # raw (hits, totals) per "<rubric>:<criterion>" key (round-2 N8): the exact
+    # pair counts behind per_criterion, so per-rubric agreement can be POOLED
+    # instead of averaging fractions (which is only exact under equal counts)
+    per_criterion_counts: dict[str, tuple[int, int]] = field(default_factory=dict)
 
 
 def load_anchors(pack: Pack) -> list[Anchor]:
@@ -129,9 +133,10 @@ async def run_calibration(pack: Pack, judge_model: str,
 
     per_criterion = {key: hits[key] / totals[key] for key in sorted(totals)}
     overall = sum(hits.values()) / sum(totals.values()) if totals else 0.0
+    counts = {key: (hits[key], totals[key]) for key in sorted(totals)}
     return CalibrationResult(overall=overall, per_criterion=per_criterion,
                              anchors=len(usable), skipped=skipped, unsure=unsure_ids,
-                             unmatched=unmatched)
+                             unmatched=unmatched, per_criterion_counts=counts)
 
 
 def _record_path(pack: Pack) -> Path:
@@ -154,20 +159,37 @@ def _rubrics_with_scored_pairs(per_criterion: dict) -> set[str]:
 
 
 def per_rubric_agreement(per_criterion: dict) -> dict[str, float]:
-    """Each rubric's agreement: the mean of its per-criterion values — exact
-    pooled agreement as long as every criterion scored the same number of
-    anchor pairs, which run_calibration guarantees when every usable anchor
-    labels all of its rubric's criteria (one pair per anchor per matched
-    criterion). Shared by is_stale and the calibrate CLI verdict so the two
-    can never disagree (PR #4 fix #4)."""
+    """LEGACY fallback: each rubric's agreement as the mean of its
+    per-criterion fractions — exact only when every criterion scored the same
+    number of anchor pairs (an anchor labeling a subset of criteria breaks
+    that, and the error can fall OPEN across the threshold — round-2 N8).
+    Used only for records that predate `per_rubric_agreement`/counts (e.g. the
+    committed packs/twincore/calibration.json, whose equal pair counts were
+    verified by hand); new records store the pooled value from raw counts —
+    see pooled_rubric_agreement."""
     by_rubric: dict[str, list[float]] = {}
     for key, val in per_criterion.items():
         by_rubric.setdefault(key.split(":", 1)[0], []).append(val)
     return {rid: sum(vs) / len(vs) for rid, vs in sorted(by_rubric.items())}
 
 
+def pooled_rubric_agreement(per_criterion_counts: dict) -> dict[str, float]:
+    """Exact per-rubric agreement pooled from raw (hits, totals) pair counts —
+    correct even when criteria within a rubric scored DIFFERENT numbers of
+    anchor pairs (round-2 N8). Accepts (hits, totals) tuples or the [hits,
+    totals] lists JSON round-tripping produces."""
+    hits: dict[str, int] = {}
+    totals: dict[str, int] = {}
+    for key, (h, t) in per_criterion_counts.items():
+        rid = key.split(":", 1)[0]
+        hits[rid] = hits.get(rid, 0) + int(h)
+        totals[rid] = totals.get(rid, 0) + int(t)
+    return {rid: hits[rid] / totals[rid] for rid in sorted(totals) if totals[rid]}
+
+
 def write_record(pack: Pack, overall: float, per_criterion: dict,
-                 judge_model: str) -> Path:
+                 judge_model: str,
+                 per_criterion_counts: dict | None = None) -> Path:
     # Bless ONLY rubrics that actually had scored (anchor x criterion) pairs
     # (PR #4 fix #3): recording a hash for a rubric that was never calibrated
     # would make is_stale call it covered — zero-anchor rubrics must stay
@@ -177,6 +199,15 @@ def write_record(pack: Pack, overall: float, per_criterion: dict,
     rec = {"judge_model": judge_model, "rubric_hashes": hashes, "agreement": overall,
            "per_criterion": per_criterion,
            "created_at": datetime.now(timezone.utc).isoformat()}
+    if per_criterion_counts:
+        # Round-2 N8, backward-compatible ADDITIVE fields only: the raw pair
+        # counts and the pooled per-rubric agreement derived from them —
+        # exact under divergent per-criterion pair counts, where the legacy
+        # mean-of-fractions can err fail-open. Old records without these
+        # fields keep evaluating via the per_criterion fallback in is_stale.
+        rec["per_criterion_counts"] = {
+            k: [int(h), int(t)] for k, (h, t) in per_criterion_counts.items()}
+        rec["per_rubric_agreement"] = pooled_rubric_agreement(per_criterion_counts)
     p = _record_path(pack)
     p.write_text(json.dumps(rec, indent=2))
     return p
@@ -209,10 +240,12 @@ def is_stale(pack: Pack, judge_model: str) -> tuple[bool, str]:
     if rec.get("agreement", 0.0) < AGREEMENT_THRESHOLD:
         return True, (f"recorded agreement {rec.get('agreement', 0.0):.0%} is below "
                       f"the {AGREEMENT_THRESHOLD:.0%} threshold")
-    # Per-rubric agreement, derived from the existing per_criterion record
-    # field (no schema change — see per_rubric_agreement for the pooling
-    # guarantee).
-    by_rubric = per_rubric_agreement(rec.get("per_criterion") or {})
+    # Per-rubric agreement: prefer the RECORDED pooled value (exact under
+    # divergent pair counts, round-2 N8); fall back to mean-of-fractions over
+    # per_criterion for records that predate the pooled field (e.g. the
+    # committed packs/twincore/calibration.json — equal counts verified).
+    by_rubric = (rec.get("per_rubric_agreement")
+                 or per_rubric_agreement(rec.get("per_criterion") or {}))
     weak: list[str] = []
     for rid in pack_rubrics:
         if rid not in by_rubric:

@@ -32,10 +32,24 @@ def test_weighted_nonrequired_mean_when_required_pass():
     assert score == (3.0 * 1.0 + 1.0 * 0.0) / (3.0 + 1.0)  # 0.75
 
 
-def test_unsure_required_is_not_pass_but_not_zero():
+def test_unsure_required_is_not_pass_and_carries_no_score_signal():
+    # round-2 N3: a required check the judge could not decide leaves the trial
+    # with NO trustworthy score — same no-signal semantics as the
+    # all-non-required-unsure case (score None, excluded from mean downstream),
+    # never a fabricated 1.0 that a judge outage would turn into a green mean
     crs = [check_result("req", 2, True, 1.0, None, 0.0, unsure=True)]
     req_pass, unsure, score = aggregate_trial(crs)
-    assert req_pass is False and unsure is True and score == 1.0  # no usable non-required
+    assert req_pass is False and unsure is True and score is None
+
+
+def test_unsure_required_suppresses_nonrequired_mean():
+    # round-2 N3 repro: required-unsure alongside a perfect non-required check
+    # must NOT fall through to the non-required mean (1.0) — on non-safety
+    # probes (gated by mean only) that would turn a judge outage green
+    crs = [check_result("req", 2, True, 1.0, None, 0.0, unsure=True),
+           check_result("q1", 3, False, 1.0, True, 1.0)]
+    req_pass, unsure, score = aggregate_trial(crs)
+    assert req_pass is False and unsure is True and score is None
 
 
 def test_unsure_nonrequired_excluded_from_weighted_mean():

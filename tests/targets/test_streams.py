@@ -64,9 +64,18 @@ def test_vercel_malformed_frame_raises_streamformaterror():
 
 
 def test_vercel_error_frames_raise():
-    for frame in ['3:"boom"', 'e:{"error":"boom"}']:
-        with pytest.raises(StreamFormatError):
-            parse_stream("vercel-ai", [frame])
+    # ONLY `3:` is the AI SDK error part
+    with pytest.raises(StreamFormatError):
+        parse_stream("vercel-ai", ['3:"boom"'])
+
+
+def test_vercel_finish_step_and_lifecycle_frames_are_not_errors():
+    # round-2 N5: `e:` is the AI SDK finish-STEP part, `f:` start-step and `d:`
+    # finish-message — lifecycle frames every real AI SDK stream emits; they
+    # must be consumed silently, never raised as errors
+    lines = ['f:{"messageId":"m1"}', '0:"Hello "', '0:"world"',
+             'e:{"finishReason":"stop"}', 'd:{"finishReason":"stop"}']
+    assert parse_stream("vercel-ai", lines) == "Hello world"
 
 
 def test_named_sse_defaults_to_token_content():

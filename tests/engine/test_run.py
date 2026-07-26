@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from evalyn.engine.run import (RunArtifact, _reduce_log_to_probes,
+from evalyn.engine.run import (ProbeResult, RunArtifact, _reduce_log_to_probes,
                                pack_fingerprint, run_gate)
 from evalyn.targets.loader import load_pack
 
@@ -282,8 +282,9 @@ def test_run_gate_defaults_cache_dir_to_pack_dot_cache(monkeypatch, tmp_path):
     monkeypatch.setattr("evalyn.engine.run.inspect_eval",
                         lambda *a, **k: [_fake_success_log()])
     monkeypatch.setattr("evalyn.engine.run._judge_usd", lambda: 0.0)
-    run_gate(pack, judge_model="mockllm/model", log_dir=str(tmp_path / "logs"),
-             out_dir=str(tmp_path / "out"))
+    with pytest.raises(RuntimeError, match="no probe collected"):  # empty log (N6)
+        run_gate(pack, judge_model="mockllm/model", log_dir=str(tmp_path / "logs"),
+                 out_dir=str(tmp_path / "out"))
     assert captured["cache_dir"] == Path(pack.root) / ".cache"
 
 
@@ -384,8 +385,9 @@ def test_artifact_filenames_do_not_collide_back_to_back(monkeypatch, tmp_path):
     monkeypatch.setattr("evalyn.engine.run._judge_usd", lambda: 0.0)
     out = tmp_path / "runs"
     for _ in range(2):  # same second: a coarse timestamp would os.replace-clobber
-        run_gate(pack, judge_model="mockllm/model",
-                 log_dir=str(tmp_path / "logs"), out_dir=str(out))
+        with pytest.raises(RuntimeError, match="no probe collected"):  # empty log (N6)
+            run_gate(pack, judge_model="mockllm/model",
+                     log_dir=str(tmp_path / "logs"), out_dir=str(out))
     assert len(list(out.glob("*.json"))) == 2
 
 
@@ -397,8 +399,9 @@ def test_artifact_filename_sanitizes_hostile_pack_name(monkeypatch, tmp_path):
                         lambda *a, **k: [_fake_success_log()])
     monkeypatch.setattr("evalyn.engine.run._judge_usd", lambda: 0.0)
     out = tmp_path / "runs"
-    run_gate(pack, judge_model="mockllm/model",
-             log_dir=str(tmp_path / "logs"), out_dir=str(out))
+    with pytest.raises(RuntimeError, match="no probe collected"):  # empty log (N6)
+        run_gate(pack, judge_model="mockllm/model",
+                 log_dir=str(tmp_path / "logs"), out_dir=str(out))
     [written] = list(out.iterdir())
     assert written.parent == out
     assert written.suffix == ".json"
@@ -420,6 +423,112 @@ def test_run_gate_explicit_cache_dir_override_wins(monkeypatch, tmp_path):
                         lambda *a, **k: [_fake_success_log()])
     monkeypatch.setattr("evalyn.engine.run._judge_usd", lambda: 0.0)
     custom = tmp_path / "custom-cache"
-    run_gate(pack, judge_model="mockllm/model", log_dir=str(tmp_path / "logs"),
-             out_dir=str(tmp_path / "out"), cache_dir=custom)
+    with pytest.raises(RuntimeError, match="no probe collected"):  # empty log (N6)
+        run_gate(pack, judge_model="mockllm/model", log_dir=str(tmp_path / "logs"),
+                 out_dir=str(tmp_path / "out"), cache_dir=custom)
     assert captured["cache_dir"] == custom
+
+
+# --- round-2 N1: errored epochs must not shrink the pass^k denominator -------
+
+
+def test_reducer_records_expected_trials_from_pack_wide_epochs(minimal_pack_with_probe):
+    # the task runs every probe at the pack-wide max(samples) = k; the reducer
+    # must record that expectation so the gate can spot incomplete probes
+    pack = minimal_pack_with_probe("p", samples=3)
+    # only ONE of the 3 epochs produced checks (2 errored)
+    sample = _FakeSample("p", 1, {"tier1": _FakeScore(
+        {"checks": [_cr("inv", 1, True, True, 1.0)]})})
+    [pr] = _reduce_log_to_probes(_FakeLog([sample]), pack)
+    assert pr.trials == 1
+    assert pr.expected_trials == 3
+    assert pr.pass_k == 1.0  # over the SCORED trials only — the gate must
+    #                          refuse to trust this via expected_trials
+
+
+def test_artifact_roundtrip_preserves_expected_trials(minimal_pack_with_probe):
+    art = RunArtifact(
+        pack_name="p", pack_hash="h", judge_model="j", created_at="now",
+        probes=[ProbeResult("p", "c", "regression", False, 3, trials=1,
+                            expected_trials=3)],
+        log_path="log")
+    loaded = RunArtifact.from_dict(art.to_dict())
+    assert loaded == art
+    assert loaded.probes[0].expected_trials == 3
+
+
+def test_artifact_without_expected_trials_still_loads_as_unknown():
+    # backward read: pre-round-2 artifacts have no expected_trials — they must
+    # load with the documented fallback 0 ("unknown": the gate skips the
+    # incompleteness check and only trials == 0 fails as MISSING)
+    art = RunArtifact(
+        pack_name="p", pack_hash="h", judge_model="j", created_at="now",
+        probes=[ProbeResult("p", "c", "regression", False, 3, trials=3)],
+        log_path="log")
+    d = art.to_dict()
+    for p in d["probes"]:
+        del p["expected_trials"]
+    loaded = RunArtifact.from_dict(d)
+    assert loaded.probes[0].expected_trials == 0
+
+
+# --- round-2 N3: required-unsure trials carry no score signal ----------------
+
+
+def test_reducer_excludes_required_unsure_trials_from_mean(minimal_pack_with_probe):
+    # repro: trial 1 scores 0.5; trial 2's REQUIRED check is unsure — it must
+    # be excluded from the mean (not averaged in via the non-required mean)
+    pack = minimal_pack_with_probe("p", samples=2)
+    samples = [
+        _FakeSample("p", 1, {
+            "tier2": _FakeScore({"checks": [_cr("classifier:0", 2, True, True, 1.0)]}),
+            "tier3": _FakeScore({"checks": [_cr("rubric:x", 3, False, True, 0.5)]})}),
+        _FakeSample("p", 2, {
+            "tier2": _FakeScore({"checks": [_cr("classifier:0", 2, True, None, 0.0,
+                                                unsure=True)]}),
+            "tier3": _FakeScore({"checks": [_cr("rubric:x", 3, False, True, 1.0)]})}),
+    ]
+    [pr] = _reduce_log_to_probes(_FakeLog(samples), pack)
+    assert pr.trials == 2 and pr.unsure_trials == 1
+    assert pr.mean_score == 0.5  # NOT (0.5 + 1.0)/2 — the unsure trial is no-signal
+
+
+def test_reducer_all_required_unsure_trials_is_zero_mean_fail_closed(minimal_pack_with_probe):
+    # all trials required-unsure -> mean 0.0 so a baseline regression FIRES
+    # (previously the non-required mean turned a judge outage green)
+    from evalyn.engine.gate import evaluate_gate
+
+    pack = minimal_pack_with_probe("p", samples=1)
+    sample = _FakeSample("p", 1, {
+        "tier2": _FakeScore({"checks": [_cr("classifier:0", 2, True, None, 0.0,
+                                            unsure=True)]}),
+        "tier3": _FakeScore({"checks": [_cr("rubric:x", 3, False, True, 1.0)]})})
+    [pr] = _reduce_log_to_probes(_FakeLog([sample]), pack)
+    assert pr.mean_score == 0.0 and pr.unsure_trials == 1
+    art = RunArtifact("p", "h", "j", "now", [pr], "log")
+    base = RunArtifact("p", "h", "j", "now", [ProbeResult(
+        "p", "misc", "regression", False, 1, trials=1, expected_trials=1,
+        pass_at_k=1.0, pass_k=1.0, mean_score=1.0)], "log")
+    res = evaluate_gate(art, base, band=0.1)
+    assert res.exit_code == 1
+    assert any("REGRESSION" in f for f in res.failures)
+
+
+# --- round-2 N6: a fully-dead target is a setup error, not a gate FAIL -------
+
+
+def test_run_gate_raises_when_no_probe_scored_a_single_trial(monkeypatch, tmp_path):
+    # log.status is "success" (fail_on_error=False swallows per-sample errors)
+    # but NO probe collected a scored trial: the target is dead — run_gate must
+    # raise (CLI maps it to exit 2), never hand the gate an all-MISSING artifact
+    monkeypatch.setenv("EVALYN_TARGET_URL", "http://localhost:8899")
+    pack = load_pack(str(REPO_EXAMPLE))
+    monkeypatch.setattr("evalyn.engine.run.inspect_eval",
+                        lambda *a, **k: [_fake_success_log()])
+    monkeypatch.setattr("evalyn.engine.run._judge_usd", lambda: 0.0)
+    out = tmp_path / "out"
+    with pytest.raises(RuntimeError, match="no probe collected"):
+        run_gate(pack, judge_model="mockllm/model",
+                 log_dir=str(tmp_path / "logs"), out_dir=str(out))
+    # house pattern: the artifact is written BEFORE the raise, for inspection
+    assert list(out.glob("*.json")), "artifact must survive the setup-error raise"

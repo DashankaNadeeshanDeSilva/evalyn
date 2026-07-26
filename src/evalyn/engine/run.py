@@ -29,6 +29,15 @@ class ProbeResult:
     safety_critical: bool
     samples: int              # declared in the pack (actual trials may differ — A1)
     trials: int = 0           # trials actually collected (epochs with checks)
+    expected_trials: int = 0  # pack-wide epoch count k the task RAN for every
+    #                           probe (round-2 N1): the gate fails any probe
+    #                           whose trials < expected_trials as INCOMPLETE so
+    #                           errored epochs can't shrink the pass^k
+    #                           denominator. 0 = unknown (pre-round-2 artifact:
+    #                           the field is absent and the dataclass default
+    #                           applies) — the gate then skips the
+    #                           incompleteness check (only trials == 0 MISSING
+    #                           applies), keeping old baselines loadable.
     pass_at_k: float = 0.0    # any trial's required checks all passed
     pass_k: float = 0.0       # EVERY trial's required checks passed (safety gate)
     mean_score: float = 0.0   # mean weighted trial_score over trials WITH score
@@ -66,7 +75,15 @@ class RunArtifact:
     @classmethod
     def from_dict(cls, d: dict) -> "RunArtifact":
         try:
-            probes = [ProbeResult(**p) for p in d["probes"]]
+            probe_dicts = d["probes"]
+        except (TypeError, KeyError) as e:
+            # a missing `probes` key must be the same clean ValueError as any
+            # other schema mismatch, never a bare KeyError traceback (round-2 N7)
+            raise ValueError(
+                "artifact has no 'probes' list; this artifact does not match "
+                "the Plan #2a RunArtifact schema") from e
+        try:
+            probes = [ProbeResult(**p) for p in probe_dicts]
         except TypeError as e:
             raise ValueError(
                 "artifact probe entries do not match the Plan #2a ProbeResult "
@@ -113,6 +130,11 @@ def _reduce_log_to_probes(log, pack: Pack) -> list[ProbeResult]:
             if checks:
                 trials[pid][sample.epoch].extend(checks)
 
+    # The task runs EVERY probe at the pack-wide max(samples) (task_builder's
+    # Epochs(k)) — record that expectation so the gate can fail probes whose
+    # scored trials fell short (errored epochs, round-2 N1).
+    expected = max((p.samples for p in by_id.values()), default=1)
+
     results: list[ProbeResult] = []
     for pid, probe in by_id.items():
         # Amendment A1: stats reflect the ACTUAL number of trials collected (the
@@ -142,7 +164,8 @@ def _reduce_log_to_probes(log, pack: Pack) -> list[ProbeResult]:
         results.append(ProbeResult(
             id=pid, category=probe.category, kind=probe.kind,
             safety_critical=probe.safety_critical, samples=probe.samples,
-            trials=n, pass_at_k=pass_at_k, pass_k=pass_k, mean_score=mean_score,
+            trials=n, expected_trials=expected, pass_at_k=pass_at_k,
+            pass_k=pass_k, mean_score=mean_score,
             unsure_trials=unsure_ct, checks=rep_checks))
     return results
 
@@ -206,6 +229,18 @@ def run_gate(pack: Pack, judge_model: str = "mockllm/model",
     with os.fdopen(fd, "w") as f:
         f.write(json.dumps(art.to_dict(), indent=2, default=str))
     os.replace(tmp, out_path / f"{stamp}-{uuid.uuid4().hex[:8]}-{slug}.json")
+    # Fully-dead target (round-2 N6): with fail_on_error=False every sample can
+    # error individually while log.status stays "success" — if NO probe
+    # collected a single scored trial the run is a SETUP failure (CLI exit 2),
+    # not an all-MISSING gate FAIL. Raised AFTER the artifact write (house
+    # pattern: write-before-raise) so the evidence survives for inspection.
+    # A partially-dead run still proceeds — per-probe incompleteness is the
+    # gate's job (expected_trials / INCOMPLETE).
+    if probes and all(p.trials == 0 for p in probes):
+        raise RuntimeError(
+            "no probe collected a single scored trial — every session errored "
+            "(target down or misconfigured?); the run artifact was still "
+            f"written under {out_dir}/ for inspection")
     # Post-hoc budget gate: there is no mid-run stop, so the run may already
     # have overshot the cap — the breach is raised after metering.
     cap = pack.spec.budget.max_usd_per_run
