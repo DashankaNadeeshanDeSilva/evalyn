@@ -63,7 +63,7 @@ class SessionEndpoint(BaseModel):
     model_config = ConfigDict(extra="forbid")
     method: str
     path: str
-    stream: str | None = None       # "sse" | None
+    stream: Literal["sse"] | None = None  # a typo must fail, not buffer silently
     event_format: str = "json"      # one of _EVENT_FORMATS
     event_name: str | None = None       # named-sse: which event carries content
     content_field: str | None = None    # named-sse: which JSON field holds the token
@@ -130,7 +130,7 @@ class JudgeSpec(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    rubric_model: str = "anthropic/claude-3-5-sonnet-latest"
+    rubric_model: str = "anthropic/claude-sonnet-5"
     generator_family: str | None = Field(
         default=None,
         description="Model family of the TARGET's generator (e.g. 'openai') — "

@@ -48,7 +48,7 @@ def test_judge_spec_defaults_and_override():
         "sessions": {},
         "allowlist": [],
     })
-    assert spec.judge.rubric_model == "anthropic/claude-3-5-sonnet-latest"
+    assert spec.judge.rubric_model == "anthropic/claude-sonnet-5"
     assert spec.judge.generator_family is None
 
     spec2 = TargetSpec.model_validate({
@@ -65,6 +65,18 @@ def test_judge_spec_defaults_and_override():
 def test_unknown_event_format_rejected():
     with pytest.raises(ValueError, match="event_format"):
         SessionEndpoint(method="POST", path="/x", event_format="mystery")
+
+
+def test_unknown_stream_value_rejected():
+    # a typo like `stream: ssse` must fail loudly, not silently degrade to the
+    # buffered (non-streaming) transport branch
+    with pytest.raises(ValueError, match="stream"):
+        SessionEndpoint(method="POST", path="/x", stream="ssse")
+
+
+def test_stream_accepts_sse_and_none():
+    assert SessionEndpoint(method="POST", path="/x", stream="sse").stream == "sse"
+    assert SessionEndpoint(method="POST", path="/x").stream is None
 
 
 def test_named_sse_event_format_accepted():

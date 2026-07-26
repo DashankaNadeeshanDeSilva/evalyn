@@ -53,27 +53,25 @@ def load_anchors(pack: Pack) -> list[Anchor]:
         return out
     for f in sorted(d.glob("*.yaml")):
         obj = yaml.safe_load(f.read_text()) or {}
+        scores = obj.get("scores") or {}
+        if not isinstance(scores, dict):
+            raise PackError(
+                f"anchor {f.name}: `scores` must be a mapping of criterion -> "
+                f"integer 1-5, got {type(scores).__name__} ({scores!r})")
         try:
             out.append(Anchor(id=obj.get("id", f.stem), rubric=obj["rubric"],
-                              transcript=obj["transcript"],
-                              scores=dict(obj.get("scores") or {})))
+                              transcript=obj["transcript"], scores=dict(scores)))
         except KeyError as e:
+            # missing/empty human labels are NOT an error here — such anchors
+            # load with {} labels and are reported as skipped downstream
             raise PackError(
                 f"anchor {f.name}: missing required key {e.args[0]!r} "
-                f"(anchors need `rubric`, `transcript`, and human `scores`)") from e
+                f"(anchors need `rubric` and `transcript`)") from e
     return out
 
 
 def _within_one(judge: int, human: int) -> bool:
     return abs(int(judge) - int(human)) <= 1
-
-
-def agreement(judge_scores: dict, human_scores: dict) -> float:
-    """Fraction of criterion pairs within +/-1 (human criteria the judge scored)."""
-    keys = [k for k in human_scores if k in judge_scores]
-    if not keys:
-        return 0.0
-    return sum(1 for k in keys if _within_one(judge_scores[k], human_scores[k])) / len(keys)
 
 
 def _valid_labels(scores: dict) -> bool:

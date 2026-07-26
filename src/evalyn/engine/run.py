@@ -145,9 +145,16 @@ def _judge_usd() -> float:
 def run_gate(pack: Pack, judge_model: str = "mockllm/model",
              log_dir: str = "runs/logs", rubric_judge_model: str | None = None,
              rubric_scores_untrusted: bool = False,
-             out_dir: str = "runs") -> RunArtifact:
+             out_dir: str = "runs",
+             cache_dir: str | Path | None = None) -> RunArtifact:
+    # Grading-steps cache for the tier-3 judge. Defaults to the pack's .cache
+    # dir — the SAME location `evalyn calibrate` caches under — so gate trials
+    # are judged with the steps calibration validated, instead of regenerating
+    # G-Eval steps per judge call (extra spend, uncalibrated steps).
+    steps_cache = Path(cache_dir) if cache_dir is not None else Path(pack.root) / ".cache"
     task = build_task(pack, judge_model=judge_model,
-                      rubric_judge_model=rubric_judge_model)
+                      rubric_judge_model=rubric_judge_model,
+                      cache_dir=steps_cache)
     logs = inspect_eval(task, model="mockllm/model", log_dir=log_dir, display="none")
     log = logs[0]
     if log.status != "success":

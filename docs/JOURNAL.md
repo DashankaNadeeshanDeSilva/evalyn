@@ -240,9 +240,8 @@ still-open items carry an explicit re-deferral reason.
 **Gate-diff / baseline (Task 11):**
 - [x] ~~Pack-hash drift + baseline-only probes invisible~~ — **CLOSED in Plan #1 Task 13 at
       CLI level** (verdict-neutral `warning:` lines, tested — see the CLI carry-note below).
-- [ ] Asymmetric mean lookup: current side prefix-matches, baseline side exact-matches `"mean"`
-      — unify before any `mean_*` reducer exists. *(minor; re-deferred to Plan #2b — no
-      `mean_*` reducer exists in #2a)*
+- [x] ~~Asymmetric mean lookup~~ — **MOOT (final review 2026-07-26):** #2a Task 3 (`a310844`)
+      removed reducers; both sides now read `mean_score` symmetrically.
 - [ ] Band boundary `>` has no drop==band test; float fuzz at exact boundary. *(minor;
       re-deferred to #2a final-review triage)*
 - Note: 8-scenario policy trace verified; capability-never-reds (incl. empty reducers) test-pinned
@@ -393,11 +392,11 @@ in a fresh session — kickoff prompt in
 
 ### Deferred findings register (Plan #2a)
 
-- [ ] `schema.py` `weight` docstring still says "not yet used in scoring" — stale once Task 1
-      propagates weight into CheckResults; rewrite in Task 3. *(minor, tagged Task 3)*
-- [ ] `_eval_over_turns` with empty `turns` vacuously passes `all_turns`/`final` — unreachable
-      today (tier1 falls back to `[completion]`), but callers added in Tasks 2/4 must keep the
-      non-empty guarantee. *(minor, tagged Tasks 2/4 dispatches)*
+- [x] ~~`schema.py` `weight` docstring stale~~ — **MOOT (final review 2026-07-26):** rewritten
+      in Task 3; see the CLOSED twin entry below.
+- [x] ~~`_eval_over_turns` empty-turns vacuous pass~~ — **MOOT (final review 2026-07-26):**
+      Tasks 2/4 callers kept the completion fallback (verified in tier2.py/tier3.py); the
+      non-empty guarantee held.
 - [x] ~~`not_contains` + `values` typo silently ignored until Task 9's exclusivity validation~~ —
       **CLOSED in Task 9** (dedicated error + dedicated test, reviewer-verified).
 - [ ] `any_turn` failure evidence picks the last turn's string (arbitrary but harmless) — add
@@ -415,16 +414,16 @@ in a fresh session — kickoff prompt in
       tests prove `Score.value` is ignored).
 - [x] ~~Old-baseline RuntimeError surfaces via typer traceback~~ — **CLOSED in Task 12**
       (exit-2 mapping + `--debug` re-raise, test-pinned).
-- [ ] Design-gap #2 pin is two engine tests in composition (reducer partial score; gate band
-      flip) — the single composed e2e flow lands in Task 13. *(tagged Task 13)*
+- [x] ~~Design-gap #2 composed e2e pin~~ — **MOOT (final review 2026-07-26):** landed in
+      Task 13 (`6c1b608`) as `test_non_required_partial_score_moves_gate_band`.
 - [ ] `schema.py` `weight` docstring — **CLOSED in Task 3** (rewritten with real semantics,
       required docstring too). Left here for the record; strike at final review.
 - [x] ~~`rubric: None` fails loud only at scoring time — static rubric-ref validation +
       `##`-headings docs~~ — **CLOSED in Task 9** (validate-pack errors + README note).
 - [x] ~~`grading_steps` cache write non-atomic~~ — **CLOSED in Task 5** (atomic
       `mkstemp`+`os.replace` write + calibrate pre-warms once per rubric; both test-pinned).
-- [ ] `RubricScore.score/.passed` guard with bare `assert` (vanishes under `-O`) — raise
-      ValueError instead. *(minor, final review)*
+- [x] ~~`RubricScore.score/.passed` bare `assert`~~ — **CLOSED in final-review fix wave**
+      (explicit `ValueError` raises, `-O`-safe, tested).
 - [ ] `_median` int-truncates .5 at even k (irrelevant at k=3); `_parse` tolerates extra
       unlisted criteria (undocumented leniency). *(minor)*
 - [x] ~~Calibrate CLI: malformed anchor raw KeyError; missing rubric FileNotFoundError
@@ -437,8 +436,9 @@ in a fresh session — kickoff prompt in
       deterministic rendezvous saturates exactly (`== cap` would also catch over-serialization);
       ValueError-before-any-work is enforced by code placement but not test-pinned (stubs never
       asserted untouched). *(minor, final review)*
-- [ ] `agreement()` public function unused by `run_calibration` (inline pooling; only
-      `_within_one` shared) — dead-path drift risk. *(minor, final review)*
+- [x] ~~`agreement()` unused by `run_calibration` (dead-path drift)~~ — **CLOSED in
+      final-review fix wave** (function deleted; `_within_one` retained; `run_calibration`
+      pins untouched, re-reviewer verified no behavior assertion weakened).
 - [ ] Task 6 stream-adapter polish (all brief-verbatim code): vercel-ai valid-JSON
       non-string frame (`0:123`) escapes as `TypeError` at join instead of
       `StreamFormatError`; named-sse `event: error` with no `data:` line silently ignored;
@@ -502,20 +502,49 @@ in a fresh session — kickoff prompt in
       mistake; `values` sentinel checks mix `is not None` vs truthy between sections;
       README "Also… Also" phrasing; rubric ids used as file stems unsanitized (path-ish
       ids like `../x` resolve outside `rubrics/` — pre-existing). *(minor)*
-- [ ] Task 12 review minors: `load_anchors` malformed-anchor error message says anchors need
-      `scores` but a missing `scores` never raises (handled downstream as skipped) — message
-      overstates; and a non-dict `scores` (e.g. `scores: "high"`) still escapes as a raw
-      `ValueError`/`TypeError` traceback (only `KeyError` is wrapped). *(minor, final review)*
+- [x] ~~Task 12 review minors: `load_anchors` message overstates `scores`; non-dict `scores`
+      raw traceback~~ — **CLOSED in final-review fix wave** (isinstance guard → `PackError`;
+      message corrected; missing-`scores`-loads-as-`{}` behavior pinned).
 - [ ] Task 12 test polish: cramped one-line formatting at migrated `minimal_pack` call sites
       (test_validate.py); `minimal_pack` factory hardcodes `tmp_path / "pack"` + `mkdir()` so a
       second call in one test would fail — fine today, decide `exist_ok`/comment if reuse grows.
       *(minor)*
-- [ ] `stream:` field has NO static validator (only `event_format` does) — a typo like
-      `stream: ssse` silently degrades to non-streaming. Pre-existing omission discovered during
-      Task 12's verify step, correctly not patched there (verify-only note). *(minor, final
-      review triage — candidate quick fix or Plan #2b)*
+- [x] ~~`stream:` field has NO static validator~~ — **CLOSED in final-review fix wave**
+      (`Literal["sse"] | None`, mirrors the solver's only accepted value; rejection +
+      acceptance tests; both packs validate).
 - [ ] `anthropic>=0.120` floor is tight for PyPI consumers (pinned to the venv-validated
       version) — loosen before a public PyPI cut. *(minor, pre-release checklist)*
+### Final whole-branch review (2026-07-26) — verdict: **ready to merge after one fix wave**
+
+Fable reviewer over the full `e30afbf..6c1b608` diff (17 commits, 84 files). Zero Critical.
+Zero silent-pass paths found; constraint audit clean (Inspect spine, gate policy in Evalyn's
+log-reading layer, pass^k, async-httpx-only, allowlist fail-closed, CheckResult contract
+uniform across all three tiers); TwinCore pack + calibration record internally consistent;
+no secrets in the diff. Register triage: **no open item blocks the merge** — 4 MOOT entries
+struck above; the rest re-confirmed DEFER-OK with tags (Plan #2b / later hardening /
+pre-release checklist / test polish).
+
+**Three Important findings, all fixed in the final fix wave (this commit), scoped re-review
+verified all ADDRESSED with no new breakage:**
+1. `run_gate` never threaded the grading-steps cache — gate judged under uncached,
+   per-call-regenerated G-Eval steps (extra judge spend; gate trials judged under different
+   steps than calibration cached). Fixed: `run_gate(cache_dir=None)` defaults to
+   `pack.root/.cache`, override wins, both branches test-pinned.
+2. `JudgeSpec.rubric_model` still defaulted to the retired `claude-3-5-sonnet-latest` —
+   flipped to `anthropic/claude-sonnet-5` (user-ruled judge); stray test references swept
+   (PRICES retired key + calibration.json deliberately untouched).
+3. Root README claimed `weight`/`max_turns_per_session`/`max_usd_per_run` were
+   "declarative-only" — rewritten to describe the shipped consumers.
+
+Fix-wave riders (reviewer-recommended, all landed + verified): `stream:` static validation,
+non-dict `scores` `PackError` guard, `agreement()` deletion, `RubricScore` asserts→ValueError.
+
+**Reviewer follow-ups for the first live TwinCore gate run** (user-consented, pending):
+sanity-check `judge_usd` against the provider console; confirm grading-steps cache hits.
+**For Plan #2b scope:** KB-fact-sheet groundedness enhancement as its own scoped task
+(hash the fact sheet into the staleness rule; groundedness is the weakest rubric at 60%
+per-criterion agreement); k-or-anchor-count options for packs calibrating near-threshold.
+
 - [ ] Task 13 review minors: `--allow-uncalibrated` e2e pin's falsifiability not demonstrated
       (stale-refusal pin's was; assertions are exact-value non-vacuous — low risk); unused
       `reference:` field in `ARTIFACT_PROBES` fixture (no check consumes it); RED run used `-x`

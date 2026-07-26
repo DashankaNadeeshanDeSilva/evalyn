@@ -255,3 +255,52 @@ def test_artifact_total_unsure_trials_sums_probe_unsure(monkeypatch, tmp_path):
     # NOANSWER accounting is surfaced in the serialized artifact too
     [written] = (tmp_path / "out").glob("*.json")
     assert json.loads(written.read_text())["total_unsure_trials"] == 3
+
+
+# --- final review F1: gate threads the grading-steps cache into the task ---
+
+
+def _fake_success_log():
+    fake = _FakeLog([])
+    fake.status = "success"
+    fake.location = None
+    return fake
+
+
+def test_run_gate_defaults_cache_dir_to_pack_dot_cache(monkeypatch, tmp_path):
+    """Gate runs must reuse the pack's .cache grading steps (same dir the
+    calibrate CLI writes) instead of regenerating G-Eval steps per judge call."""
+    monkeypatch.setenv("EVALYN_TARGET_URL", "http://localhost:8899")
+    pack = load_pack(str(REPO_EXAMPLE))
+    captured = {}
+
+    def fake_build_task(pack_arg, **kwargs):
+        captured.update(kwargs)
+        return "task"
+
+    monkeypatch.setattr("evalyn.engine.run.build_task", fake_build_task)
+    monkeypatch.setattr("evalyn.engine.run.inspect_eval",
+                        lambda *a, **k: [_fake_success_log()])
+    monkeypatch.setattr("evalyn.engine.run._judge_usd", lambda: 0.0)
+    run_gate(pack, judge_model="mockllm/model", log_dir=str(tmp_path / "logs"),
+             out_dir=str(tmp_path / "out"))
+    assert captured["cache_dir"] == Path(pack.root) / ".cache"
+
+
+def test_run_gate_explicit_cache_dir_override_wins(monkeypatch, tmp_path):
+    monkeypatch.setenv("EVALYN_TARGET_URL", "http://localhost:8899")
+    pack = load_pack(str(REPO_EXAMPLE))
+    captured = {}
+
+    def fake_build_task(pack_arg, **kwargs):
+        captured.update(kwargs)
+        return "task"
+
+    monkeypatch.setattr("evalyn.engine.run.build_task", fake_build_task)
+    monkeypatch.setattr("evalyn.engine.run.inspect_eval",
+                        lambda *a, **k: [_fake_success_log()])
+    monkeypatch.setattr("evalyn.engine.run._judge_usd", lambda: 0.0)
+    custom = tmp_path / "custom-cache"
+    run_gate(pack, judge_model="mockllm/model", log_dir=str(tmp_path / "logs"),
+             out_dir=str(tmp_path / "out"), cache_dir=custom)
+    assert captured["cache_dir"] == custom

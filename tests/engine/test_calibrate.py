@@ -8,7 +8,6 @@ import pytest
 from evalyn.engine.calibrate import (
     AGREEMENT_THRESHOLD,
     Anchor,
-    agreement,
     is_stale,
     load_anchors,
     load_record,
@@ -17,7 +16,7 @@ from evalyn.engine.calibrate import (
 )
 from evalyn.scoring.rubrics import _hash_text
 from evalyn.scoring.tier3 import RubricScore
-from evalyn.targets.loader import Pack
+from evalyn.targets.loader import Pack, PackError
 from evalyn.targets.schema import Check, Probe, TargetSpec
 
 PERSONA = """# Persona
@@ -91,19 +90,35 @@ def _stub_steps(monkeypatch):
     return calls
 
 
-# ------------------------------------------------------------------ agreement
+# ------------------------------------------------------------- load_anchors
 
 
-def test_agreement_within_one_point():
-    # 3 of 4 within +/-1 => 0.75
-    judge = {"a": 4, "b": 3, "c": 5, "d": 1}
-    human = {"a": 5, "b": 3, "c": 5, "d": 4}  # d off by 3
-    assert agreement(judge, human) == 0.75
+def test_load_anchors_non_dict_scores_is_packerror(tmp_path):
+    # `scores: high` (a scalar) must be a clear PackError, not a raw
+    # ValueError/TypeError from dict()
+    pack = _pack(tmp_path)
+    _anchor_yaml(tmp_path, "bad",
+                 body="rubric: persona\ntranscript: t\nscores: high\n")
+    with pytest.raises(PackError, match=r"scores.*mapping"):
+        load_anchors(pack)
 
 
-def test_agreement_no_common_criteria_is_zero():
-    assert agreement({}, {}) == 0.0
-    assert agreement({"a": 3}, {"b": 3}) == 0.0
+def test_load_anchors_missing_key_message_does_not_demand_scores(tmp_path):
+    # only `rubric` and `transcript` are required; a missing `scores` block is
+    # handled downstream as a skipped anchor — the error must not claim otherwise
+    pack = _pack(tmp_path)
+    _anchor_yaml(tmp_path, "norubric", body="transcript: t\n")
+    with pytest.raises(PackError, match=r"need `rubric` and `transcript`") as ei:
+        load_anchors(pack)
+    assert "scores" not in str(ei.value)
+
+
+def test_load_anchors_missing_scores_key_is_loaded_not_error(tmp_path):
+    # no `scores` at all -> anchor loads with {} labels (skipped later, not fatal)
+    pack = _pack(tmp_path)
+    _anchor_yaml(tmp_path, "nolabels", body="rubric: persona\ntranscript: t\n")
+    [a] = load_anchors(pack)
+    assert a.scores == {}
 
 
 async def test_run_calibration_reports_unmatched_criterion_labels(monkeypatch, tmp_path):

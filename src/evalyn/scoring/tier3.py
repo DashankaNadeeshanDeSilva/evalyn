@@ -80,13 +80,19 @@ class RubricScore:
     @property
     def score(self) -> float:
         """Normalized [0,1] check score: mean over criteria of (median-1)/4."""
-        assert self.medians
+        if not self.medians:
+            raise ValueError(
+                "RubricScore.score is undefined without medians (unsure result "
+                "— check `unsure` before reading the score)")
         return sum(_normalize_score(m) for m in self.medians.values()) / len(self.medians)
 
     @property
     def passed(self) -> bool:
         """Binary verdict: mean of per-criterion medians >= 4."""
-        assert self.medians
+        if not self.medians:
+            raise ValueError(
+                "RubricScore.passed is undefined without medians (unsure result "
+                "— check `unsure` before reading the verdict)")
         return sum(self.medians.values()) / len(self.medians) >= 4
 
 

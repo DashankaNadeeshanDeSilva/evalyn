@@ -227,3 +227,18 @@ async def test_metadata_records_rubric_hash_and_steps(monkeypatch, tmp_path):
     assert rub["hash"] == _hash_text(TONE)
     assert rub["steps"] == ["check the tone"]
     json.dumps(result.metadata)  # run-artifact embedding: must be JSON-serializable
+
+
+# --- final review F7: unsure RubricScore accessors raise, never assert ------
+
+
+def test_rubricscore_score_raises_valueerror_without_medians():
+    import pytest
+    from evalyn.scoring.tier3 import RubricScore
+
+    rs = RubricScore(medians=None, samples=[], steps=["s"], rubric_hash="h",
+                     unsure=True, reason="spread")
+    with pytest.raises(ValueError, match="medians"):
+        rs.score
+    with pytest.raises(ValueError, match="medians"):
+        rs.passed

@@ -67,6 +67,6 @@ def test_rubric_judge_model_override_avoids_family_warning(tmp_path, recwarn):
     pack = _mem_pack(tmp_path, judge=JudgeSpec(
         rubric_model="openai/gpt-4o", generator_family="openai"))
     build_task(pack, judge_model="mockllm/model",
-               rubric_judge_model="anthropic/claude-3-5-sonnet-latest")
+               rubric_judge_model="anthropic/claude-sonnet-5")
     assert not [w for w in recwarn.list if issubclass(w.category, UserWarning)
                 and "family" in str(w.message)]
