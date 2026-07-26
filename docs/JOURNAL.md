@@ -156,41 +156,51 @@ openers (tier1 null-`value` defense-in-depth).
 ### Open items — deferred findings register
 
 Triage at the Plan #1 final whole-branch review unless tagged later.
+**Re-triaged 2026-07-26 at Plan #2a Task 13** — closures below name the #2a commit;
+still-open items carry an explicit re-deferral reason.
 
 **Loader / schema (Tasks 2–3):**
-- [ ] Broad `except Exception` around `model_validate` — narrow to `pydantic.ValidationError`
-      so real bugs aren't rewrapped as `PackError`. *(minor)*
-- [ ] Empty `target.yaml` → `AttributeError` instead of `PackError` (contract leak). *(minor)*
-- [ ] Missing `probes/` dir → silent empty probe list; undocumented. *(minor)*
-- [ ] Bare `${VAR}` with unset var resolves to `""` silently (fail-closed via allowlist, but
-      confusing). `${VAR:-default}` also ignores shell set-but-empty semantics. *(minor)*
-- [ ] Env-var regex is uppercase-only (`[A-Z0-9_]+`) — lowercase refs silently unresolved;
-      widen or document. *(minor)*
-- [ ] No `extra="forbid"` on schema models — typo'd pack YAML keys pass silently. Consider at
-      `validate-pack` (Task 12) or Plan #2. *(minor)*
-- [ ] No cross-field validation on `Check` (`ref` for invariant, `question`/`expect` for
-      classifier, …) and `ref` not checked against invariant ids — presumed deferred to
-      `validate-pack` (Task 12); **Task 8's scorer must handle missing fields defensively**. *(info)*
-- [ ] Schema tests are happy-path only (no `ValidationError` case). *(minor)*
+- [x] ~~Broad `except Exception` around `model_validate`~~ — **CLOSED in #2a Task 12**
+      (`6a9d8ad`, narrowed to `pydantic.ValidationError`).
+- [x] ~~Empty `target.yaml` → `AttributeError`~~ — **CLOSED by #2a Task 12's narrowing**
+      (controller-verified 2026-07-26: empty file now raises `PackError` with the
+      ValidationError detail).
+- [ ] Missing `probes/` dir → silent empty probe list; undocumented. *(minor; re-deferred to
+      Plan #2b — `validate-pack` warning candidate, no current pack hits it)*
+- [x] ~~Bare `${VAR}` unset → `""`; set-but-empty semantics~~ — **CLOSED in #2a Task 12**
+      (`6a9d8ad`, bash `:-` semantics documented + implemented).
+- [x] ~~Env-var regex uppercase-only~~ — **CLOSED in #2a Task 12** (`6a9d8ad`, lowercase allowed).
+- [x] ~~No `extra="forbid"` on schema models~~ — **CLOSED in #2a Task 12** (`6a9d8ad`, all
+      schema models + typo'd-key rejection tests; packs+anchors verified unbroken).
+- [x] ~~No cross-field validation on `Check`~~ — **CLOSED across Plan #1 fix `a870e21`**
+      (scorer-side defensive guards) **+ #2a Task 9 `5659b40`** (validate-pack: `value` XOR
+      `values`, rubric-ref existence, dangling invariant `ref`).
+- [x] ~~Schema tests happy-path only~~ — **CLOSED in #2a Task 12** (`6a9d8ad`, typo'd-key
+      `ValidationError` cases at target.yaml + probe-check level).
 
 **Stream adapters (Task 4):**
-- [ ] Malformed frames raise raw `JSONDecodeError` (and valid-but-wrong-type frames like `0:5`
-      raise `TypeError`) instead of `StreamFormatError`. *(minor)*
-- [ ] raw-sse `.lstrip()` strips ALL leading whitespace — SSE spec strips exactly one space, so
-      leading-space tokens lose word boundaries on the plain-text path. Revisit before any real
-      product uses raw-sse plain text (Plan #2 / TwinCore pack). *(minor)*
-- [ ] Interior `\r` survives on raw-sse if CRLF isn't normalized upstream. *(minor)*
-- [ ] Mid-stream vercel-ai error frames (`3:`/`e:`) silently dropped. Related to Task-5
-      contract #4. *(minor)*
+- [x] ~~Malformed frames raise raw `JSONDecodeError`~~ — **CLOSED in #2a Task 6** (`42e4e57`,
+      `StreamFormatError`); residual valid-JSON-non-string `0:123` `TypeError` edge tracked
+      in the #2a register.
+- [x] ~~raw-sse `.lstrip()` strips all leading whitespace~~ — **CLOSED in #2a Task 6**
+      (`42e4e57`, exactly-one-space fidelity).
+- [ ] Interior `\r` on raw-sse/vercel/json branches (named-sse strips since #2a Task 6).
+      *(minor; re-deferred — tracked in the #2a register's Task 6 polish item, later
+      hardening pass)*
+- [x] ~~vercel-ai `3:`/`e:` error frames silently dropped~~ — **CLOSED in #2a Task 6**
+      (`42e4e57`, surfaced as transport errors).
 - [ ] Final `.strip()` trims genuine leading/trailing reply whitespace — scorer-fidelity
-      question. *(minor)*
-- [ ] Adapter tests are happy-path only (no escaping/unicode/CRLF/malformed-frame cases). *(minor)*
+      question. *(minor; re-deferred to Plan #2b — decide with real-product transcript
+      evidence; no current probe is whitespace-sensitive)*
+- [x] ~~Adapter tests happy-path only~~ — **CLOSED in #2a Task 6** (`42e4e57`, malformed-frame
+      / CRLF / multi-frame edge tests landed with the hardening).
 
 **Session solver (Task 5):**
-- [ ] Unused `import pytest` in `tests/engine/test_solver.py` (brief-verbatim; `ruff` scopes to
-      `src/` only). *(minor)*
+- [x] ~~Unused `import pytest` in `tests/engine/test_solver.py`~~ — **CLOSED**: lint scope now
+      includes `tests/` (`ruff check src/ tests/` clean since #2a).
 - [ ] `state.metadata["turns"]` raw key access — `KeyError` instead of a domain error on
-      non-conforming samples. *(minor)*
+      non-conforming samples. *(minor; still present at solver.py:46, verified 2026-07-26 —
+      re-deferred to #2a final-review triage)*
 - Note: solver honors audit contracts 1/2/4 (allowlist-only URL, buffer-then-parse, errors via
   `raise_for_status`); minipack allowlist gained `http://127.0.0.1:8899` (necessary + minimal,
   reviewer-verified).
@@ -199,66 +209,75 @@ Triage at the Plan #1 final whole-branch review unless tagged later.
 - [x] ~~Task 12 MUST guard: malformed checks (`ref=None` no-op, `value=None` crash)~~ — **CLOSED in
       Task 12** (`a870e21`): all 4 guards (missing ref, dangling ref, missing value incl.
       not_contains, missing question) with falsifiability-verified tests.
-- [ ] Tier-1 tests minimal per brief — `contains`/`not_contains` scoring and non-required check
-      recording untested; expand when Task 8 wires real probes. *(minor)*
-- [ ] `first-person` invariant regex narrow (only `he/she + 4 verbs` — misses `they`, other verbs). *(minor)*
+- [x] ~~Tier-1 tests minimal per brief~~ — **SUPERSEDED by #2a Task 1** (`6de3766`, tier1
+      rewritten scope-aware with `contains`/`not_contains`/`values`/non-required coverage;
+      parity re-verified in Task 9).
+- [ ] `first-person` invariant regex narrow (only `he/she + 4 verbs` — misses `they`, other
+      verbs). *(minor; re-deferred to Plan #2b invariant-library growth — TwinCore pack relies
+      on rubric/classifier checks for persona, not this invariant)*
 
 **Tier-2 judge (Task 7):**
 - Plan amendments (user-approved, FIXED in `8316ad6`): evidence guard no longer trusts empty
   evidence (design safeguard restored — empty/absent evidence ⇒ `NOANSWER`); `expect: None`
   (pydantic `model_dump` shape) normalized to `True` instead of silently flipping verdicts.
-- [ ] No test exercises the verdict-≠-expect → `INCORRECT` path (unused `INCORRECT` import,
-      F401 if `tests/` linted). *(minor)*
+- [x] ~~No test exercises the verdict-≠-expect → `INCORRECT` path~~ — **SUPERSEDED by #2a
+      Task 2** (`65a36a5`, tier2 rewritten with per-check verdicts; `INCORRECT` exercised in
+      `tests/scoring/test_tier2.py`, verified 2026-07-26).
 
 **Run orchestration (Task 10):**
-- [ ] **Task 11 MUST handle:** empty `reducers` on a `ProbeResult` (probe absent from log — e.g.
-      all trials errored before scoring) is a HARD FAILURE for gate policy, never a pass.
-      *(carry to Task 11 dispatch)*
-- [ ] Task 11 decision: add explicit `ProbeResult.trials` field (actual count) vs. key-label-only;
-      note `from_dict` is strict — schema additions break older-artifact reads. *(carry to Task 11)*
-- [ ] Artifact filename has second resolution — same-second runs overwrite (plan-mandated naming);
-      add sub-second/uniquifier later. *(minor)*
-- [ ] Artifact write is non-atomic and CWD-relative (`Path("runs")` hardcoded, brief-mandated);
-      `out_dir` param is the follow-up. *(minor)*
+- [x] ~~Empty `reducers` on a `ProbeResult` must be HARD FAILURE~~ — **CLOSED in Plan #1
+      Task 11** (test-pinned with counterfactual) and preserved through #2a Task 3's
+      `ProbeResult` reshape.
+- [x] ~~`ProbeResult.trials` field decision~~ — **SUPERSEDED by #2a Task 3** (`a310844`,
+      `ProbeResult` reshaped for the weighted-aggregation contract; old-artifact reads
+      fail loud with the Task 12 exit-2 mapping).
+- [ ] Artifact filename has second resolution — same-second runs overwrite (plan-mandated
+      naming); add sub-second/uniquifier later. *(minor; re-deferred to Plan #2b — CLI `gate`
+      is one-run-per-process today, only `compare` makes collisions plausible)*
+- [x] ~~Artifact write non-atomic + CWD-relative~~ — **CLOSED in #2a Task 8** (`bab3c14`,
+      atomic `mkstemp`+`os.replace`, `out_dir` param) + CLI `--out-dir` in Task 12.
 
 **Gate-diff / baseline (Task 11):**
-- [ ] **Task 13/14 SHOULD surface:** gate never compares `current.pack_hash` vs `baseline.pack_hash`
-      (pack drift undetected); probes present in baseline but absent from current artifact are
-      silently invisible (loop is over current only). *(carry to Task 13/14 dispatches)*
-- [ ] Asymmetric mean lookup: current side prefix-matches, baseline side exact-matches `"mean"` —
-      unify before any `mean_*` reducer exists. *(minor)*
-- [ ] Band boundary `>` has no drop==band test; float fuzz at exact boundary. *(minor)*
+- [x] ~~Pack-hash drift + baseline-only probes invisible~~ — **CLOSED in Plan #1 Task 13 at
+      CLI level** (verdict-neutral `warning:` lines, tested — see the CLI carry-note below).
+- [ ] Asymmetric mean lookup: current side prefix-matches, baseline side exact-matches `"mean"`
+      — unify before any `mean_*` reducer exists. *(minor; re-deferred to Plan #2b — no
+      `mean_*` reducer exists in #2a)*
+- [ ] Band boundary `>` has no drop==band test; float fuzz at exact boundary. *(minor;
+      re-deferred to #2a final-review triage)*
 - Note: 8-scenario policy trace verified; capability-never-reds (incl. empty reducers) test-pinned
   with counterfactual; implementer fixed a brief bug (empty-reducer non-safety probes silently
   passed) + 2 latent `_min_over_scorers` bugs.
 
 **validate-pack (Task 12):**
-- [ ] `value: ""` passes the contains guard while `question: ""` is caught (`.strip()`
-      inconsistency between the two added guards) — one-line harmonization. *(minor)*
-- [ ] `KNOWN_INVARIANTS` captured at import time — revisit if invariants become pack-extensible
-      (Plan #2+). *(info)*
+- [x] ~~`value: ""` vs `question: ""` `.strip()` inconsistency~~ — **CLOSED by #2a Task 9's
+      guard rework** (verified 2026-07-26: `value`, `values`, `question`, `rubric` all
+      `.strip()`-checked uniformly in engine/validate.py).
+- [ ] `KNOWN_INVARIANTS` captured at import time — revisit if invariants become pack-extensible.
+      *(info; re-deferred to Plan #2b+ — invariants are not pack-extensible in #2a)*
 
 **CLI (Task 13):**
 - Carry-notes CLOSED at CLI level: pack-hash drift + baseline-only probes surface as `warning:`
   lines (verdict-neutral, tested); gate.py untouched.
-- [ ] Broad `except Exception` → exit 2 hides engine tracebacks (plan-mandated) — add a
-      `--debug`/re-raise flag later for diagnosability. *(minor)*
+- [x] ~~Broad `except Exception` → exit 2 hides engine tracebacks~~ — **CLOSED in #2a Task 12**
+      (`6a9d8ad`, `--debug` re-raises on every exit-2 path, test-pinned).
 - [ ] Allowlist exit-2 test lacks the `setup error` stderr assertion (asymmetric with run-error
-      test). *(minor)*
-- [ ] stderr assertions require `click>=8.2` (installed: 8.2.1) — consider a pyproject floor to
-      guard against downgrade. *(minor)*
+      test). *(minor; still true at tests/test_cli.py:99, verified 2026-07-26 — re-deferred to
+      #2a final-review triage)*
+- [x] ~~`click>=8.2` pyproject floor~~ — **CLOSED in #2a Task 12** (`6a9d8ad`).
 
 **E2E (Task 14):**
-- [ ] `EVALYN_BIN` assumes console script beside `sys.executable` — confusing failure outside the
-      project venv; add `shutil.which` fallback or clear assert. *(minor)*
+- [ ] `EVALYN_BIN` assumes console script beside `sys.executable` — confusing failure outside
+      the project venv; add `shutil.which` fallback or clear assert. *(minor; re-deferred to
+      #2a final-review triage — `uv run` workflow is canonical, failure mode is loud)*
 - [ ] Fixed port 8899 in the shared fixture — stale toy-target process fails suite setup loudly.
-      *(minor, pre-existing)*
+      *(minor, pre-existing; revisit alongside #2a Task 13's named-sse toy target)*
 
 **Misc:**
-- [ ] `tests/test_smoke.py:1` combined import (`E401`) — only matters if `tests/` enters lint
-      scope. *(minor)*
-- [ ] `test_cli_help_runs` requires the package installed in the venv (couples to the `uv sync`
-      workflow). *(info)*
+- [x] ~~`tests/test_smoke.py:1` combined import (`E401`)~~ — **CLOSED** (imports split;
+      `tests/` in lint scope and clean since #2a, verified 2026-07-26).
+- [ ] `test_cli_help_runs` requires the package installed in the venv. *(info; ACCEPTED —
+      `uv sync` is the documented workflow, no action)*
 
 ### Decisions log
 
@@ -284,32 +303,47 @@ Triage at the Plan #1 final whole-branch review unless tagged later.
    non-required checks in metadata only; tier2 fails on any classifier mismatch regardless of
    `required`. Consequence: the example grounding probe can never trigger the regression band.
 
-### Other Plan #2 openers (from the final branch reviews)
+**BOTH GAPS CLOSED in Plan #2a (triage 2026-07-26, Task 13):** gap #1 by transcript-aware
+scoring with scope semantics (Tasks 1/2/4, fail-closed `all_turns` defaults); gap #2 by
+`aggregate_trial` weighted formula + metadata-driven reducer + gate bands on mean trial score
+(Task 3). Integrated e2e proofs (early-turn leak fails the gate; non-required partial score
+moves a band) land in Task 13's commit.
+
+### Other Plan #2 openers (from the final branch reviews) — EMPTIED at Plan #2a Task 13 (2026-07-26)
 
 - ~~`gate` auto-runs validate-pack before evaluating~~ — **DONE in `ca025e9`** (PR #1 review fixes).
-- Pooled httpx client for the solver (fresh `AsyncClient` per `solve()` today — no connection
-  reuse across samples/epochs; PR #1 review #10).
-- Tier-2 evidence-match hardening: stopword filter / min-token floor on the 0.6 token-overlap
-  fallback; unicode-aware punctuation strip in `_normalize` (PR #1 review minors).
-- Shared conftest fixture for pack-writing test helpers (`tests/test_cli.py` vs
-  `tests/engine/test_validate.py` near-duplication).
-- Tier-1 null-`value` defense-in-depth: the `chk["value"]` access in tier1 is unreachable via
-  `gate` (validate-pack runs first) but unguarded on any other entry path — one-line guard
-  (PR #1 re-review non-blocker).
-- Artifact records NOANSWER counts distinctly, so judge-infra failure ≠ product failure.
-- `pack_fingerprint` over raw pack bytes (today it hashes resolved env — localhost vs 127.0.0.1
-  flips the hash → spurious staleness warnings).
-- `out_dir` param for artifacts (atomic write; fixes CWD-relative `runs/` + test pollution).
-- Adapter-hardening bundle: malformed frames → `StreamFormatError`; vercel error frames (`3:`/`e:`)
-  surfaced; raw-sse single-space (not lstrip) fidelity; interior `\r`; whitespace-fidelity
-  decision; adapter edge-case tests.
-- Loader hardening: narrow `except Exception`; `${VAR}` set-but-empty semantics; lowercase env
-  names; `extra="forbid"` decision; validate `event_format`/`stream` values statically.
-- validate-pack warns on `kind: capability` + `safety_critical: true` (contradictory combo).
-- CLI `--debug` (re-raise instead of swallowed traceback); `--update-baseline` prints the verdict
-  it is blessing; `click>=8.2` floor.
-- pyproject metadata (license/readme/authors/urls) before any PyPI publish.
-- Carry-ins already tagged: TwinCore raw-sse fidelity; budget/auth/state consumers (A3).
+- ~~Pooled httpx client for the solver~~ — **RE-DEFERRED by user-approved amendment P3**
+  (per-`solve()` client stands; perf nicety, no correctness impact; Inspect sample-parallelism
+  makes run-scoped sharing invasive). Revisit only if real-product runs show connection churn.
+- ~~Tier-2 evidence-match hardening~~ — **DONE in Task 2 (`65a36a5`)**: `_MIN_CONTENT_TOKENS`
+  floor on the overlap fallback (discrimination-tested) + `_normalize` hardening riders.
+- ~~Shared conftest fixture for pack-writing test helpers~~ — **DONE in Task 12 (`6a9d8ad`)**
+  (`minimal_pack`/`minimal_pack_with_probe`; Task 3's local helper migrated).
+- ~~Tier-1 null-`value` defense-in-depth~~ — **DONE in Plan #1 fix `a870e21`** (all 4 guards,
+  falsifiability-verified tests); Tier-1 further rewritten scope-aware in Task 1 (`6de3766`).
+- ~~Artifact records NOANSWER counts distinctly~~ — **DONE in Tasks 2/8** (per-check NOANSWER in
+  CheckResults, `unsure` trials never silently pass, `RunArtifact.total_unsure_trials` surfaced;
+  printed in the gate report since Task 12).
+- ~~`pack_fingerprint` over raw pack bytes~~ — **DONE in Task 8 (`bab3c14`)** (env-independent,
+  locked decision; empty-`raw_files` edge in the #2a register).
+- ~~`out_dir` param for artifacts (atomic write)~~ — **DONE in Task 8 (`bab3c14`)** + CLI
+  `--out-dir` in Task 12 (`6a9d8ad`); older tests threaded `out_dir=tmp_path` in Task 12.
+- ~~Adapter-hardening bundle~~ — **DONE in Task 6 (`42e4e57`)** (`StreamFormatError`, vercel
+  `3:`/`e:` surfaced, raw-sse one-space fidelity, named-sse `\r` strip, edge-case tests).
+  Residual polish (vercel non-string frame `TypeError`, `\r` in non-named-sse branches,
+  no-data `event: error`) tracked in the #2a register.
+- ~~Loader hardening~~ — **DONE in Task 12 (`6a9d8ad`)** (narrowed to `ValidationError`,
+  `${VAR:-}` set-but-empty semantics, lowercase env names, `extra="forbid"` + typo'd-key
+  tests). `event_format` static validation landed in Task 6; **`stream` static validation is
+  the one open remainder** — in the #2a register for final-review triage.
+- ~~validate-pack capability+safety_critical warning~~ — **DONE in Task 9 (`5659b40`)**.
+- ~~CLI `--debug`; `--update-baseline` prints verdict; `click>=8.2` floor~~ — **DONE in
+  Task 12 (`6a9d8ad`)** (all exit-2 paths re-raise under `--debug`; verdict echoed; floor set).
+- ~~pyproject metadata~~ — **DONE in Task 12 (`6a9d8ad`)** (keywords + classifiers added to the
+  existing license/readme/urls). Pre-PyPI checklist retains: loosen `anthropic>=0.120` floor.
+- ~~Carry-ins already tagged~~ — TwinCore raw-sse fidelity mooted (TwinCore uses named-sse,
+  Task 10); budget **DONE in Task 7** (`d274e8a`), auth **DONE in Task 6**; `state.*`
+  consumers **re-deferred to Plan #3** (locked decision, no `state.*` user in any current pack).
 
 ---
 
@@ -350,7 +384,8 @@ per verified task (user, 2026-07-24); push/PR ask-first.
 | 9 | validate-pack extensions: P4 `value` XOR `values` exclusivity (incl. dedicated `not_contains`+`values` typo error), static rubric-ref validation (missing id / nonexistent `rubrics/<id>.md`, message + README teach `##`-heading criteria), `contains:a\|b` label parity verified against tier1 scorer, capability+safety_critical contradiction warning, interim multi-turn warning retired (substring RED-verified against real output first) | `5659b40` | ✅ done, Fable review clean (0 findings above Minor) |
 | 10 | TwinCore reference pack: `packs/twincore/` (consent+chat named-sse target, 31-case injection port with literal base64, grounding/persona/scope/pii probes, 4 rubrics, README), loader `${…}` resolution in `sessions.*.path`, allowlist localhost+127.0.0.1:8000; contract re-verified against `niuwnai-mvp@dev` `9f30e8a` | `c2f1dde` | ✅ done, Fable review clean (0 findings above Minor; 6 disclosed deviations all verified acceptable) |
 | 11 | **Human-gated calibration checkpoint:** `run_calibration` concurrency cap (semaphore, default 4) pre-flight; 20 anchors captured live (slug `evalyn`, 12 from a contained capture incident + 8 supervised) and human-scored; judge `claude-3-5-sonnet-latest` found RETIRED (404) → user-approved successor `anthropic/claude-sonnet-5`; 5 calibration runs with 4 rubric-wording iterations (60%→75%→78%→82.5%→**88% PASS**, threshold 85%) + user re-assessed 2 groundedness labels; `calibration.json` committed | `6107596` + `ab53694` | ✅ done — judge calibrated at 88% (35/40 within ±1) |
-| 12 | CLI wiring + cleanup bundle: `--debug` re-raise on all exit-2 paths, exit-2 mappings (old-schema baseline `RuntimeError`, malformed-anchor `KeyError`→`PackError` at source, missing-rubric `FileNotFoundError`), `--update-baseline` echoes verdict, `--out-dir` threads `run_gate(out_dir=…)`, `total_unsure_trials` printed when nonzero; loader hardening (`ValidationError`-narrowed, `${VAR:-}` set-but-empty semantics, lowercase env names, `extra="forbid"` + typo'd-key tests, `load_anchors` unbroken); PRICES `claude-sonnet-5` entry (retired key kept); `anthropic>=0.120` + `click>=8.2` in pyproject (survives `uv sync`); shared `minimal_pack`/`minimal_pack_with_probe` conftest fixtures; older tests threaded `out_dir=tmp_path` | this commit | ✅ done, Fable review clean (0 findings above Minor; verify-only items confirmed: Task 6 `event_format` validator, Task 10 `${…}` session-path test pins) |
+| 12 | CLI wiring + cleanup bundle: `--debug` re-raise on all exit-2 paths, exit-2 mappings (old-schema baseline `RuntimeError`, malformed-anchor `KeyError`→`PackError` at source, missing-rubric `FileNotFoundError`), `--update-baseline` echoes verdict, `--out-dir` threads `run_gate(out_dir=…)`, `total_unsure_trials` printed when nonzero; loader hardening (`ValidationError`-narrowed, `${VAR:-}` set-but-empty semantics, lowercase env names, `extra="forbid"` + typo'd-key tests, `load_anchors` unbroken); PRICES `claude-sonnet-5` entry (retired key kept); `anthropic>=0.120` + `click>=8.2` in pyproject (survives `uv sync`); shared `minimal_pack`/`minimal_pack_with_probe` conftest fixtures; older tests threaded `out_dir=tmp_path` | `6a9d8ad` | ✅ done, Fable review clean (0 findings above Minor; verify-only items confirmed: Task 6 `event_format` validator, Task 10 `${…}` session-path test pins) |
+| 13 | E2E acceptance: toy named-sse consent→session_token→chat target (`examples/toy_target.py`, deterministic replies, 4xx on mis-threaded flow); `tests/test_e2e_named_sse.py` — self-contained-artifact e2e (all run-level keys incl. `judge_usd`/`total_unsure_trials`, exact 9-key CheckResult contract) + **both integrated design-gap proofs** (non-final-turn leak fails gate with final-turn control probe proving a final-only scorer would pass; non-required partial score moves a band both directions vs same real baseline); stale-calibration refusal (exit 2, no traceback, no artifact) + `--allow-uncalibrated` (loud, `rubric_scores_untrusted`, fail-closed unsure) e2e; ROADMAP #2a/#2b split + stale-heading consistency fix; JOURNAL openers emptied (controller triage) | this commit | ✅ done, Fable review clean (0 findings above Minor; both proof-construction risks verified in-diff) |
 
 **Session handoff (2026-07-25):** Tasks 1–5 built in session 1 (this record); Tasks 6–13 continue
 in a fresh session — kickoff prompt in
@@ -481,5 +516,11 @@ in a fresh session — kickoff prompt in
       review triage — candidate quick fix or Plan #2b)*
 - [ ] `anthropic>=0.120` floor is tight for PyPI consumers (pinned to the venv-validated
       version) — loosen before a public PyPI cut. *(minor, pre-release checklist)*
+- [ ] Task 13 review minors: `--allow-uncalibrated` e2e pin's falsifiability not demonstrated
+      (stale-refusal pin's was; assertions are exact-value non-vacuous — low risk); unused
+      `reference:` field in `ARTIFACT_PROBES` fixture (no check consumes it); RED run used `-x`
+      so only the first named-sse test's RED directly observed (others share the same
+      missing-handler dependency); toy-target 404 sends `Content-Type: application/json` with
+      empty body. *(minor, final review)*
 
 ## Plan #3 — `discover` + flywheel *(not started)*

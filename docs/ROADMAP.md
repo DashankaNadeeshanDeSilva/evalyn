@@ -29,13 +29,14 @@ each stage lives in its own file next to this one.
 
 | Stage | The job it delivers | Detailed plan | Status |
 |-------|---------------------|---------------|--------|
-| **Plan #1** | `gate` (fixed regression tests, pass/fail) | [`superpowers/plans/2026-07-22-evalyn-gate-foundation.md`](./superpowers/plans/2026-07-22-evalyn-gate-foundation.md) | ✅ Plan written — **ready to execute** |
-| **Plan #2** | Real product wiring + full-strength judging + `compare` (A/B) + CI | *(not yet written)* | ⏳ Planned (scope below) |
+| **Plan #1** | `gate` (fixed regression tests, pass/fail) | [`superpowers/plans/2026-07-22-evalyn-gate-foundation.md`](./superpowers/plans/2026-07-22-evalyn-gate-foundation.md) | ✅ **Built** (v0.1.0) |
+| **Plan #2a** | Trusted gate on the *real* product: TwinCore pack + Tier-3 judge + calibration | [`superpowers/plans/2026-07-24-evalyn-plan2a-real-gate.md`](./superpowers/plans/2026-07-24-evalyn-plan2a-real-gate.md) | ✅ **Built** |
+| **Plan #2b** | `compare` (A/B) + CI automation | *(not yet written)* | ⏳ **Next stage** (scope below) |
 | **Plan #3** | `discover` (problem-hunting agent) + the flywheel | *(not yet written)* | ⏳ Planned (scope below) |
 
 ---
 
-## Plan #1 — Gate foundation ✅ *(plan written, ready to build)*
+## Plan #1 — Gate foundation ✅ *(built — v0.1.0)*
 
 **The job it delivers:** the `gate` mode — you point Evalyn at a chat product, it runs a batch of
 tests, and returns a clear PASS/FAIL with a saved report.
@@ -61,7 +62,7 @@ automation. Plan #1 targets the **practice product only** to stay self-contained
 
 ---
 
-## Plan #2 — Make the gate real & trustworthy, plus `compare` ⏳ *(scope only; plan not yet written)*
+## Plan #2 — Make the gate real & trustworthy, plus `compare` *(split: #2a ✅ built, #2b ⏳ next)*
 
 **Theme:** take the gate from "works on the practice product" to "trusted on the *real* product,"
 and add the A/B `compare` job.
@@ -82,8 +83,13 @@ and add the A/B `compare` job.
 **Deliverable:** the gate runs on the real product with full 3-tier, calibrated scoring; `compare`
 produces trustworthy A/B verdicts; CI catches regressions on PRs automatically.
 
-**Note:** this stage is large. When we come to write its plan, we'll likely **split it** (e.g. #2a
-real-pack + Tier-3 + calibration; #2b compare + CI). We'll decide then.
+**Note:** this stage is large. When we came to write its plan, we **split it** as anticipated:
+
+- **Plan #2a — real-pack + Tier-3 + calibration** (items 1–3 above): ✅ **built** — see
+  [`superpowers/plans/2026-07-24-evalyn-plan2a-real-gate.md`](./superpowers/plans/2026-07-24-evalyn-plan2a-real-gate.md).
+  The gate now runs full 3-tier, transcript-aware, calibrated (fail-closed) scoring against the
+  real TwinCore pack, with stream adapters, budget metering, and hardened artifacts.
+- **Plan #2b — `compare` + CI** (items 4–5 above): the **next stage**; its plan is not yet written.
 
 ---
 
@@ -127,11 +133,11 @@ The design doc ([`2026-07-21-evalyn-design.md`](./2026-07-21-evalyn-design.md)) 
 *whole* v1 at once. This roadmap slices that same design into buildable stages:
 
 - Design §1–2 (engine + pack contract) → **Plan #1**.
-- Design §3 scoring: Tier-1 & Tier-2 → **Plan #1**; Tier-3 + calibration → **Plan #2**.
-- Design §2 `gate` + §5 gate mechanics → **Plan #1**; CI wiring (§5) → **Plan #2**.
-- Design §2 `compare` → **Plan #2**.
+- Design §3 scoring: Tier-1 & Tier-2 → **Plan #1**; Tier-3 + calibration → **Plan #2a** ✅.
+- Design §2 `gate` + §5 gate mechanics → **Plan #1**; CI wiring (§5) → **Plan #2b**.
+- Design §2 `compare` → **Plan #2b**.
 - Design §4 `discover` + flywheel → **Plan #3**.
-- Design §6 TwinCore pack → **Plan #2** (Plan #1 uses the practice pack instead).
+- Design §6 TwinCore pack → **Plan #2a** ✅ (Plan #1 used the practice pack instead).
 
 ---
 
@@ -139,3 +145,6 @@ The design doc ([`2026-07-21-evalyn-design.md`](./2026-07-21-evalyn-design.md)) 
 
 - **2026-07-22** — Roadmap created. Plan #1 (gate foundation) written and ready. Plans #2–#3 scoped
   at high level only. Staging validated by the Inspect fit spike.
+- **2026-07-26** — Plan #1 built (v0.1.0). Plan #2 split as anticipated: **#2a** (real TwinCore
+  pack + Tier-3 judge + calibration) built per its plan file; **#2b** (`compare` + CI) is the next
+  stage, plan still to write.
