@@ -1,17 +1,36 @@
 [project]
 name = "evalyn"
-version = "0.1.0"
+version = "0.2.0"
 description = "Standalone, project-agnostic evaluation agent for LLM-powered products."
 readme = "README.md"
 license = { file = "LICENSE" }
 authors = [{ name = "Dashanka Nadeeshan De Silva", email = "dashankadesilva@gmail.com" }]
 requires-python = ">=3.10"
+keywords = ["evaluation", "llm", "testing", "ci", "inspect-ai", "agents", "eval"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Environment :: Console",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Software Development :: Quality Assurance",
+    "Topic :: Software Development :: Testing",
+]
 dependencies = [
     "inspect_ai>=0.3.249",
     "httpx>=0.27",
     "pydantic>=2",
     "pyyaml>=6",
     "typer>=0.12",
+    # stderr-capture assertions in tests rely on click >= 8.2 CliRunner behavior
+    "click>=8.2",
+    # the default Tier-3 rubric judge is an anthropic/* model via inspect_ai's
+    # anthropic provider — without this pin `uv sync` drops the SDK
+    "anthropic>=0.120",
 ]
 
 [project.urls]

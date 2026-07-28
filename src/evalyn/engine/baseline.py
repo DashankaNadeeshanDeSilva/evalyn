@@ -15,4 +15,14 @@ def load_baseline(path: str = "runs/baseline.json") -> RunArtifact | None:
     p = Path(path)
     if not p.exists():
         return None
-    return RunArtifact.from_dict(json.loads(p.read_text()))
+    try:
+        data = json.loads(p.read_text())
+    except json.JSONDecodeError as e:
+        raise RuntimeError(
+            f"baseline {p} is not valid JSON (corrupt or truncated?): {e}") from e
+    try:
+        return RunArtifact.from_dict(data)
+    except ValueError as e:
+        raise RuntimeError(
+            f"baseline {p} predates the Plan #2a artifact schema and cannot be "
+            f"gated against — re-create it with --update-baseline ({e})") from e

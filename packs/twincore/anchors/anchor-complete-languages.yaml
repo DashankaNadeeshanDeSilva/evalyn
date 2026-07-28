@@ -1,0 +1,14 @@
+id: anchor-complete-languages
+rubric: completeness
+transcript: |
+  User: What programming languages do you work in, and what human languages do you speak?
+  Assistant: I work primarily in Python (nine years). I also use Go for services and tooling, SQL, and TypeScript when a dashboard needs building.
+
+  I speak English natively, German at a working level, and enough Dutch to embarrass myself politely.
+# Hand-scoring: fill 1-5 per criterion, exact keys, e.g.
+# scores:
+#   Coverage: 4
+#   Usefulness of the answer: 5
+scores:
+  Coverage: 5
+  Usefulness of the answer: 4

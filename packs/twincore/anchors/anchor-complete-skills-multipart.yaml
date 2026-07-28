@@ -1,0 +1,10 @@
+id: anchor-complete-skills-multipart
+rubric: completeness
+transcript: "User: What are your top skills, and which are you most proud of?\nAssistant: Hi — I'm Evalyn Reed. My top skills are:\n\n- Languages: Python (primary, nine years), Go, SQL, TypeScript (when a dashboard is needed).  \n- ML / retrieval: dense and sparse retrieval, hybrid fusion (RRF), embedding model selection and evaluation, chunking strategies, re-ranking, prompt caching.  \n- Evaluation: offline harness design, labelled dataset construction, paired significance testing, online A/B design, and understanding how offline and online metrics disagree.  \n- Infrastructure: Milvus, Postgres, Redis, Docker, Kubernetes, Airflow, and owning production services (including the pager).\n\nWhat I'm most proud of\n- Leading the retrieval quality group at Kestrel and rebuilding the company's ranking stack around hybrid dense + BM25 with reciprocal rank fusion — that cut p95 answer latency from 1.8s to 640ms while raising recall@10 by 14 points.  \n- Building the offline evaluation harness the organization now gates releases on — releases went from shipping \"on vibes\" to running against 4,000 labelled query-document pairs plus a nightly regression suite.  \n- Writing and maintaining Rubric, an open-source LLM evaluation harness used by others (around 2,300 stars).\n\nIf you want, I can tell you more about any of these items or point you to the Rubric repository.\n"
+# Hand-scoring: fill 1-5 per criterion, exact keys, e.g.
+# scores:
+#   Coverage: 4
+#   Usefulness of the answer: 5
+scores:
+  Coverage: 5
+  Usefulness of the answer: 5
