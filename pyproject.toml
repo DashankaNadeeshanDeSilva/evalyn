@@ -1,6 +1,6 @@
 [project]
 name = "evalyn"
-version = "0.1.0"
+version = "0.2.0"
 description = "Standalone, project-agnostic evaluation agent for LLM-powered products."
 readme = "README.md"
 license = { file = "LICENSE" }
