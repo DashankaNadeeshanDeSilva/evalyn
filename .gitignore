@@ -10,3 +10,9 @@ venv/
 
 # SDD scratch (progress ledger, briefs)
 .superpowers/
+
+# Personal working notes (kept locally, not tracked)
+temp.md
+
+# rubric grading-steps cache (per-pack, regenerated)
+packs/*/.cache/

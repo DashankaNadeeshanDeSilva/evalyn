@@ -106,6 +106,44 @@ def test_load_pack_invalid_probe(tmp_path):
     with pytest.raises(PackError, match="invalid probe"):
         load_pack(invalid_pack)
 
+def _slug_pack(tmp_path: Path) -> Path:
+    """Pack whose session paths carry a ${ENV:-default} slug placeholder."""
+    p = tmp_path / "slug_pack"
+    p.mkdir()
+    (p / "target.yaml").write_text(
+        "name: slugged\n"
+        "sessions:\n"
+        "  open:\n"
+        "    method: POST\n"
+        "    path: \"/api/twin/${EVALYN_TWIN_SLUG:-eval-twin}/consent\"\n"
+        "  message:\n"
+        "    method: POST\n"
+        "    path: \"/api/twin/${EVALYN_TWIN_SLUG:-eval-twin}/chat\"\n"
+        "allowlist: []\n"
+    )
+    return p
+
+def test_session_path_env_resolution_uses_default_when_unset(tmp_path, monkeypatch):
+    """${ENV:-default} in sessions.*.path resolves at load time (default branch)."""
+    monkeypatch.delenv("EVALYN_TWIN_SLUG", raising=False)
+    pack = load_pack(_slug_pack(tmp_path))
+    assert pack.spec.sessions["open"].path == "/api/twin/eval-twin/consent"
+    assert pack.spec.sessions["message"].path == "/api/twin/eval-twin/chat"
+
+def test_session_path_env_resolution_honors_override(tmp_path, monkeypatch):
+    """An exported env var overrides the placeholder default in session paths."""
+    monkeypatch.setenv("EVALYN_TWIN_SLUG", "acme-twin")
+    pack = load_pack(_slug_pack(tmp_path))
+    assert pack.spec.sessions["open"].path == "/api/twin/acme-twin/consent"
+    assert pack.spec.sessions["message"].path == "/api/twin/acme-twin/chat"
+
+def test_session_path_resolution_leaves_raw_bytes_unresolved(tmp_path, monkeypatch):
+    """Resolved values must never leak into raw_files (the fingerprint source)."""
+    monkeypatch.setenv("EVALYN_TWIN_SLUG", "acme-twin")
+    pack = load_pack(_slug_pack(tmp_path))
+    assert b"${EVALYN_TWIN_SLUG:-eval-twin}" in pack.raw_files["target.yaml"]
+    assert b"acme-twin" not in pack.raw_files["target.yaml"]
+
 def test_load_pack_duplicate_probe_id(tmp_path):
     """load_pack raises PackError when two probes share the same id."""
     dup_pack = tmp_path / "dup_probe"
@@ -132,3 +170,59 @@ def test_load_pack_duplicate_probe_id(tmp_path):
     )
     with pytest.raises(PackError, match="dup-probe"):
         load_pack(dup_pack)
+
+
+# --- Task 12 loader hardening: ${VAR} semantics, lowercase names, extra=forbid
+
+
+def test_env_set_but_empty_falls_back_to_default(tmp_path, monkeypatch):
+    """Bash ${VAR:-default} semantics: set-but-EMPTY resolves to the default."""
+    monkeypatch.setenv("EVALYN_TWIN_SLUG", "")
+    pack = load_pack(_slug_pack(tmp_path))
+    assert pack.spec.sessions["open"].path == "/api/twin/eval-twin/consent"
+
+
+def test_lowercase_env_name_resolves(tmp_path, monkeypatch):
+    """Lowercase env-var names are legal in ${...} placeholders."""
+    p = tmp_path / "lower_pack"
+    p.mkdir()
+    (p / "target.yaml").write_text(
+        "name: lower\n"
+        "sessions:\n"
+        "  open: { method: POST, path: \"/api/${twin_slug:-fallback}/consent\" }\n"
+        "allowlist: []\n"
+    )
+    monkeypatch.setenv("twin_slug", "acme")
+    assert load_pack(p).spec.sessions["open"].path == "/api/acme/consent"
+    monkeypatch.delenv("twin_slug")
+    assert load_pack(p).spec.sessions["open"].path == "/api/fallback/consent"
+
+
+def test_target_yaml_typo_key_is_pack_error(tmp_path):
+    """extra=forbid: a typo'd top-level key must be rejected, not ignored."""
+    p = tmp_path / "typo_pack"
+    p.mkdir()
+    (p / "target.yaml").write_text(
+        "name: t\n"
+        "sessions:\n"
+        "  open: { method: POST, path: /s }\n"
+        "allowlist: []\n"
+        "allowlst: [http://localhost:8899]\n"   # typo'd key
+    )
+    with pytest.raises(PackError, match="allowlst"):
+        load_pack(p)
+
+
+def test_probe_typo_key_is_pack_error(tmp_path):
+    """extra=forbid on Probe/Check: a typo'd probe or check key errors at load."""
+    p = tmp_path / "typo_probe"
+    p.mkdir()
+    (p / "target.yaml").write_text(
+        "name: t\nsessions:\n  open: { method: POST, path: /s }\nallowlist: []\n")
+    probes_dir = p / "probes"
+    probes_dir.mkdir()
+    (probes_dir / "p.yaml").write_text(
+        "- id: a\n  category: c\n  turns: [hi]\n"
+        "  checks: [{type: contains, value: x, requred: true}]\n")   # typo'd key
+    with pytest.raises(PackError, match="requred"):
+        load_pack(p)

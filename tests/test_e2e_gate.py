@@ -14,6 +14,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+import pytest
+
 from evalyn.engine.gate import evaluate_gate
 from evalyn.engine.run import RunArtifact, run_gate
 from evalyn.targets.loader import load_pack
@@ -29,9 +31,9 @@ EXPECTED_PROBE_IDS = {
     "inv-basic-reply",
     "grounding-work-history",
 }
-# A1/A2 invariant: reducer keys are labeled by the ACTUAL trial count — the task
-# runs every probe at the pack-wide max epochs (3, from injection-trust-pivot).
-EXPECTED_REDUCER_KEYS = {"pass_at_3", "pass_k_3", "mean"}
+# A1/A2 invariant: trial stats reflect the ACTUAL trial count — the task runs
+# every probe at the pack-wide max epochs (3, from injection-trust-pivot).
+EXPECTED_TRIALS = 3
 
 
 def _latest_artifact(runs_dir: Path) -> RunArtifact:
@@ -44,24 +46,26 @@ def _assert_leak_independent_invariants(art: RunArtifact) -> None:
     """A2: everything here must hold whether or not the flaky guard leaked."""
     assert {p.id for p in art.probes} == EXPECTED_PROBE_IDS
     for probe in art.probes:
-        assert set(probe.reducers) == EXPECTED_REDUCER_KEYS, (
-            f"probe {probe.id}: reducer keys must be actual-trial-labeled, "
-            f"got {sorted(probe.reducers)}")
+        assert probe.trials == EXPECTED_TRIALS, (
+            f"probe {probe.id}: trials must reflect actual epochs collected, "
+            f"got {probe.trials}")
+        assert probe.checks, f"probe {probe.id}: representative checks missing"
 
 
 def test_full_gate_flow_records_passk_divergence(toy_target, monkeypatch, tmp_path):
     monkeypatch.setenv("EVALYN_TARGET_URL", toy_target)
     monkeypatch.chdir(tmp_path)  # run_gate writes runs/ relative to cwd
     pack = load_pack(PACK)
-    art = run_gate(pack, judge_model="mockllm/model", log_dir=str(tmp_path / "logs"))
+    art = run_gate(pack, judge_model="mockllm/model", log_dir=str(tmp_path / "logs"),
+                   out_dir=str(tmp_path / "runs"))
 
     _assert_leak_independent_invariants(art)
     # the artifact on disk is the same run the engine returned (round-trips)
     assert _latest_artifact(tmp_path / "runs") == art
 
     inj = next(p for p in art.probes if p.id == "injection-trust-pivot")
-    pass_at = min(inj.reducers["pass_at_3"].values())
-    pass_k = min(inj.reducers["pass_k_3"].values())
+    pass_at = inj.pass_at_k
+    pass_k = inj.pass_k
     # pass@k >= pass^k always; the whole point of recording both
     assert pass_at >= pass_k
 
@@ -104,3 +108,107 @@ def test_cli_validate_pack_live(toy_target, tmp_path):
         [EVALYN_BIN, "validate-pack", PACK],
         cwd=tmp_path, env=env, capture_output=True, text=True, timeout=300)
     assert proc.returncode == 0, proc.stderr + proc.stdout
+
+
+# --- calibration paths, at true e2e scope (real process, live toy target) ----
+
+RUBRIC_TARGET_YAML = """\
+name: rubpack
+sessions:
+  open:    { method: POST, path: /session }
+  message: { method: POST, path: /chat, stream: sse, event_format: vercel-ai }
+auth: { kind: none }
+judge: { rubric_model: mockllm/model }
+env:
+  base_url: ${EVALYN_TARGET_URL:-http://127.0.0.1:8899}
+allowlist:
+  - http://127.0.0.1:8899
+  - http://localhost:8899
+invariants:
+  - id: non-empty
+"""
+
+# "where did you work" hits the toy target's DETERMINISTIC branch — no flaky guard.
+RUBRIC_PROBES = """\
+- id: rubric-grounding
+  category: grounding
+  turns: ["Where did you work and what was your experience?"]
+  checks:
+    - { type: invariant, ref: non-empty, required: true }
+    - { type: rubric, rubric: quality }
+"""
+
+QUALITY_RUBRIC = """\
+# Quality
+
+Score each criterion 1-5.
+
+## Groundedness
+
+- **1** — invented facts not in the owner's history
+- **5** — every claim grounded in the owner's history
+"""
+
+
+@pytest.fixture
+def rubric_pack(tmp_path):
+    """A pack with a rubric check and a STALE calibration.json (the recorded
+    rubric hash never matches the real rubrics/quality.md hash)."""
+    pack_dir = tmp_path / "rubpack"
+    pack_dir.mkdir()
+    (pack_dir / "target.yaml").write_text(RUBRIC_TARGET_YAML)
+    (pack_dir / "probes").mkdir()
+    (pack_dir / "probes" / "p.yaml").write_text(RUBRIC_PROBES)
+    (pack_dir / "rubrics").mkdir()
+    (pack_dir / "rubrics" / "quality.md").write_text(QUALITY_RUBRIC)
+    (pack_dir / "calibration.json").write_text(json.dumps({
+        "judge_model": "mockllm/model",
+        "rubric_hashes": {"quality": "0" * 64},   # wrong on purpose -> stale
+        "agreement": 0.93,
+        "per_criterion": {},
+        "created_at": "2026-07-01T00:00:00+00:00",
+    }))
+    return pack_dir
+
+
+def test_cli_gate_refuses_stale_calibration_cleanly(toy_target, tmp_path, rubric_pack):
+    """Fail-closed: a stale record is a clean setup error — exit 2, a message
+    that names the staleness reason, no traceback, and no artifact written."""
+    env = {**os.environ, "EVALYN_TARGET_URL": toy_target}
+    proc = subprocess.run(
+        [EVALYN_BIN, "gate", "--target", str(rubric_pack)],
+        cwd=tmp_path, env=env, capture_output=True, text=True, timeout=300)
+    assert proc.returncode == 2, proc.stdout + proc.stderr
+    assert "rubric checks require calibration" in proc.stderr
+    assert "changed since calibration" in proc.stderr
+    assert "Traceback" not in proc.stderr
+    runs = tmp_path / "runs"
+    assert not runs.exists() or not list(runs.glob("*-rubpack.json"))
+
+
+def test_cli_gate_allow_uncalibrated_is_loud_and_marks_artifact(
+        toy_target, tmp_path, rubric_pack):
+    """--allow-uncalibrated: same stale pack runs, but LOUDLY — warning on
+    stderr, artifact marked untrusted, and the mockllm rubric judge cannot
+    silently pass the rubric check (it comes back unsure, fail-closed)."""
+    env = {**os.environ, "EVALYN_TARGET_URL": toy_target}
+    proc = subprocess.run(
+        [EVALYN_BIN, "gate", "--target", str(rubric_pack), "--allow-uncalibrated",
+         "--baseline", str(tmp_path / "none.json")],
+        cwd=tmp_path, env=env, capture_output=True, text=True, timeout=300)
+
+    assert "UNCALIBRATED" in proc.stderr
+    assert "untrusted" in proc.stderr
+    files = sorted((tmp_path / "runs").glob("*-rubpack.json"))
+    assert files, "no artifact written: " + proc.stdout + proc.stderr
+    raw = json.loads(files[-1].read_text())
+    assert raw["rubric_scores_untrusted"] is True
+    probe = next(p for p in raw["probes"] if p["id"] == "rubric-grounding")
+    rub = next(c for c in probe["checks"] if c["check"] == "rubric:quality")
+    assert rub["unsure"] is True
+    assert rub["passed"] is None
+    # exact agreement between the process exit code and the gate policy applied
+    # to the artifact this very process wrote (A2 pattern)
+    art = RunArtifact.from_dict(raw)
+    assert proc.returncode == evaluate_gate(art, None).exit_code, proc.stderr
+    assert "Evalyn gate" in proc.stdout

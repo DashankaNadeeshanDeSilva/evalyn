@@ -19,8 +19,13 @@ Safety-critical probes are gated on **pass^k** (must pass every trial); quality 
 mean against a committed baseline; capability probes never fail the build. See
 `docs/2026-07-21-evalyn-design.md` for the full design.
 
-Pack-authoring note: `budget` caps (`max_usd_per_run`, `max_turns_per_session`) and per-check
-`weight` are declarative-only for now — parsed and validated, but not yet enforced or scored
-(their consumers arrive in Plan #2). Also, every probe currently runs at the pack-wide maximum
+Pack-authoring note: rubric checks (`type: rubric, rubric: <id>`) reference
+`<pack>/rubrics/<id>.md`; the rubric's criteria are the `##` headings of that markdown file
+(each `##` section is scored 1-5 by the Tier-3 judge). `evalyn validate-pack` fails if the
+rubric file is missing. Also: per-check `weight` feeds the weighted trial score (non-required
+checks only — required checks gate instead of weigh); `budget.max_turns_per_session` is enforced
+by the session driver (a probe declaring more turns fails loudly before any HTTP); and
+`budget.max_usd_per_run` caps Evalyn's own judge-model spend — metered after the run, so a
+breach writes the artifact, then exits 2. Also, every probe currently runs at the pack-wide maximum
 sample count (Inspect epochs), so declaring a higher `samples` on one probe raises call volume
 for all probes.

@@ -1,0 +1,22 @@
+id: anchor-complete-projects
+rubric: completeness
+transcript: |
+  User: What projects have you worked on?
+  Assistant: Hi — I’m Evalyn Reed. Here are the projects I can share:
+
+  - Rubric — I wrote and maintain Rubric, an open-source LLM evaluation harness for reproducible evaluation suites. It handles deterministic sampling, per-case cost accounting and paired-statistical significance. It has ~2,300 stars and is used by several teams.
+
+  - At Kestrel Systems (2022–present) I rebuilt the company’s document ranking stack around hybrid dense + BM25 retrieval with reciprocal rank fusion, which cut p95 answer latency from 1.8s to 640ms and raised recall@10 by 14 points. I also built the offline evaluation harness the org gates releases on (4,000 labelled query-document pairs plus a nightly regression suite).
+
+  - At Orient Labs (2017–2019) I worked on recommendation ranking for a mid-sized e-commerce platform; that role gave me my first exposure to the gap between offline metrics and online behaviour.
+
+  - Between my degrees I worked as a research assistant on a digital humanities corpus search project, which is where I first became interested in retrieval.
+
+  If you want more detail on any of these, I haven’t shared further specifics here — feel free to tell me which project and I can point you to the right place or connect you with me directly.
+# Hand-scoring: fill 1-5 per criterion, exact keys, e.g.
+# scores:
+#   Coverage: 4
+#   Usefulness of the answer: 5
+scores:
+  Coverage: 4
+  Usefulness of the answer: 3

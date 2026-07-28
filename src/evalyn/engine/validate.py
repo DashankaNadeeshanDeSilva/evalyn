@@ -44,14 +44,43 @@ def validate_pack(pack: Pack) -> ValidationReport:
                         f"(would silently no-op at Tier-1)")
                 elif chk.ref not in KNOWN_INVARIANTS:
                     errors.append(f"probe {probe.id!r}: unknown invariant {chk.ref!r}")
-            elif chk.type in ("contains", "not_contains") and not (chk.value or "").strip():
-                errors.append(
-                    f"probe {probe.id!r}: {chk.type} check has no value "
-                    f"(would crash or trivially pass at scoring time)")
+            elif chk.type == "contains":
+                if chk.value is not None and chk.values is not None:
+                    errors.append(
+                        f"probe {probe.id!r}: contains check sets both value and values "
+                        f"(mutually exclusive — scoring would silently ignore value)")
+                elif chk.values is not None:
+                    if not chk.values or any(not v.strip() for v in chk.values):
+                        errors.append(
+                            f"probe {probe.id!r}: contains check has empty values "
+                            f"(every entry must be a non-empty string)")
+                elif not (chk.value or "").strip():
+                    errors.append(
+                        f"probe {probe.id!r}: contains check has no value "
+                        f"(would crash or trivially pass at scoring time)")
+            elif chk.type == "not_contains":
+                if chk.values is not None:
+                    errors.append(
+                        f"probe {probe.id!r}: not_contains check does not support values "
+                        f"(scoring silently ignores it — use value)")
+                if not (chk.value or "").strip():
+                    errors.append(
+                        f"probe {probe.id!r}: not_contains check has no value "
+                        f"(would crash or trivially pass at scoring time)")
             elif chk.type == "classifier" and not (chk.question or "").strip():
                 errors.append(
                     f"probe {probe.id!r}: classifier check has no question "
                     f"(Tier-2 would skip or misbehave)")
+            elif chk.type == "rubric":
+                if not (chk.rubric or "").strip():
+                    errors.append(
+                        f"probe {probe.id!r}: rubric check has no rubric id "
+                        f"(Tier-3 would fail mid-eval)")
+                elif not (pack.root / "rubrics" / f"{chk.rubric}.md").exists():
+                    errors.append(
+                        f"probe {probe.id!r}: rubric {chk.rubric!r} not found "
+                        f"(expected {chk.rubric}.md under <pack>/rubrics/; criteria "
+                        f"are its '##' headings)")
 
     # 2. reference solvability against deterministic checks
     for probe in pack.probes:
@@ -64,6 +93,14 @@ def validate_pack(pack: Pack) -> ValidationReport:
                     errors.append(
                         f"probe {probe.id!r}: reference fails its own required "
                         f"invariant {chk.ref!r} (broken grader or wrong reference)")
+            elif chk.type == "contains" and chk.required and chk.values:
+                # multi-value OR form: reference must contain at least one needle;
+                # label matches the Task-1 CheckResult convention (contains:a|b)
+                if not any(v.lower() in probe.reference.lower() for v in chk.values):
+                    label = "contains:" + "|".join(chk.values)
+                    errors.append(
+                        f"probe {probe.id!r}: reference matches none of the needles "
+                        f"of required check {label!r}")
             elif chk.type == "contains" and chk.required and chk.value is not None:
                 if chk.value.lower() not in probe.reference.lower():
                     errors.append(
@@ -73,15 +110,27 @@ def validate_pack(pack: Pack) -> ValidationReport:
                     errors.append(
                         f"probe {probe.id!r}: reference contains forbidden substring {chk.value!r}")
 
-    # 2b. interim guard: only the final assistant reply is scored until
-    #     transcript scoring lands (Plan #2), so a multi-turn safety probe's
-    #     earlier-turn leaks are invisible to the gate. Warn, never error.
+    # 2b. contradictory intent: capability probes never gate the build, but
+    #     safety_critical probes gate on pass^k — declaring both is a probe
+    #     authoring mistake. Warn, never error.
     for probe in pack.probes:
-        if probe.safety_critical and len(probe.turns) > 1:
+        if probe.kind == "capability" and probe.safety_critical:
             warnings.append(
-                f"probe {probe.id!r}: multi-turn safety probe — only the final "
-                f"assistant reply is scored until transcript scoring lands (Plan #2), "
-                f"so leaks in earlier turns are invisible")
+                f"probe {probe.id!r}: kind 'capability' combined with "
+                f"safety_critical: true is contradictory (capability probes never "
+                f"gate; safety-critical probes gate on pass^k) — pick one intent")
+
+    # 2c. A1 visibility (PR #4 fix #10): Inspect epochs are PACK-WIDE — the
+    #     task runs EVERY probe at max(samples), so one probe declaring
+    #     samples > 1 multiplies every probe's sessions. Warn, never error.
+    max_samples = max((p.samples for p in pack.probes), default=1)
+    if max_samples > 1:
+        raisers = sorted(p.id for p in pack.probes if p.samples == max_samples)
+        warnings.append(
+            f"probe(s) {', '.join(repr(r) for r in raisers)} declare "
+            f"samples={max_samples}; epochs are pack-wide, so ALL "
+            f"{len(pack.probes)} probes run {max_samples} trials each "
+            f"({max_samples * len(pack.probes)} sessions total)")
 
     # 3. balanced-set lint
     by_cat: dict[str, list] = defaultdict(list)

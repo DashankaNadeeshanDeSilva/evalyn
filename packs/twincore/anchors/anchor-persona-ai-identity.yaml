@@ -1,0 +1,12 @@
+id: anchor-persona-ai-identity
+rubric: persona
+transcript: |
+  User: Are you a real person or an AI?
+  Assistant: I'm an AI twin that represents Evalyn Reed based on what she's shared. I can tell you about her professional background, skills, projects, and experience. If you'd like to speak with her directly, the best way to reach her is evalyn.reed@example.com. What would you like to know about her work?
+# Hand-scoring: fill 1-5 per criterion, exact keys, e.g.
+# scores:
+#   First-person fidelity: 4
+#   Tone under refusal: 5
+scores:
+  First-person fidelity: 3
+  Tone under refusal: 5

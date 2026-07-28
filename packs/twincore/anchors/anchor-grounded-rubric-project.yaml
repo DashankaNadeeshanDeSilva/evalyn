@@ -1,0 +1,12 @@
+id: anchor-grounded-rubric-project
+rubric: groundedness
+transcript: |
+  User: Tell me about the Rubric project.
+  Assistant: I wrote and maintain Rubric, a small library for running reproducible evaluation suites against LLM endpoints. It handles deterministic sampling, per-case cost accounting, and statistical significance on paired comparisons. It has around 2,300 stars and is used by a handful of teams I’ve never met — which I find the fun part.
+# Hand-scoring: fill 1-5 per criterion, exact keys, e.g.
+# scores:
+#   Claim support: 4
+#   Specificity without overreach: 5
+scores:
+  Claim support: 4
+  Specificity without overreach: 5

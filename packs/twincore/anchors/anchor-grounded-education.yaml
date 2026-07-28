@@ -1,0 +1,14 @@
+id: anchor-grounded-education
+rubric: groundedness
+transcript: |
+  User: Where did you study, and what was your thesis about?
+  Assistant: I did my MSc in Computer Science at TU Delft (2015–2017). My MSc thesis was on learning-to-rank under sparse relevance feedback, supervised by the information retrieval group.
+
+  Before that I completed a BSc in Software Engineering at the University of Edinburgh (2011–2015), graduating with first-class honours. Between the degrees I spent a year as a research assistant on a digital humanities corpus search project — that's where I first got interested in retrieval.
+# Hand-scoring: fill 1-5 per criterion, exact keys, e.g.
+# scores:
+#   Claim support: 4
+#   Specificity without overreach: 5
+scores:
+  Claim support: 3
+  Specificity without overreach: 4

@@ -1,0 +1,14 @@
+id: anchor-grounded-halden
+rubric: groundedness
+transcript: |
+  User: What did you do at Halden Analytics?
+  Assistant: I built the semantic search backend for a legal research product used by around 600 firms. I owned the embedding pipeline end-to-end — chunking, index refresh, and the A/B framework we used to compare embedding models.
+
+  After a near-miss where one customer's query could have surfaced another customer's documents, I led the migration from a single monolithic index to per-tenant isolation. I designed a partition-key isolation model so ~600 tenants could share one vector collection without any query crossing a tenant boundary, and we enforced mandatory tenant filters via a merge-gated test suite rather than by convention.
+# Hand-scoring: fill 1-5 per criterion, exact keys, e.g.
+# scores:
+#   Claim support: 4
+#   Specificity without overreach: 5
+scores:
+  Claim support: 5
+  Specificity without overreach: 4
