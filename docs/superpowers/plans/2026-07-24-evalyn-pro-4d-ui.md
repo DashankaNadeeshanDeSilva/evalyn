@@ -293,3 +293,38 @@ export function useRunEvents(runId: string): LiveRunState
 - Review labeling and promotion work identically from UI and CLI on the same run.
 - Judge Trust page renders κ, certification, staleness, and deep-links disagreements into transcripts.
 - Nothing in core Evalyn requires the UI extra; `events=False` paths are byte-identical to pre-#4d behavior.
+
+---
+
+## Amendment (2026-07-28) — Plan #2b additions: cost meter + compare scoreboard
+
+User-requested during Plan #2b brainstorming. **Visual design deliberately NOT locked yet**
+— discuss at #4d execution time; the notes below record intent + data contracts only.
+
+### A1. Cost meter (judge spend)
+
+- **Why now:** Plan #2b's first task fixes `judge_usd` metering (read `log.stats.model_usage`
+  from the returned EvalLog) — the artifact's `judge_usd` becomes real, and the $5
+  `max_usd_per_run` cap becomes enforceable. The UI should surface it.
+- **Where:** Runs list (per-run `judge_usd` column), Run Detail (spend vs pack budget cap,
+  e.g. `$0.69 / $5.00` with a warning state near cap), and the compare scoreboard (judge
+  spend of the comparison itself).
+- **Data:** `RunArtifact.judge_usd` + pack `budget.max_usd_per_run`; live-run updates ride
+  the Task 1 event stream if a spend event is added (decide at design time — post-run-only
+  is an acceptable v1).
+
+### A2. Compare scoreboard (Plan #2b `compare` artifacts)
+
+- **Distinct from DiffPage** (Task 7): DiffPage diffs two *gate* runs (absolute per-scenario
+  deltas). The scoreboard renders a #2b **CompareArtifact**: blind pairwise per-category
+  win/loss/tie/unsure counts, per-probe/per-criterion verdicts + justifications + `flipped`
+  flags, flip→tie rate telemetry, hard-metric deltas (latency mean/p95, tokens,
+  invariant-violation counts) shown BESIDE verdicts (never blended), `rubric_scores_untrusted`
+  banner, `judge_usd`.
+- **Layout intent (user sketch, to be designed later):** an **overview front** (per-category
+  W/L/T summary + headline hard-metric deltas + trust banners) with **tabs to hide detail**
+  (per-probe verdicts/justifications; flip telemetry; hard metrics; run metadata).
+- **Data:** the §2.3 CompareArtifact JSON from `runs/` (see
+  `docs/superpowers/specs/2026-07-28-evalyn-plan2b-design.md`); server needs a
+  compare-artifact listing/detail endpoint (Task 5 family) and a route like
+  `/compare/:artifact`.
