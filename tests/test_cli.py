@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pytest
 from typer.testing import CliRunner
 
 from evalyn.cli import app
@@ -244,8 +245,11 @@ def test_gate_live_exit_code_matches_gate_policy(toy_target, monkeypatch, tmp_pa
     # apply the gate policy to it, and require the CLI's exit code to be EQUAL.
     monkeypatch.setenv("EVALYN_TARGET_URL", toy_target)
     monkeypatch.chdir(tmp_path)  # run_gate writes runs/ relative to cwd
-    result = runner.invoke(app, ["gate", "--target", PACK,
-                                 "--baseline", str(tmp_path / "none.json")])
+    # real post-hoc metering prices the unpriced mockllm judge at the
+    # conservative upper bound and warns (Plan #2b Task 1: log-based metering)
+    with pytest.warns(RuntimeWarning, match="no price entry"):
+        result = runner.invoke(app, ["gate", "--target", PACK,
+                                     "--baseline", str(tmp_path / "none.json")])
     artifacts = sorted((tmp_path / "runs").glob("*-example.json"))
     assert artifacts, "gate run wrote no artifact"
     art = RunArtifact.from_dict(json.loads(artifacts[-1].read_text()))
@@ -696,7 +700,7 @@ def test_gate_exit_2_when_no_probe_scored_any_trial(monkeypatch, tmp_path):
 
     monkeypatch.setattr("evalyn.engine.run.inspect_eval",
                         lambda *a, **k: [_EmptyLog()])
-    monkeypatch.setattr("evalyn.engine.run._judge_usd", lambda: 0.0)
+    monkeypatch.setattr("evalyn.engine.run._judge_usd", lambda log: 0.0)
     out = tmp_path / "runs"
     result = runner.invoke(app, ["gate", "--target", PACK,
                                  "--baseline", str(tmp_path / "none.json"),

@@ -170,11 +170,16 @@ def _reduce_log_to_probes(log, pack: Pack) -> list[ProbeResult]:
     return results
 
 
-def _judge_usd() -> float:
-    """Aggregate judge spend for the just-finished eval (post-hoc metering)."""
+def _judge_usd(log) -> float:
+    """Judge spend for THIS eval, read from the returned eval log.
+
+    Never the process-global model_usage() ContextVar: that value is set inside
+    Inspect's eval event-loop context and does not propagate here (it returned
+    {} on every real run — live-confirmed 2026-07-28), and it accumulates
+    across evals in one process (would double-count compare's second eval).
+    """
     try:
-        from inspect_ai.model._model import model_usage
-        return estimate_cost(model_usage())
+        return estimate_cost(log.stats.model_usage)
     except Exception as e:
         # Fail-open by design (brief): metering failure must not kill the run.
         # But be LOUD about it — a silent 0.0 would quietly disable the cap.
@@ -214,7 +219,7 @@ def run_gate(pack: Pack, judge_model: str = "mockllm/model",
         rubric_scores_untrusted=rubric_scores_untrusted,
         total_unsure_trials=sum(p.unsure_trials for p in probes),
     )
-    art.judge_usd = _judge_usd()
+    art.judge_usd = _judge_usd(log)
     # Write the artifact BEFORE any budget check so a partial/complete artifact
     # survives a budget breach for inspection. Atomic temp-then-rename so a
     # crash mid-write never leaves a torn artifact behind.

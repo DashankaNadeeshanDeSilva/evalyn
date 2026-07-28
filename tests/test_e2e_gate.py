@@ -56,8 +56,11 @@ def test_full_gate_flow_records_passk_divergence(toy_target, monkeypatch, tmp_pa
     monkeypatch.setenv("EVALYN_TARGET_URL", toy_target)
     monkeypatch.chdir(tmp_path)  # run_gate writes runs/ relative to cwd
     pack = load_pack(PACK)
-    art = run_gate(pack, judge_model="mockllm/model", log_dir=str(tmp_path / "logs"),
-                   out_dir=str(tmp_path / "runs"))
+    # real post-hoc metering prices the unpriced mockllm judge at the
+    # conservative upper bound and warns (Plan #2b Task 1: log-based metering)
+    with pytest.warns(RuntimeWarning, match="no price entry"):
+        art = run_gate(pack, judge_model="mockllm/model", log_dir=str(tmp_path / "logs"),
+                       out_dir=str(tmp_path / "runs"))
 
     _assert_leak_independent_invariants(art)
     # the artifact on disk is the same run the engine returned (round-trips)

@@ -447,15 +447,18 @@ in a fresh session — kickoff prompt in
       *(minor, later hardening pass / final review)*
 - [ ] Task 6 test style: `_custom_flow_seen` module-level mutable global in
       `test_solver.py`; dead `or {}` on `open_body`. *(minor)*
-- [ ] Inspect's no-arg `init_model_usage()` does not clear a non-empty usage dict — a second
+- [x] ~~Inspect's no-arg `init_model_usage()` does not clear a non-empty usage dict — a second
       `inspect_eval` in one process inherits run 1's accumulated spend, so `judge_usd` would
-      double-count. Irrelevant for CLI `gate` (one run/process); MUST be handled for `compare`.
-      *(minor here, tagged Plan #2b compare)*
+      double-count. Irrelevant for CLI `gate` (one run/process); MUST be handled for `compare`.~~
+      — **CLOSED in Plan #2b Task 1 (feat/plan2b-compare-ci)**: `_judge_usd(log)` now reads
+      `log.stats.model_usage` from the RETURNED eval log — per-eval by construction, the
+      process-global accumulator is out of the loop entirely, so compare's second eval cannot
+      double-count. Same change as the metering fix below.
 - [ ] Budget test polish: over-cap test couples to the example pack's implicit default cap
       (5.0); no-fallback canary assumes empty `model_usage()` context (ordering-sensitive) and
       `caught == []` trips on any unrelated warning; CLI budget test mildly circular (fake
       raises the message it asserts). *(minor)*
-- [ ] `_judge_usd` fail-open posture retained by design (brief-verbatim `except → 0.0`), now
+- [x] ~~`_judge_usd` fail-open posture retained by design (brief-verbatim `except → 0.0`), now
       guarded by import-canary tests + loud `RuntimeWarning`; real `model_usage → estimate_cost`
       seam still never exercised with real billable usage (mockllm reports none). *(minor,
       final review / Task 11 live run will exercise it)*
@@ -465,7 +468,12 @@ in a fresh session — kickoff prompt in
       the default `{}` — `estimate_cost({})` = 0.0 with **no exception**, so the loud
       `RuntimeWarning` guard never fires. `judge_usd` is 0.0 on every real run and the $5
       cap is de-facto unenforced. Fix (#2b, priority): read `log.stats.model_usage` from
-      the returned eval log (verified to carry the true numbers) instead of the ContextVar.
+      the returned eval log (verified to carry the true numbers) instead of the ContextVar.~~
+      — **CLOSED in Plan #2b Task 1 (feat/plan2b-compare-ci)**: `_judge_usd(log)` reads
+      `log.stats.model_usage` from the returned `EvalLog`; ContextVar seam retired. Canaries
+      re-pinned to the new seam (`EvalLog.stats` / `EvalStats.model_usage`); loud-warning
+      fail-open tests kept; new end-to-end guard asserts a real `run_gate` meters
+      `judge_usd > 0.0` (mockllm usage priced via the conservative unknown-model bound).
 - [ ] Hand-built `Pack` with empty `raw_files` hashes to one constant fingerprint (two
       different in-memory packs false-match) — only reachable outside `load_pack`; a
       warn/raise on empty `raw_files` would be fail-closed. *(minor, final review)*
