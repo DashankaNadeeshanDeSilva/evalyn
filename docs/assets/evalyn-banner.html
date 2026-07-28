@@ -1,0 +1,178 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+@import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:ital,wght@0,400;0,500;0,700;0,800;1,400&display=swap');
+
+* { margin: 0; padding: 0; box-sizing: border-box; }
+
+html, body { width: 1400px; height: 350px; overflow: hidden; }
+
+body {
+  font-family: 'JetBrains Mono', monospace;
+  background: #05070d;
+  position: relative;
+  color: #e6edf3;
+  zoom: 0.875;
+}
+body > * { }
+/* zoom scales the 1600x400 composition down to 1400x350 */
+body { width: 1600px; height: 400px; }
+
+/* ambient glows */
+.glow-a, .glow-b, .glow-c {
+  position: absolute; border-radius: 50%; filter: blur(90px); pointer-events: none;
+}
+.glow-a { width: 700px; height: 500px; left: -180px; top: -200px; background: rgba(37, 99, 235, 0.16); }
+.glow-b { width: 600px; height: 450px; right: -120px; bottom: -220px; background: rgba(16, 185, 129, 0.10); }
+.glow-c { width: 400px; height: 400px; left: 46%; top: -180px; background: rgba(59, 130, 246, 0.10); }
+
+/* dot grid */
+.grid {
+  position: absolute; inset: 0;
+  background-image: radial-gradient(rgba(148, 163, 184, 0.13) 1px, transparent 1px);
+  background-size: 26px 26px;
+  mask-image: linear-gradient(to bottom, rgba(0,0,0,.9), rgba(0,0,0,.35));
+  -webkit-mask-image: linear-gradient(to bottom, rgba(0,0,0,.9), rgba(0,0,0,.35));
+}
+
+.wrap {
+  position: relative; width: 1600px; height: 400px;
+  display: flex; align-items: center;
+  padding: 0 84px 0 92px; gap: 70px;
+}
+
+/* ---- left: wordmark ---- */
+.left { flex: 1.06; min-width: 0; }
+
+.cmd {
+  font-size: 19px; color: #7d8fa9; letter-spacing: .02em; margin-bottom: 22px;
+  display: flex; align-items: center; gap: 12px;
+}
+.cmd .dollar { color: #10b981; font-weight: 700; }
+.cmd .hl { color: #b9c8dc; }
+
+.wordmark {
+  font-size: 128px; font-weight: 800; letter-spacing: -0.035em; line-height: .96;
+  background: linear-gradient(100deg, #f4f8fc 15%, #9db7e8 62%, #5b8bef 95%);
+  -webkit-background-clip: text; background-clip: text; color: transparent;
+  display: inline-block;
+  filter: drop-shadow(0 0 26px rgba(59, 130, 246, 0.28));
+}
+.cursor {
+  display: inline-block; width: 26px; height: 96px; margin-left: 16px;
+  background: #10b981; vertical-align: baseline;
+  box-shadow: 0 0 18px rgba(16, 185, 129, 0.75);
+  transform: translateY(8px);
+}
+
+.tagline {
+  margin-top: 26px; font-size: 27px; line-height: 1.42; color: #aebdd2; max-width: 660px;
+}
+.tagline b { color: #f0f5fa; font-weight: 700; }
+.tagline .pass { color: #34d399; font-weight: 700; text-shadow: 0 0 14px rgba(52, 211, 153, .45); }
+.tagline .fail { color: #f87171; font-weight: 700; text-shadow: 0 0 14px rgba(248, 113, 113, .4); }
+
+.chips { margin-top: 30px; display: flex; gap: 14px; }
+.chip {
+  font-size: 18px; font-weight: 500; padding: 9px 20px; border-radius: 999px;
+  border: 1px solid rgba(148, 163, 184, 0.28); color: #c3d0e2;
+  background: rgba(15, 23, 42, 0.6);
+  display: flex; align-items: center; gap: 10px;
+}
+.chip .dot { width: 8px; height: 8px; border-radius: 50%; }
+.chip.gate .dot { background: #34d399; box-shadow: 0 0 8px rgba(52,211,153,.8); }
+.chip.compare .dot { background: #60a5fa; box-shadow: 0 0 8px rgba(96,165,250,.8); }
+.chip.discover .dot { background: #fbbf24; box-shadow: 0 0 8px rgba(251,191,36,.8); }
+
+/* ---- gate divider ---- */
+.gatebar {
+  position: relative; width: 3px; height: 260px; flex: none; border-radius: 2px;
+  background: linear-gradient(to bottom, transparent, rgba(52, 211, 153, 0.9) 22%, rgba(52, 211, 153, 0.9) 78%, transparent);
+  box-shadow: 0 0 24px rgba(52, 211, 153, 0.5);
+}
+.gatebar::before, .gatebar::after {
+  content: ''; position: absolute; left: 50%; transform: translateX(-50%);
+  width: 13px; height: 13px; border-radius: 50%;
+  background: #34d399; box-shadow: 0 0 16px rgba(52, 211, 153, 0.9);
+}
+.gatebar::before { top: 44px; }
+.gatebar::after { bottom: 44px; }
+
+/* ---- right: terminal ---- */
+.term {
+  flex: 1; max-width: 620px; flex: none; width: 620px;
+  background: rgba(10, 15, 26, 0.92);
+  border: 1px solid rgba(148, 163, 184, 0.22);
+  border-radius: 14px;
+  box-shadow: 0 24px 70px rgba(2, 6, 16, 0.75), 0 0 0 1px rgba(2, 6, 16, 0.4), 0 0 44px rgba(37, 99, 235, 0.10);
+  overflow: hidden;
+}
+.term-head {
+  display: flex; align-items: center; gap: 9px;
+  padding: 13px 18px;
+  background: rgba(20, 28, 44, 0.9);
+  border-bottom: 1px solid rgba(148, 163, 184, 0.16);
+}
+.tl { width: 13px; height: 13px; border-radius: 50%; }
+.tl.r { background: #f16a5d; } .tl.y { background: #f5bf4f; } .tl.g { background: #58c344; }
+.term-title { margin-left: 12px; font-size: 15.5px; color: #8ea1bb; }
+
+.term-body { padding: 20px 24px 22px; font-size: 18.5px; line-height: 1.72; }
+.row { white-space: pre; display: flex; align-items: baseline; }
+.k { color: #7d8fa9; }
+.lbl { color: #b9c8dc; }
+.tick { color: #34d399; font-weight: 700; }
+.cross { color: #f87171; font-weight: 700; }
+.num { color: #93c5fd; }
+.bar { color: #34d399; letter-spacing: -1px; }
+.bar .off { color: rgba(148, 163, 184, 0.25); }
+.muted { color: #64748b; }
+
+.verdict {
+  margin-top: 14px; padding: 12px 18px; border-radius: 9px;
+  background: rgba(16, 185, 129, 0.10);
+  border: 1px solid rgba(52, 211, 153, 0.45);
+  font-size: 21px; font-weight: 700; color: #34d399;
+  text-shadow: 0 0 16px rgba(52, 211, 153, 0.55);
+  display: flex; justify-content: space-between; align-items: center;
+}
+.verdict .exit { font-size: 16px; font-weight: 500; color: #7fd8b4; text-shadow: none; }
+</style>
+</head>
+<body>
+  <div class="glow-a"></div><div class="glow-b"></div><div class="glow-c"></div>
+  <div class="grid"></div>
+
+  <div class="wrap">
+    <div class="left">
+      <div class="cmd"><span class="dollar">$</span><span>uv run evalyn gate <span class="hl">--target ./packs/yourproduct</span></span></div>
+      <div><span class="wordmark">EVALYN</span><span class="cursor"></span></div>
+      <div class="tagline">Turning <b>&ldquo;vibes&rdquo;</b> into a CI-grade <span class="pass">PASS</span>/<span class="fail">FAIL</span> for LLM products.</div>
+      <div class="chips">
+        <div class="chip gate"><span class="dot"></span>gate</div>
+        <div class="chip compare"><span class="dot"></span>compare</div>
+        <div class="chip discover"><span class="dot"></span>discover</div>
+      </div>
+    </div>
+
+    <div class="gatebar"></div>
+
+    <div class="term">
+      <div class="term-head">
+        <div class="tl r"></div><div class="tl y"></div><div class="tl g"></div>
+        <div class="term-title">evalyn gate — 50 probes × 3 epochs · 150 live sessions</div>
+      </div>
+      <div class="term-body">
+        <div class="row"><span class="k">preflight   </span><span class="lbl">allowlist <span class="tick">✓</span>  calibration <span class="tick">✓</span>  budget <span class="num">$1.00</span></span></div>
+        <div class="row"><span class="k">tier 1      </span><span class="lbl">deterministic  </span><span class="bar">██████████</span><span class="lbl">  <span class="tick">✓</span> facts</span></div>
+        <div class="row"><span class="k">tier 2      </span><span class="lbl">classifier     </span><span class="bar">█████████<span class="off">█</span></span><span class="lbl">  <span class="tick">✓</span> evidence</span></div>
+        <div class="row"><span class="k">tier 3      </span><span class="lbl">rubric judge   </span><span class="bar">████████<span class="off">██</span></span><span class="lbl">  <span class="tick">✓</span> k=3</span></div>
+        <div class="row"><span class="k">safety      </span><span class="lbl">injection 31/31  pass<span class="muted">^</span>k <span class="num">1.0</span></span></div>
+        <div class="verdict"><span>▌ GATE&nbsp;&nbsp;PASS</span><span class="exit">baseline ✓ diffed · exit 0</span></div>
+      </div>
+    </div>
+  </div>
+</body>
+</html>
