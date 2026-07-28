@@ -5,6 +5,7 @@ from evalyn.scoring.rubrics import (
     _hash_text,
     grading_steps,
     load_rubric,
+    load_rubric_context,
     parse_criteria,
 )
 from evalyn.targets.loader import Pack
@@ -37,6 +38,37 @@ def test_missing_rubric_raises(tmp_path):
     pack = _pack(tmp_path)
     with pytest.raises(FileNotFoundError):
         load_rubric(pack, "nope")
+
+
+def test_facts_sheet_changes_rubric_hash(tmp_path):
+    # convention over config: a sibling `<rid>.facts.md` is hash-coupled into
+    # load_rubric's hash, so calibration records, is_stale, and the
+    # grading-steps cache key all stale automatically on a facts edit
+    pack = _pack(tmp_path)
+    text1, h1 = load_rubric(pack, "persona")
+    (tmp_path / "rubrics" / "persona.facts.md").write_text(
+        "FACT: owner has 6 years experience")
+    text2, h2 = load_rubric(pack, "persona")
+    assert text1 == text2          # criteria/prompt text stays rubric-only
+    assert h1 != h2                # but the hash covers the facts sheet
+    assert load_rubric_context(pack, "persona") == "FACT: owner has 6 years experience"
+
+
+def test_facts_sheet_edit_changes_hash_again(tmp_path):
+    pack = _pack(tmp_path)
+    (tmp_path / "rubrics" / "persona.facts.md").write_text("FACT: v1")
+    _, h1 = load_rubric(pack, "persona")
+    (tmp_path / "rubrics" / "persona.facts.md").write_text("FACT: v2")
+    _, h2 = load_rubric(pack, "persona")
+    assert h1 != h2
+
+
+def test_no_facts_sheet_is_none_and_hash_stable(tmp_path):
+    # rubrics without a facts sheet hash exactly as before (sha256 of the text)
+    pack = _pack(tmp_path)
+    text, h = load_rubric(pack, "persona")
+    assert load_rubric_context(pack, "persona") is None
+    assert h == _hash_text(text)
 
 
 def test_parse_criteria_extracts_h2_section_names():

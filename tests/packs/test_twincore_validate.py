@@ -32,15 +32,23 @@ def test_twincore_committed_calibration_record_is_stale_per_rubric(monkeypatch):
     """PR #4 fix #4 (user-ruled, KNOWN CONSEQUENCE): the committed record's
     groundedness criteria sit at 0.6/0.6 — below the 85% per-rubric bar — so
     despite the 0.875 overall the record is STALE and the gate must refuse
-    twincore rubric checks until groundedness is re-anchored."""
-    from evalyn.engine.calibrate import is_stale
+    twincore rubric checks until groundedness is re-anchored.
+
+    Plan #2b Task 2 then rewrote groundedness.md and added the hash-coupled
+    groundedness.facts.md, so is_stale's earlier hash-change branch now fires
+    first ("changed since calibration"); the original 60% weakness is still
+    pinned directly on the record below. Task 3 recalibrates."""
+    from evalyn.engine.calibrate import is_stale, load_record, per_rubric_agreement
 
     monkeypatch.setenv("EVALYN_TARGET_URL", "http://localhost:8000")
     pack = load_pack(PACK)
     stale, why = is_stale(pack, "anthropic/claude-sonnet-5")
     assert stale is True
-    assert "groundedness" in why
-    assert "60%" in why
+    assert "groundedness" in why and "changed" in why
+    # pre-#2b pin, kept: even with an unchanged rubric hash the record's own
+    # groundedness agreement is 60% — below the 85% per-rubric bar
+    rec = load_record(pack)
+    assert per_rubric_agreement(rec["per_criterion"])["groundedness"] == 0.6
 
 
 # --- round-2 N9: deterministic prompt-leak tripwire on the multi-turn probe --

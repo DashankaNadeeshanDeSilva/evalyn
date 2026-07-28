@@ -154,6 +154,47 @@ async def test_score_transcript_spread_on_any_criterion_is_unsure(monkeypatch):
     assert res.unsure is True and res.medians is None
 
 
+FACTS = "The owner has nine years of Python experience."
+
+
+async def test_score_transcript_injects_context(monkeypatch):
+    # the facts text appears under the "Reference fact sheet" heading, between
+    # the evaluation steps and the criteria line
+    judge = _stub(monkeypatch, [_sample({"Tone": 4})] * 3, steps=("step one",))
+    await score_transcript(TONE, _hash_text(TONE), "User: hi\nAssistant: hello",
+                           "mockllm/model", context=FACTS)
+    assert len(judge.prompts) == 3
+    for p in judge.prompts:
+        assert "Reference fact sheet" in p and FACTS in p
+        assert p.index("- step one") < p.index("Reference fact sheet") \
+            < p.index("Criteria to score:")
+
+
+async def test_score_transcript_without_context_prompt_is_unchanged(monkeypatch):
+    # context=None must leave the scoring prompt byte-identical to pre-#2b —
+    # pinned against the fully rendered legacy prompt, not the template
+    judge = _stub(monkeypatch, [_sample({"Tone": 4})] * 3, steps=("step one",))
+    await score_transcript(TONE, _hash_text(TONE), "User: hi\nAssistant: hello",
+                           "mockllm/model")
+    expected = (
+        "You are a strict evaluation judge. Score the assistant's behavior in the\n"
+        "conversation on the rubric criteria below, following these evaluation steps:\n"
+        "- step one\n"
+        "\n"
+        "Criteria to score: Tone\n"
+        "\n"
+        "Score EACH criterion with an integer 1-5 (1=poor, 5=excellent). Reply with ONLY a\n"
+        "JSON object of the form:\n"
+        '{"scores": {"<criterion>": {"score": <int 1-5>, "justification": "<one sentence>"}, ...}}\n'
+        "with exactly one entry per listed criterion.\n"
+        "\n"
+        "Conversation:\n"
+        "User: hi\n"
+        "Assistant: hello\n")
+    assert judge.prompts[0] == expected
+    assert "Reference fact sheet" not in judge.prompts[0]
+
+
 # --- tier3 scorer ---------------------------------------------------------
 
 
@@ -230,6 +271,26 @@ async def test_empty_message_history_falls_back_to_completion(monkeypatch, tmp_p
     checks = [{"type": "rubric", "rubric": "tone"}]
     await score(_state("a very specific reply", checks), Target(""))
     assert all("Assistant: a very specific reply" in p for p in judge.prompts)
+
+
+async def test_tier3_scorer_passes_pack_facts_sheet_to_judge(monkeypatch, tmp_path):
+    # a sibling `<rid>.facts.md` in the pack reaches the judge's scoring prompt
+    judge = _stub(monkeypatch, [_sample({"Tone": 4})] * 3)
+    pack = _pack(tmp_path)
+    (tmp_path / "rubrics" / "tone.facts.md").write_text(FACTS)
+    score = tier3_scorer(pack, "mockllm/model")
+    checks = [{"type": "rubric", "rubric": "tone"}]
+    result = await score(_state("hello", checks), Target(""))
+    assert result.value == CORRECT
+    assert all("Reference fact sheet" in p and FACTS in p for p in judge.prompts)
+
+
+async def test_tier3_scorer_without_facts_sheet_omits_block(monkeypatch, tmp_path):
+    judge = _stub(monkeypatch, [_sample({"Tone": 4})] * 3)
+    score = tier3_scorer(_pack(tmp_path), "mockllm/model")
+    checks = [{"type": "rubric", "rubric": "tone"}]
+    await score(_state("hello", checks), Target(""))
+    assert all("Reference fact sheet" not in p for p in judge.prompts)
 
 
 async def test_metadata_records_rubric_hash_and_steps(monkeypatch, tmp_path):

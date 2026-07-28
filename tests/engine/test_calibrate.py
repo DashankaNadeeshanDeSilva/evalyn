@@ -69,7 +69,8 @@ def _stub_scores(monkeypatch, by_anchor_transcript: dict[str, RubricScore]):
     from evalyn.engine import calibrate as cal
     calls = []
 
-    async def fake(rubric_text, rubric_hash, transcript, judge_model, k=3, cache_dir=None):
+    async def fake(rubric_text, rubric_hash, transcript, judge_model, k=3,
+                   cache_dir=None, context=None):
         calls.append(transcript.strip())
         return by_anchor_transcript[transcript.strip()]
 
@@ -252,7 +253,8 @@ def _stub_scores_tracking_in_flight(monkeypatch):
     from evalyn.engine import calibrate as cal
     state = {"in_flight": 0, "max_in_flight": 0}
 
-    async def fake(rubric_text, rubric_hash, transcript, judge_model, k=3, cache_dir=None):
+    async def fake(rubric_text, rubric_hash, transcript, judge_model, k=3,
+                   cache_dir=None, context=None):
         state["in_flight"] += 1
         state["max_in_flight"] = max(state["max_in_flight"], state["in_flight"])
         # Yield twice so every unbounded sibling coroutine would enter before
@@ -298,6 +300,29 @@ async def test_run_calibration_rejects_nonpositive_max_concurrency(monkeypatch, 
         with pytest.raises(ValueError, match="max_concurrency"):
             await run_calibration(pack, "mockllm/model", cache_dir=None,
                                   max_concurrency=bad)
+
+
+async def test_run_calibration_threads_facts_context_to_judge(monkeypatch, tmp_path):
+    # Plan #2b Task 2: run_calibration passes each rubric's fact sheet (or
+    # None) into score_transcript, mirroring the gate's tier3_scorer
+    pack = _pack(tmp_path)
+    (tmp_path / "rubrics" / "persona.facts.md").write_text("FACT: nine years of Python")
+    _anchor_yaml(tmp_path, "a1", transcript="T1", scores={"voice": 4, "warmth": 4})
+    _anchor_yaml(tmp_path, "a2", rubric="tone", transcript="T2", scores={"Tone": 4})
+    _stub_steps(monkeypatch)
+    from evalyn.engine import calibrate as cal
+    seen: dict[str, str | None] = {}
+
+    async def fake(rubric_text, rubric_hash, transcript, judge_model, k=3,
+                   cache_dir=None, context=None):
+        seen[transcript.strip()] = context
+        return _rubric_score({"voice": 4, "warmth": 4} if "voice" in rubric_text
+                             else {"Tone": 4})
+
+    monkeypatch.setattr(cal, "score_transcript", fake)
+    await run_calibration(pack, "mockllm/model", cache_dir=None)
+    assert seen["T1"] == "FACT: nine years of Python"  # persona has a facts sheet
+    assert seen["T2"] is None                          # tone has none
 
 
 async def test_run_calibration_no_usable_anchors(monkeypatch, tmp_path):
@@ -356,6 +381,19 @@ def test_is_stale_rubric_hash_change(tmp_path):
     pack = _pack(tmp_path, rubric_check="tone")
     write_record(pack, 0.9, {"tone:Calm": 0.9}, "anthropic/claude-x")
     (tmp_path / "rubrics" / "tone.md").write_text("# Tone\nEdited since calibration.\n")
+    stale, why = is_stale(pack, "anthropic/claude-x")
+    assert stale and "tone" in why and "changed" in why
+
+
+def test_is_stale_when_facts_sheet_edited_after_calibration(tmp_path):
+    # Plan #2b Task 2: load_rubric's hash covers a sibling `<rid>.facts.md`,
+    # so a facts edit stales the record with ZERO changes to this module's
+    # staleness logic
+    pack = _pack(tmp_path, rubric_check="tone")
+    write_record(pack, 0.9, {"tone:Calm": 0.9}, "anthropic/claude-x")
+    stale, _ = is_stale(pack, "anthropic/claude-x")
+    assert stale is False
+    (tmp_path / "rubrics" / "tone.facts.md").write_text("FACT: added after calibration")
     stale, why = is_stale(pack, "anthropic/claude-x")
     assert stale and "tone" in why and "changed" in why
 

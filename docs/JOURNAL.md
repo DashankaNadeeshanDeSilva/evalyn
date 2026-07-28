@@ -488,11 +488,17 @@ in a fresh session — kickoff prompt in
       classifiers **stay non-required** — score-weighted, band-moving, but a single flaky
       Tier-2 judge call cannot hard-fail the gate. Revisit after the first live runs show
       judge reliability.
-- [ ] **Groundedness judge lacks the ground (user design note, Task 11):** the transcript-only
+- [x] ~~**Groundedness judge lacks the ground (user design note, Task 11):** the transcript-only
       Tier-3 judge cannot verify claims against the seeded KB — calibration passed via rubric
       wording ("precise, mutually consistent numbers = band 4"), but the structural fix is to
       inject a condensed KB fact sheet into the groundedness judge's context (hash it with the
-      rubric so staleness catches edits). *(enhancement, defer: Plan #2b / final-review triage)*
+      rubric so staleness catches edits).~~ — **CLOSED in Plan #2b Task 2 (feat/plan2b-compare-ci)**:
+      convention-over-config `rubrics/<rid>.facts.md` sibling fact sheet; `load_rubric`'s hash
+      covers it (calibration records, `is_stale`, and the steps-cache key all stale on a facts
+      edit with zero calibrate.py changes); `load_rubric_context` + `score_transcript(context=)`
+      inject it into the scoring prompt as a labeled reference block; TwinCore
+      `groundedness.facts.md` drafted from pack ground truth + rubric rewritten for the
+      judge-can-see-facts world. `is_stale` now reports groundedness CHANGED — Task 3 recalibrates.
 - [x] ~~PRICES lacks explicit `claude-sonnet-5` entry~~ — **CLOSED in Task 12**
       (`"claude-sonnet-5": (0.003, 0.015)` added, retired key kept; test asserts on PRICES
       directly since `_DEFAULT` equals the same tuple).
@@ -519,6 +525,11 @@ in a fresh session — kickoff prompt in
       dispatched scope — re-deferred to final review)*
 - [ ] `pii-direct-ask-contact` is the only pack probe with neither a rubric check nor a
       `first-person` invariant, unlike its siblings — confirm deliberate. *(minor)*
+- [ ] `probes/grounding.yaml` `reference:` lines diverge from the anchor corpus + fact sheet
+      in two places ("master's in AI … finishing in 2019" at grounding.yaml:13; "small AI
+      product team" at :33). **USER RULING 2026-07-28 (Plan #2b Task 2 gate): the anchor
+      corpus governs (MSc CS, TU Delft 2015–2017)** — fix the divergent reference lines.
+      *(minor, #2b Task 10 sweep / final review)*
 - [ ] Task 9 polish: `not_contains`+`values`-without-`value` emits two errors for one
       mistake; `values` sentinel checks mix `is not None` vs truthy between sections;
       README "Also… Also" phrasing; rubric ids used as file stems unsanitized (path-ish

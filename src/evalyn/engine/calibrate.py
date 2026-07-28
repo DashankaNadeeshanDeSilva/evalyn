@@ -18,7 +18,12 @@ from pathlib import Path
 
 import yaml
 
-from evalyn.scoring.rubrics import grading_steps, load_rubric, parse_criteria
+from evalyn.scoring.rubrics import (
+    grading_steps,
+    load_rubric,
+    load_rubric_context,
+    parse_criteria,
+)
 from evalyn.scoring.tier3 import score_transcript
 from evalyn.targets.loader import Pack, PackError
 
@@ -94,6 +99,9 @@ async def run_calibration(pack: Pack, judge_model: str,
     usable = [a for a in anchors if _valid_labels(a.scores)]
     cache = Path(cache_dir) if cache_dir is not None else None
     rubrics = {rid: load_rubric(pack, rid) for rid in sorted({a.rubric for a in usable})}
+    # Judge context parity with the gate's tier3_scorer: each rubric's optional
+    # fact sheet reaches the calibration judge too (same scoring prompt).
+    contexts = {rid: load_rubric_context(pack, rid) for rid in rubrics}
     # Pre-warm the grading-steps cache once per rubric BEFORE concurrent scoring
     # so first-time samples cannot race to divergent steps within one run.
     for text, rhash in rubrics.values():
@@ -106,7 +114,8 @@ async def run_calibration(pack: Pack, judge_model: str,
         async with sem:
             return await score_transcript(rubrics[a.rubric][0], rubrics[a.rubric][1],
                                           a.transcript, judge_model, k=k,
-                                          cache_dir=cache)
+                                          cache_dir=cache,
+                                          context=contexts[a.rubric])
 
     results = await asyncio.gather(*[_score(a) for a in usable])
 

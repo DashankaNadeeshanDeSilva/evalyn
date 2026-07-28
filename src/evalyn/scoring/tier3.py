@@ -19,13 +19,18 @@ from inspect_ai.scorer import (
 from inspect_ai.solver import TaskState
 
 from evalyn.scoring.checks import check_result
-from evalyn.scoring.rubrics import grading_steps, load_rubric, parse_criteria
+from evalyn.scoring.rubrics import (
+    grading_steps,
+    load_rubric,
+    load_rubric_context,
+    parse_criteria,
+)
 from evalyn.scoring.transcript import assistant_turns, labeled_transcript
 
 _SCORE_PROMPT = """You are a strict evaluation judge. Score the assistant's behavior in the
 conversation on the rubric criteria below, following these evaluation steps:
 {steps}
-
+{context_block}
 Criteria to score: {criteria}
 
 Score EACH criterion with an integer 1-5 (1=poor, 5=excellent). Reply with ONLY a
@@ -102,17 +107,26 @@ class RubricScore:
 
 async def score_transcript(rubric_text: str, rubric_hash: str, transcript: str,
                            judge_model: str, k: int = 3,
-                           cache_dir: Path | None = None) -> RubricScore:
+                           cache_dir: Path | None = None,
+                           context: str | None = None) -> RubricScore:
     """G-Eval phase 2: k self-consistency judge draws, per-criterion medians.
 
     Unsure (never averaged away) when any sample is unparseable or any
-    criterion's spread across the k draws is >= 2.
+    criterion's spread across the k draws is >= 2. ``context`` (a rubric's
+    fact sheet, see load_rubric_context) is injected into the scoring prompt
+    as a labeled reference block; None leaves the prompt byte-identical.
     """
     criteria = parse_criteria(rubric_text)
     steps = await grading_steps(rubric_text, rubric_hash, judge_model, cache_dir)
     model = get_model(judge_model)
+    context_block = ""
+    if context:
+        context_block = ("\nReference fact sheet (verified facts about the subject; "
+                         "judge factual claims against it — a claim absent from the "
+                         "sheet is NOT thereby wrong, but a claim CONTRADICTING it "
+                         "is):\n" + context + "\n")
     prompt = _SCORE_PROMPT.format(
-        steps="\n".join(f"- {s}" for s in steps),
+        steps="\n".join(f"- {s}" for s in steps), context_block=context_block,
         criteria=", ".join(criteria), transcript=transcript)
     samples: list[dict[str, int]] = []
     for _ in range(k):
@@ -160,7 +174,8 @@ def tier3_scorer(pack, judge_model: str, k: int = 3,
             label = f"rubric:{rid}"
             rubric_text, rhash = load_rubric(pack, rid)
             res = await score_transcript(rubric_text, rhash, transcript,
-                                         judge_model, k=k, cache_dir=cache_dir)
+                                         judge_model, k=k, cache_dir=cache_dir,
+                                         context=load_rubric_context(pack, rid))
             rubric_meta[rid] = {"hash": rhash, "steps": res.steps}
             if res.unsure:
                 results.append(check_result(label, 3, required, weight, None, 0.0,

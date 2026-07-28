@@ -26,12 +26,22 @@ def _hash_text(text: str) -> str:
     return hashlib.sha256(text.encode()).hexdigest()
 
 
+def load_rubric_context(pack, rubric_id: str) -> str | None:
+    """Optional judge context: a sibling `<rubric_id>.facts.md` fact sheet."""
+    path = Path(pack.root) / "rubrics" / f"{rubric_id}.facts.md"
+    return path.read_text() if path.exists() else None
+
+
 def load_rubric(pack, rubric_id: str) -> tuple[str, str]:
     path = Path(pack.root) / "rubrics" / f"{rubric_id}.md"
     if not path.exists():
         raise FileNotFoundError(f"rubric {rubric_id!r} not found at {path}")
     text = path.read_text()
-    return text, _hash_text(text)
+    ctx = load_rubric_context(pack, rubric_id)
+    # The hash COVERS the fact sheet: editing facts stales calibration records,
+    # is_stale, and the grading-steps cache exactly like a rubric edit.
+    hashed = text if ctx is None else text + "\0" + ctx
+    return text, _hash_text(hashed)
 
 
 def parse_criteria(rubric_text: str) -> list[str]:
