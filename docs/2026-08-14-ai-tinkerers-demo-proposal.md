@@ -23,13 +23,16 @@ three-tier trust ladder — deterministic checks, an evidence-quoting classifier
 human-calibrated rubric judge — and returns a CI-grade PASS/FAIL against a committed baseline.
 It runs in three modes — `gate` (did I break anything?), `compare` (blind A/B of two configs),
 and `discover` (a red-team agent whose confirmed findings become new regression probes) — with
-a local `evalyn ui` cockpit for watching runs, diffs, and judge-trust trends. The engine knows
+a local `evalyn ui` cockpit for watching runs, diffs, and judge-trust trends. Sessions can be
+scripted or driven by persona-based LLM-simulated users with seeded perturbations — typos,
+topic drift, mid-conversation goal shifts. The engine knows
 nothing about any specific product: everything product-specific lives in a swappable YAML
 "target pack." I built it because my own shipping product — TwinCore, a digital-AI-twin chat
 app — had zero evals.
 
 Live, I'll run the full loop against the real TwinCore endpoint: `evalyn gate` streaming a
-50-probe suite (including 31 injection attacks seeded from real production failures), then a
+50-probe suite (including a 31-case injection suite — 28 attacks, 3 controls — seeded from
+real production failures), then a
 deliberately regressed prompt turning the baseline diff red. Then the two signature moments:
 `evalyn calibrate` grading the LLM judge against 20 hand-labeled human anchors — and refusing
 to run below 85% agreement — and the `discover` red-team agent auto-emitting a brand-new,
@@ -44,8 +47,9 @@ watchable in the `evalyn ui` cockpit. Real code, real logs, no slides.
 TwinCore knowledge — endpoints, probes, rubrics, human anchors, budget, and target allowlist
 all live in a YAML target pack. That's the takeaway story: evaluating *your* conversational AI
 means writing a pack for your stack, not writing eval code — the same pattern took TwinCore
-from zero evals to a calibrated, CI-gated 50-probe suite, and it ports to any chat backend
-that speaks HTTP/SSE.
+from zero evals to a CI-gated 50-probe suite with an enforced calibration gate, and it ports
+to any chat backend that speaks HTTP/SSE (novel auth or stream shapes need only a small
+adapter — the probes and rubrics are the one part that's always bespoke, and honestly so).
 
 Two hard-won lessons along the way:
 
@@ -54,9 +58,10 @@ Two hard-won lessons along the way:
    Averaging metrics hide exactly the failures that matter most.
 
 2. **Everyone preaches "grade the grader" — no tool actually makes you.** What changed my
-   results was enforcement, not advice: ≥85% agreement with 20 hand-labeled anchors as a hard
-   precondition (the judge refuses to run uncalibrated), verdicts discarded unless the judge
-   quotes its evidence verbatim, and the judge never sharing a model family with the generator.
+   results was enforcement, not advice: every rubric must individually clear 85% agreement
+   with 20 hand-labeled anchors — a weak rubric can't hide behind a strong average — or the
+   judge refuses to run; verdicts are discarded unless the judge quotes its evidence verbatim;
+   and the judge never shares a model family with the generator.
 
 ---
 
@@ -70,14 +75,21 @@ Two hard-won lessons along the way:
 - **Claude Sonnet (Anthropic API)** — Tier-3 G-Eval rubric judge: k=3 self-consistency draws
   with median voting, abstains on disagreement, calibrated against 20 human-labeled anchors.
 - **OpenAI API** — the generator family under test; judge ≠ generator family separation is
-  enforced in code, with judge panels spanning ≥2 model families certified via Cohen's κ.
+  warned on by default and hard-enforced for judge panels, which span ≥2 model families
+  certified via Cohen's κ.
 - **Pydantic v2 + YAML** — the target-pack contract: probes, rubrics, anchors, URL allowlist,
   and a hard per-run USD budget ceiling.
 - **Typer** — the CLI (`evalyn gate / compare / discover / calibrate / validate-pack`) with
-  CI-meaningful exit codes (0 pass, 1 gate fail, 2 setup error); `evalyn ui` is a local cockpit
-  where every action maps to a CLI-visible artifact.
+  CI-meaningful exit codes: 0 pass, 1 gate fail, 2 setup error, 3 run-invalid (errored ≠
+  failed, so infra flakiness can't fail the quality gate).
+- **FastAPI + React SPA (Vite, TypeScript, Tailwind, Recharts)** — `evalyn ui`, the local
+  cockpit: prebuilt bundle shipped inside the Python wheel, `runs/` as its database, every UI
+  action mapping to a CLI-visible artifact.
+- **GitHub Actions** — a reusable `evalyn-gate.yml` workflow that runs the gate on every PR
+  and posts the Markdown gate report as a PR comment.
 - **TwinCore** — my own shipping digital-AI-twin chat product: the live demo target and
-  reference pack.
+  reference pack. A zero-key `mockllm` mode plus a bundled practice target let anyone drive
+  the transport-and-gate loop with no API keys (bring a real judge model for scoring).
 
 ---
 
