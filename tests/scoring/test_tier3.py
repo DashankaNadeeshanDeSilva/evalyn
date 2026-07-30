@@ -129,6 +129,90 @@ def test_parse_non_json_is_unparseable():
     assert _parse("The score is 4 out of 5.", ["voice"]) is None
 
 
+# --- tolerant fail-closed criterion-key matching (2026-07-30 calibrate fix) --
+# Live failure: LLM-generated grading steps renamed the rubric headings
+# ("Claim Support", "Specificity") and the judge keyed its JSON by the steps'
+# names; exact-key lookup made every such draw unparseable and 9/11 anchors
+# UNSURE. Matching is deterministic normalization + unique prefix/superset
+# only — zero or ambiguous matches stay uncounted (fail-closed), never fuzzy.
+
+GROUNDED_CRITERIA = ["Claim support", "Specificity without overreach"]
+
+
+def test_parse_accepts_case_and_whitespace_variant_keys():
+    raw = _sample({"Claim Support": 4, " specificity without overreach ": 5})
+    assert _parse(raw, GROUNDED_CRITERIA) == {
+        "Claim support": 4, "Specificity without overreach": 5}
+
+
+def test_parse_accepts_unique_prefix_key():
+    # the live failure's second renaming: "Specificity" for
+    # "Specificity without overreach"
+    raw = _sample({"Claim support": 4, "Specificity": 5})
+    assert _parse(raw, GROUNDED_CRITERIA) == {
+        "Claim support": 4, "Specificity without overreach": 5}
+
+
+def test_parse_accepts_unique_superset_key():
+    # judge key extends the heading; the heading is a unique prefix of it
+    raw = _sample({"Claim support and evidence": 4,
+                   "Specificity without overreach": 5})
+    assert _parse(raw, GROUNDED_CRITERIA) == {
+        "Claim support": 4, "Specificity without overreach": 5}
+
+
+def test_parse_keys_result_by_canonical_criterion_names():
+    # downstream (calibrate anchor labels, medians) key on parse_criteria
+    # names — a tolerant match must never leak the judge's spelling
+    raw = _sample({"SPECIFICITY": 3, "claim support": 2})
+    parsed = _parse(raw, GROUNDED_CRITERIA)
+    assert parsed is not None and sorted(parsed) == sorted(GROUNDED_CRITERIA)
+
+
+def test_parse_ambiguous_prefix_key_is_not_counted():
+    # "Claim" could be either criterion -> not counted -> "Claim support"
+    # unscored -> whole sample unparseable (fail-closed)
+    raw = _sample({"Claim": 4, "Claim clarity": 5})
+    assert _parse(raw, ["Claim support", "Claim clarity"]) is None
+
+
+def test_parse_zero_match_key_is_not_counted():
+    # a key matching no criterion never scores anything; the criterion stays
+    # unscored and the existing unsure path applies
+    raw = _sample({"Fluency": 4})
+    assert _parse(raw, ["Claim support"]) is None
+
+
+def test_parse_empty_or_whitespace_key_is_not_counted():
+    # "" is trivially a prefix of every criterion — a degenerate key must
+    # never score anything, even on a single-criterion rubric
+    assert _parse(_sample({"": 4}), ["Claim support"]) is None
+    assert _parse(_sample({"   ": 4}), ["Claim support"]) is None
+
+
+def test_parse_two_keys_resolving_to_same_criterion_is_not_counted():
+    # collision: exact + prefix both hit one criterion -> undecidable which
+    # score counts -> fail closed
+    raw = _sample({"Specificity": 4, "specificity without overreach": 5})
+    assert _parse(raw, ["Specificity without overreach"]) is None
+
+
+async def test_score_transcript_survives_steps_renamed_criteria(monkeypatch):
+    # end-to-end pin of the 2026-07-30 failure mode: draws keyed by the steps'
+    # renamed criteria must parse, not collapse the anchor to UNSURE
+    grounded = ("# Groundedness\n\n## Claim support\nClaims are supported.\n\n"
+                "## Specificity without overreach\nSpecific, no overreach.\n")
+    outs = [_sample({"Claim Support": 4, "Specificity": 4}),
+            _sample({"Claim support": 4, "Specificity without overreach": 4}),
+            _sample({"Claim Support": 5, "Specificity": 4})]
+    _stub(monkeypatch, outs)
+    res = await score_transcript(grounded, _hash_text(grounded),
+                                 "User: hi\nAssistant: hello", "mockllm/model")
+    assert res.unsure is False
+    assert res.medians == {"Claim support": 4,
+                           "Specificity without overreach": 4}
+
+
 # --- score_transcript (reusable for Task 5 calibration) --------------------
 
 

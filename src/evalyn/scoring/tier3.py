@@ -59,14 +59,56 @@ def _spread(xs: list[int]) -> int:
     return max(xs) - min(xs) if xs else 0
 
 
+def _norm_key(s: str) -> str:
+    """Deterministic key normalization: collapse whitespace, casefold."""
+    return " ".join(s.split()).casefold()
+
+
+def _match_criterion(key: str, criteria: list[str]) -> str | None:
+    """Fail-closed resolution of a judge JSON key to a rubric criterion
+    (2026-07-30 calibrate failure: LLM-generated steps renamed the headings
+    and judge draws keyed by the steps' names were all unparseable).
+
+    A key counts only when it (i) normalizes equal (case/whitespace) to
+    exactly one criterion, or (ii) is a unique normalized prefix/superset of
+    exactly one criterion ("Specificity" -> "Specificity without overreach").
+    Zero or ambiguous matches -> None (not counted). Deterministic rules
+    only — never fuzzy string distance."""
+    nk = _norm_key(key)
+    if not nk:
+        return None  # "" is trivially a prefix of everything — never counts
+    exact = [c for c in criteria if _norm_key(c) == nk]
+    if exact:
+        return exact[0] if len(exact) == 1 else None
+    partial = [c for c in criteria
+               if _norm_key(c).startswith(nk) or nk.startswith(_norm_key(c))]
+    return partial[0] if len(partial) == 1 else None
+
+
 def _parse(raw: str, criteria: list[str]) -> dict[str, int] | None:
-    """Strict per-criterion parse: every criterion present with an int score in
-    1..5, else the whole sample is unparseable (None)."""
+    """Strict per-criterion parse: every criterion scored with an int in
+    1..5, else the whole sample is unparseable (None). Judge keys resolve to
+    criteria via the tolerant fail-closed rules in _match_criterion; the
+    result is keyed by the CANONICAL criterion names, never the judge's
+    spelling. Two judge keys resolving to one criterion is undecidable ->
+    that criterion stays unscored (fail-closed)."""
     try:
         scores = json.loads(raw.strip())["scores"]
+        matched: dict[str, dict] = {}
+        collided: set[str] = set()
+        for key, entry in scores.items():
+            crit = _match_criterion(str(key), criteria)
+            if crit is None:
+                continue  # zero/ambiguous match: not counted
+            if crit in matched:
+                collided.add(crit)
+                continue
+            matched[crit] = entry
         out: dict[str, int] = {}
         for name in criteria:
-            v = scores[name]["score"]
+            if name in collided or name not in matched:
+                return None  # criterion unscored for this draw
+            v = matched[name]["score"]
             if isinstance(v, bool) or not isinstance(v, int) or not 1 <= v <= 5:
                 return None
             out[name] = v

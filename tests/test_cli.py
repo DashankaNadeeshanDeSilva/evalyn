@@ -340,14 +340,16 @@ def _write_rubric_pack(tmp_path: Path, *, anchors: bool = True) -> str:
 
 def _stub_calibration(monkeypatch, overall: float, unmatched: dict | None = None,
                       per_criterion: dict | None = None,
-                      per_criterion_counts: dict | None = None):
+                      per_criterion_counts: dict | None = None,
+                      per_anchor: dict | None = None):
     from evalyn.engine.calibrate import CalibrationResult
 
     async def fake(pack, judge_model, cache_dir, k=3):
         return CalibrationResult(overall=overall,
                                  per_criterion=per_criterion or {"tone:Tone": overall},
                                  anchors=1, unmatched=unmatched or {},
-                                 per_criterion_counts=per_criterion_counts or {})
+                                 per_criterion_counts=per_criterion_counts or {},
+                                 per_anchor=per_anchor or {})
 
     monkeypatch.setattr("evalyn.engine.calibrate.run_calibration", fake)
 
@@ -381,6 +383,26 @@ def test_calibrate_warns_about_unmatched_criterion_labels(monkeypatch, tmp_path)
     assert result.exit_code == 0
     assert "warning:" in result.stderr and "a1" in result.stderr
     assert "Warmth" in result.stderr and "ghost" in result.stderr
+
+
+def test_calibrate_prints_per_anchor_agreement_lines(monkeypatch, tmp_path):
+    # 2026-07-30 failure: the CLI printed only aggregates, so a failing run
+    # could not say WHICH anchors disagreed or why one was unsure — one line
+    # per anchor with judge-vs-human per criterion (always printed)
+    pack_dir = _write_rubric_pack(tmp_path)
+    _stub_calibration(monkeypatch, 0.5, per_anchor={
+        "a1": {"rubric": "tone", "unsure_reason": None,
+               "criteria": {"Tone": {"judge": 2, "human": 4, "within": False}}},
+        "a2": {"rubric": "tone", "unsure_reason": "2/3 samples unparseable",
+               "criteria": {"Tone": {"judge": None, "human": 4, "within": False}}},
+    })
+    result = runner.invoke(app, ["calibrate", "--target", pack_dir])
+    assert "per-anchor agreement:" in result.stdout
+    a1_line = next(ln for ln in result.stdout.splitlines() if "a1" in ln)
+    assert "tone" in a1_line and "judge=2" in a1_line
+    assert "human=4" in a1_line and "MISS" in a1_line
+    a2_line = next(ln for ln in result.stdout.splitlines() if "a2" in ln)
+    assert "UNSURE" in a2_line and "2/3 samples unparseable" in a2_line
 
 
 def test_calibrate_exit_1_below_threshold_still_writes_record(monkeypatch, tmp_path):

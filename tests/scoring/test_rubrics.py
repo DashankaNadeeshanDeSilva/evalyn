@@ -130,6 +130,25 @@ async def test_grading_steps_unparseable_falls_back_to_raw_rubric(monkeypatch):
     assert len(steps) == 1 and "First person" in steps[0]
 
 
+async def test_grading_steps_prompt_demands_verbatim_criterion_headings(monkeypatch):
+    # 2026-07-30 calibrate failure: generated steps renamed the rubric's
+    # criteria ("Claim Support"/"Specificity" vs the actual `##` headings) and
+    # the judge followed the steps' names — the generator must be instructed
+    # to use each criterion's exact heading name verbatim
+    from evalyn.scoring import rubrics as r
+    prompts = []
+
+    class _Judge:
+        async def generate(self, prompt):
+            prompts.append(prompt)
+            return ModelOutput.from_content("mockllm/model", '["step"]')
+
+    monkeypatch.setattr(r, "get_model", lambda name: _Judge())
+    await grading_steps(RUBRIC, _hash_text(RUBRIC), "mockllm/model", None)
+    [p] = prompts
+    assert "exact" in p and "verbatim" in p and "heading" in p
+
+
 async def test_grading_steps_cache_write_is_atomic(monkeypatch, tmp_path):
     # Task-5 note: concurrent first-time samples must never observe a partial
     # cache file — the write goes to a temp file then os.replace, leaving no

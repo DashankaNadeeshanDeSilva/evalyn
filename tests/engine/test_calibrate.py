@@ -325,6 +325,40 @@ async def test_run_calibration_threads_facts_context_to_judge(monkeypatch, tmp_p
     assert seen["T2"] is None                          # tone has none
 
 
+async def test_run_calibration_reports_per_anchor_detail(monkeypatch, tmp_path):
+    # 2026-07-30 calibrate failure: nothing persisted or printed could say
+    # WHICH anchors disagreed or why an anchor was unsure — the result must
+    # carry judge-vs-human per matched criterion plus the unsure reason
+    pack = _pack(tmp_path)
+    _anchor_yaml(tmp_path, "a1", transcript="T1", scores={"voice": 4, "warmth": 5})
+    _anchor_yaml(tmp_path, "a2", transcript="T2", scores={"voice": 4})
+    _stub_steps(monkeypatch)
+    _stub_scores(monkeypatch, {
+        "T1": _rubric_score({"voice": 4, "warmth": 3}),   # voice hit, warmth miss
+        "T2": _rubric_score(None, unsure=True),
+    })
+    result = await run_calibration(pack, "mockllm/model", cache_dir=None)
+    assert result.per_anchor["a1"] == {
+        "rubric": "persona", "unsure_reason": None,
+        "criteria": {"voice": {"judge": 4, "human": 4, "within": True},
+                     "warmth": {"judge": 3, "human": 5, "within": False}}}
+    assert result.per_anchor["a2"] == {
+        "rubric": "persona", "unsure_reason": "stubbed disagreement",
+        "criteria": {"voice": {"judge": None, "human": 4, "within": False}}}
+
+
+async def test_run_calibration_per_anchor_excludes_unmatched_labels(monkeypatch, tmp_path):
+    # per-anchor detail covers only pairs in the agreement denominator; labels
+    # matching no rubric criterion stay in `unmatched`, not `per_anchor`
+    pack = _pack(tmp_path)
+    _anchor_yaml(tmp_path, "a1", transcript="T1", scores={"voice": 4, "ghost": 2})
+    _stub_steps(monkeypatch)
+    _stub_scores(monkeypatch, {"T1": _rubric_score({"voice": 4, "warmth": 4})})
+    result = await run_calibration(pack, "mockllm/model", cache_dir=None)
+    assert result.per_anchor["a1"]["criteria"] == {
+        "voice": {"judge": 4, "human": 4, "within": True}}
+
+
 async def test_run_calibration_no_usable_anchors(monkeypatch, tmp_path):
     pack = _pack(tmp_path)
     _anchor_yaml(tmp_path, "blank", body="rubric: persona\ntranscript: 'User: hi'\n")

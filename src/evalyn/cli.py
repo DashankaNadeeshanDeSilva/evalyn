@@ -216,6 +216,19 @@ def calibrate(
     if result.anchors == 0:
         typer.echo("calibrate: setup error: no anchors with usable human scores", err=True)
         raise typer.Exit(2)
+    # Per-anchor diagnosis, always printed (2026-07-30 failure: aggregates
+    # alone could not say WHICH anchors disagreed, or distinguish an
+    # unparseable judge from genuine +/-1 disagreement).
+    if result.per_anchor:
+        typer.echo("per-anchor agreement:")
+        for aid, info in result.per_anchor.items():
+            pairs = ", ".join(
+                f"{crit} judge={'-' if d['judge'] is None else d['judge']} "
+                f"human={d['human']} {'ok' if d['within'] else 'MISS'}"
+                for crit, d in info["criteria"].items())
+            prefix = (f"UNSURE ({info['unsure_reason']}) — "
+                      if info.get("unsure_reason") else "")
+            typer.echo(f"  {aid} ({info['rubric']}): {prefix}{pairs}")
     for crit, val in result.per_criterion.items():
         typer.echo(f"  {crit}: {val:.0%}")
     typer.echo(f"overall agreement: {result.overall:.0%} over {result.anchors} anchor(s), "

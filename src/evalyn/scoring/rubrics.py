@@ -11,12 +11,17 @@ from inspect_ai.model import get_model
 
 _STEPS_PROMPT = """You are designing an evaluation rubric's grading procedure.
 Given the rubric below, produce 3-6 concrete, checkable evaluation STEPS a grader
-would follow to score a conversation on this rubric. Reply with ONLY a JSON array
-of short strings.
+would follow to score a conversation on this rubric. When a step refers to a
+rubric criterion, use the criterion's exact `##` heading name, verbatim — never
+rename, retitle, or abbreviate it. Reply with ONLY a JSON array of short strings.
 
 Rubric:
 {rubric}
 """
+# GOTCHA: the grading-steps cache key is (rubric_hash, judge_model) only — it
+# does NOT cover this prompt template, so editing _STEPS_PROMPT silently
+# reuses stale cached steps (JOURNAL open item; candidate: fold a
+# prompt-template hash into the cache filename).
 
 _H2_RE = re.compile(r"^##\s+(.+?)\s*$", re.MULTILINE)
 _H1_RE = re.compile(r"^#\s+(.+?)\s*$", re.MULTILINE)

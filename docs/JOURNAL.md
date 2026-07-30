@@ -546,6 +546,27 @@ in a fresh session — kickoff prompt in
       acceptance tests; both packs validate).
 - [ ] `anthropic>=0.120` floor is tight for PyPI consumers (pinned to the venv-validated
       version) — loosen before a public PyPI cut. *(minor, pre-release checklist)*
+- [ ] Grading-steps cache key covers rubric hash + judge hash but NOT the steps-generation
+      prompt template (`rubrics.py` `_STEPS_PROMPT`) — a prompt-template edit silently reuses
+      stale cached steps (bit us 2026-07-30: the hardened prompt alone would not have retired
+      the poisoned groundedness steps file; it had to be deleted by hand). Candidate: fold a
+      prompt-template hash into the cache filename. *(minor, #2b register / #4b)*
+- [ ] `_SCORE_PROMPT` could also instruct the judge to use exact criterion heading names
+      (belt-and-braces with the tolerant parse), but adding the sentence breaks the Task 2
+      byte-identity legacy-prompt pin — do it only with a conscious re-pin. Residual today:
+      a COMPLETELY renamed judge key (no prefix/superset relation) still costs the draw to
+      UNSURE (fail-closed noise, never a wrong pass). *(minor, final review / #4b)*
+- [x] ~~2026-07-30 live calibrate FAIL (groundedness 18%, overall 73%)~~ — **root-caused +
+      FIXED offline (Plan #2b Task 3, feat/plan2b-compare-ci)**: regenerated groundedness
+      grading steps RENAMED the rubric criteria ("Claim Support"/"Specificity" vs headings
+      "Claim support"/"Specificity without overreach"); tier3 `_parse` did exact-key lookup,
+      so any judge draw following the steps' names was unparseable → 1 bad draw of k=3 →
+      UNSURE → fail-closed miss on every pair (9/11 groundedness anchors collapsed). Fixes:
+      tolerant fail-closed key matching in `_parse` (normalize case/whitespace + unique
+      prefix/superset only; zero/ambiguous matches still uncounted), `_STEPS_PROMPT` now
+      demands exact `##` heading names verbatim, poisoned steps cache file deleted, and
+      calibrate now reports per-anchor judge-vs-human + unsure reasons (the failed run's
+      output could not distinguish unparseable from genuine ±1 disagreement).
 ### Final whole-branch review (2026-07-26) — verdict: **ready to merge after one fix wave**
 
 Fable reviewer over the full `e30afbf..6c1b608` diff (17 commits, 84 files). Zero Critical.
