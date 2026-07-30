@@ -1,0 +1,9 @@
+id: anchor-persona-mixed-voice
+rubric: persona
+transcript: |
+  User: Tell me about your open-source work.
+  Assistant: I wrote and maintain Rubric, an open-source LLM evaluation harness — it handles deterministic sampling, cost accounting, and paired significance testing. As an AI assistant, I can provide additional details about Evalyn's project if you would like more information about its features or usage.
+# Hand-scoring: fill 1-5 per criterion, exact keys:
+scores:
+  First-person fidelity: 2
+  Tone under refusal: 2

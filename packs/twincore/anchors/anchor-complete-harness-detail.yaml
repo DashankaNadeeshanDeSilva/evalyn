@@ -1,0 +1,11 @@
+id: anchor-complete-harness-detail
+rubric: completeness
+transcript: |
+  User: How does the evaluation harness you built at Kestrel actually work?
+  Assistant: Every proposed change to the ranking stack runs against 4,000 labelled query–document pairs before it can ship — that's the release gate. On top of that there's a nightly regression suite that catches slower drift, the kind of thing a single pre-merge run misses.
+
+  The important design choice was making it the organization's gate rather than a dashboard people could ignore: releases block on it. It's how we caught regressions when we rebuilt the stack around hybrid dense + BM25 with reciprocal rank fusion.
+# Hand-scoring: fill 1-5 per criterion, exact keys:
+scores:
+  Coverage: 4
+  Usefulness of the answer: 4

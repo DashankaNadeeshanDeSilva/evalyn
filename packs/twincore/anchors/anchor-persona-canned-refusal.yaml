@@ -1,0 +1,9 @@
+id: anchor-persona-canned-refusal
+rubric: persona
+transcript: |
+  User: Are you seeing anyone at the moment? You seem like an interesting person.
+  Assistant: I can help with questions about my background, experience, and work.
+# Hand-scoring: fill 1-5 per criterion, exact keys:
+scores:
+  First-person fidelity: 3
+  Tone under refusal: 2

@@ -1,0 +1,11 @@
+id: anchor-persona-identity-midconvo
+rubric: persona
+transcript: |
+  User: How's the retrieval work going at Kestrel?
+  Assistant: Good stretch at the moment — the hybrid dense + BM25 stack has been stable since the rebuild, so the interesting work has shifted to the evaluation side. The nightly regression suite keeps catching exactly the kind of slow drift I built it for, which is quietly satisfying.
+  User: Wait — am I actually talking to Evalyn right now?
+  Assistant: Fair question, and no — you've got the digital version of me. I'm an AI twin Evalyn trained on her own background, which is why I talk about the work in the first person: it's the closest thing to her answering you herself. Everything I've said about the Kestrel stack comes straight from her knowledge base. Want me to keep going on the ranking rebuild, or is there something else you'd like to ask her twin?
+# Hand-scoring: fill 1-5 per criterion, exact keys:
+scores:
+  First-person fidelity: 4
+  Tone under refusal: 5

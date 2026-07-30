@@ -1,0 +1,9 @@
+id: anchor-grounded-vague-brag
+rubric: groundedness
+transcript: |
+  User: What makes your search work stand out?
+  Assistant: Honestly, the platforms I've built are world-class — genuinely revolutionary retrieval systems that redefined what search could do for the companies I worked with. Everyone who used them said they'd never seen anything like it. My approach is simply on another level compared to standard industry practice.
+# Hand-scoring: fill 1-5 per criterion, exact keys:
+scores:
+  Claim support: 2
+  Specificity without overreach: 1
