@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 import statistics
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from inspect_ai.model import get_model
@@ -128,6 +128,17 @@ class RubricScore:
     rubric_hash: str
     unsure: bool = False
     reason: str = ""
+    # Per-criterion seam (2026-07-31 run #4 remediation) — ADDITIVE, consumed
+    # only by the calibration harness. `criterion_medians` holds the median
+    # for every criterion whose k draws all parsed AND agree (spread < 2);
+    # `criterion_spreads` holds each criterion's spread when all k draws
+    # parsed. The GATE contract is unchanged: `medians` stays None (unsure)
+    # whenever ANY criterion is torn, and tier3_scorer reads only
+    # unsure/medians/score/passed. For a clean result criterion_medians is
+    # exactly `medians`; for an unparseable result both fields stay empty
+    # (no criterion has a clean k-draw median — fail-closed everywhere).
+    criterion_medians: dict[str, int] = field(default_factory=dict)
+    criterion_spreads: dict[str, int] = field(default_factory=dict)
 
     @property
     def score(self) -> float:
@@ -185,12 +196,15 @@ async def score_transcript(rubric_text: str, rubric_hash: str, transcript: str,
         return RubricScore(None, samples, steps, rubric_hash, unsure=True,
                            reason=f"{k - len(samples)}/{k} samples unparseable")
     spreads = {c: _spread([s[c] for s in samples]) for c in criteria}
+    clean = {c: _median([s[c] for s in samples])
+             for c, sp in spreads.items() if sp < 2}
     disagreed = [c for c, sp in spreads.items() if sp >= 2]
     if disagreed:
         return RubricScore(None, samples, steps, rubric_hash, unsure=True,
-                           reason=f"judge disagreement (spread >= 2) on {disagreed}")
-    medians = {c: _median([s[c] for s in samples]) for c in criteria}
-    return RubricScore(medians, samples, steps, rubric_hash)
+                           reason=f"judge disagreement (spread >= 2) on {disagreed}",
+                           criterion_medians=clean, criterion_spreads=spreads)
+    return RubricScore(clean, samples, steps, rubric_hash,
+                       criterion_medians=clean, criterion_spreads=spreads)
 
 
 @scorer(metrics=[accuracy(), stderr()], name="tier3")

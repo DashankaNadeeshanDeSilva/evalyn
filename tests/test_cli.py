@@ -405,6 +405,26 @@ def test_calibrate_prints_per_anchor_agreement_lines(monkeypatch, tmp_path):
     assert "UNSURE" in a2_line and "2/3 samples unparseable" in a2_line
 
 
+def test_calibrate_per_anchor_line_shows_clean_sibling_beside_torn_criterion(
+        monkeypatch, tmp_path):
+    # per-criterion unsure accounting (2026-07-31): a torn criterion renders
+    # as an unsure-miss with its spread reason while the clean sibling on the
+    # SAME anchor line shows its judge median and ok/MISS normally
+    pack_dir = _write_rubric_pack(tmp_path)
+    _stub_calibration(monkeypatch, 0.5, per_anchor={
+        "a1": {"rubric": "tone",
+               "unsure_reason": "judge disagreement (spread >= 2) on ['Firm']",
+               "criteria": {
+                   "Tone": {"judge": 4, "human": 4, "within": True},
+                   "Firm": {"judge": None, "human": 4, "within": False,
+                            "unsure_reason": "spread 3 >= 2"}}},
+    })
+    result = runner.invoke(app, ["calibrate", "--target", pack_dir])
+    a1_line = next(ln for ln in result.stdout.splitlines() if "a1" in ln)
+    assert "Tone judge=4 human=4 ok" in a1_line
+    assert "Firm judge=- (spread 3 >= 2) human=4 MISS" in a1_line
+
+
 def test_calibrate_exit_1_below_threshold_still_writes_record(monkeypatch, tmp_path):
     # record-on-failure is safe ONLY because is_stale rejects sub-threshold
     # agreement (pinned in tests/engine/test_calibrate.py)

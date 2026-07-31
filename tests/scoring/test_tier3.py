@@ -238,6 +238,53 @@ async def test_score_transcript_spread_on_any_criterion_is_unsure(monkeypatch):
     assert res.unsure is True and res.medians is None
 
 
+# --- per-criterion unsure seam (2026-07-31 run #4 remediation) -------------
+# The GATE contract pinned above is untouched: spread >= 2 on ANY criterion
+# still returns unsure=True with medians=None (tier3_scorer reads only those).
+# The ADDITIVE criterion_medians/criterion_spreads fields exist so the
+# calibration harness can count only the genuinely-torn criterion as a miss.
+
+
+async def test_score_transcript_spread_unsure_exposes_clean_sibling_median(monkeypatch):
+    # voice torn (spread 4), warmth clean (spread 0): public medians stays
+    # None, but the clean sibling's median survives on criterion_medians and
+    # the torn criterion is excluded from it
+    outs = [_sample({"voice": 1, "warmth": 4}),
+            _sample({"voice": 3, "warmth": 4}),
+            _sample({"voice": 5, "warmth": 4})]
+    _stub(monkeypatch, outs)
+    res = await score_transcript(PERSONA, _hash_text(PERSONA),
+                                 "User: hi\nAssistant: hello", "mockllm/model")
+    assert res.unsure is True and res.medians is None  # gate contract intact
+    assert res.criterion_medians == {"warmth": 4}
+    assert res.criterion_spreads == {"voice": 4, "warmth": 0}
+
+
+async def test_score_transcript_unparseable_sample_exposes_no_criterion_medians(monkeypatch):
+    # < k parsed draws: NO criterion has a clean k-draw median — both
+    # additive fields stay empty (fail-closed: calibrate misses every pair)
+    outs = ["not json", _sample({"voice": 4, "warmth": 4}),
+            _sample({"voice": 4, "warmth": 4})]
+    _stub(monkeypatch, outs)
+    res = await score_transcript(PERSONA, _hash_text(PERSONA),
+                                 "User: hi\nAssistant: hello", "mockllm/model")
+    assert res.unsure is True and res.medians is None
+    assert res.criterion_medians == {} and res.criterion_spreads == {}
+
+
+async def test_score_transcript_clean_result_mirrors_criterion_medians(monkeypatch):
+    # no torn criterion: criterion_medians is exactly the public medians
+    outs = [_sample({"voice": 4, "warmth": 3}),
+            _sample({"voice": 4, "warmth": 3}),
+            _sample({"voice": 5, "warmth": 3})]
+    _stub(monkeypatch, outs)
+    res = await score_transcript(PERSONA, _hash_text(PERSONA),
+                                 "User: hi\nAssistant: hello", "mockllm/model")
+    assert res.unsure is False
+    assert res.criterion_medians == res.medians == {"voice": 4, "warmth": 3}
+    assert res.criterion_spreads == {"voice": 1, "warmth": 0}
+
+
 FACTS = "The owner has nine years of Python experience."
 
 

@@ -46,7 +46,9 @@ class CalibrationResult:
     per_criterion: dict[str, float]      # keyed "<rubric>:<criterion>"
     anchors: int                         # anchors actually scored
     skipped: list[str] = field(default_factory=list)   # anchor ids without usable labels
-    unsure: list[str] = field(default_factory=list)    # judge-unsure anchors (counted as misses)
+    # judge-unsure anchors: criteria WITHOUT a clean k-draw median on them are
+    # fail-closed misses; a clean sibling criterion is compared normally
+    unsure: list[str] = field(default_factory=list)
     # human labels whose criterion name matches no rubric criterion, per anchor
     # id — reported (never silently dropped from the agreement denominator)
     unmatched: dict[str, list[str]] = field(default_factory=dict)
@@ -57,7 +59,8 @@ class CalibrationResult:
     # per-anchor diagnosis (2026-07-30 calibrate failure: aggregates alone
     # could not say WHICH anchors disagreed or why an anchor was unsure):
     # anchor id -> {"rubric": rid, "unsure_reason": str | None,
-    # "criteria": {name: {"judge": int | None, "human": int, "within": bool}}}
+    # "criteria": {name: {"judge": int | None, "human": int, "within": bool,
+    # optional "unsure_reason": str for a torn criterion (spread >= 2)}}}
     # covering exactly the matched pairs in the agreement denominator
     per_anchor: dict[str, dict] = field(default_factory=dict)
 
@@ -151,11 +154,21 @@ async def run_calibration(pack: Pack, judge_model: str,
         for crit, human in anchor.scores.items():
             if crit not in criteria:
                 continue
-            # fail closed: an undecidable judge is a miss on every matched pair
-            within = False if res.unsure else _within_one(judged[crit], human)
-            detail["criteria"][crit] = {
-                "judge": None if res.unsure else judged[crit],
-                "human": human, "within": within}
+            # Per-criterion unsure accounting (2026-07-31 run #4 remediation):
+            # an unsure anchor voids ONLY criteria without a clean k-draw
+            # median (spread >= 2, or unparseable draws) — those are
+            # fail-closed misses, never hits, never dropped from the
+            # denominator. A sibling criterion whose draws agree keeps its
+            # median (RubricScore.criterion_medians) and is compared normally.
+            judge = (res.criterion_medians.get(crit) if res.unsure
+                     else judged[crit])
+            within = judge is not None and _within_one(judge, human)
+            entry: dict = {"judge": judge, "human": human, "within": within}
+            if res.unsure and judge is None:
+                sp = res.criterion_spreads.get(crit)
+                if sp is not None and sp >= 2:
+                    entry["unsure_reason"] = f"spread {sp} >= 2"
+            detail["criteria"][crit] = entry
             key = f"{anchor.rubric}:{crit}"
             totals[key] = totals.get(key, 0) + 1
             hits[key] = hits.get(key, 0) + (1 if within else 0)

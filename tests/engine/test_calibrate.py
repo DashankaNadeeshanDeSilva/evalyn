@@ -58,10 +58,20 @@ def _anchor_yaml(tmp_path, name: str, *, rubric: str = "persona",
     (d / f"{name}.yaml").write_text("\n".join(lines) + "\n")
 
 
-def _rubric_score(medians: dict[str, int] | None, *, unsure: bool = False) -> RubricScore:
+def _rubric_score(medians: dict[str, int] | None, *, unsure: bool = False,
+                  reason: str | None = None,
+                  criterion_medians: dict[str, int] | None = None,
+                  criterion_spreads: dict[str, int] | None = None) -> RubricScore:
+    # mirrors production: a clean result's criterion_medians == medians; an
+    # unsure result carries only explicitly-provided per-criterion data
+    if criterion_medians is None:
+        criterion_medians = dict(medians) if medians else {}
     return RubricScore(medians=medians, samples=[], steps=["s"],
                        rubric_hash="h", unsure=unsure,
-                       reason="stubbed disagreement" if unsure else "")
+                       reason=(reason if reason is not None
+                               else ("stubbed disagreement" if unsure else "")),
+                       criterion_medians=criterion_medians,
+                       criterion_spreads=criterion_spreads or {})
 
 
 def _stub_scores(monkeypatch, by_anchor_transcript: dict[str, RubricScore]):
@@ -238,8 +248,78 @@ async def test_run_calibration_per_criterion_and_overall(monkeypatch, tmp_path):
     assert result.skipped == [] and result.unsure == []
 
 
+# ---------- per-criterion unsure accounting (2026-07-31, run #4 remediation)
+# RETIRED SEAM: anchor-wide voiding (one torn criterion counted EVERY
+# criterion of the anchor as a miss). Now only a criterion WITHOUT a clean
+# k-draw median is the fail-closed miss; a sibling with a clean median is
+# compared normally. Denominators never shrink: torn pairs stay counted.
+
+
+async def test_run_calibration_torn_criterion_missed_clean_sibling_counted(
+        monkeypatch, tmp_path):
+    pack = _pack(tmp_path)
+    _anchor_yaml(tmp_path, "a1", transcript="T1", scores={"voice": 4, "warmth": 4})
+    _stub_steps(monkeypatch)
+    _stub_scores(monkeypatch, {"T1": _rubric_score(
+        None, unsure=True,
+        reason="judge disagreement (spread >= 2) on ['warmth']",
+        criterion_medians={"voice": 4},
+        criterion_spreads={"voice": 0, "warmth": 3})})
+    result = await run_calibration(pack, "mockllm/model", cache_dir=None)
+    # clean sibling compared normally (hit); torn criterion fail-closed miss
+    assert result.per_criterion == {"persona:voice": 1.0, "persona:warmth": 0.0}
+    # denominator preserved: the torn pair stays IN the totals
+    assert result.per_criterion_counts == {"persona:voice": (1, 1),
+                                           "persona:warmth": (0, 1)}
+    assert result.overall == 0.5
+    assert result.unsure == ["a1"]  # the anchor is still reported judge-unsure
+    assert result.per_anchor["a1"]["criteria"]["voice"] == {
+        "judge": 4, "human": 4, "within": True}
+    assert result.per_anchor["a1"]["criteria"]["warmth"] == {
+        "judge": None, "human": 4, "within": False,
+        "unsure_reason": "spread 3 >= 2"}
+
+
+async def test_run_calibration_clean_sibling_of_torn_criterion_can_still_miss(
+        monkeypatch, tmp_path):
+    # counting the clean sibling normally is not a free hit: judge 1 vs
+    # human 4 is a genuine miss
+    pack = _pack(tmp_path)
+    _anchor_yaml(tmp_path, "a1", transcript="T1", scores={"voice": 4, "warmth": 4})
+    _stub_steps(monkeypatch)
+    _stub_scores(monkeypatch, {"T1": _rubric_score(
+        None, unsure=True,
+        criterion_medians={"voice": 1},
+        criterion_spreads={"voice": 1, "warmth": 2})})
+    result = await run_calibration(pack, "mockllm/model", cache_dir=None)
+    assert result.per_criterion == {"persona:voice": 0.0, "persona:warmth": 0.0}
+    assert result.per_anchor["a1"]["criteria"]["voice"] == {
+        "judge": 1, "human": 4, "within": False}
+
+
+async def test_run_calibration_all_criteria_torn_all_miss(monkeypatch, tmp_path):
+    # spread >= 2 on BOTH criteria: both stay fail-closed misses (a torn
+    # criterion is never a hit and never leaves the denominator)
+    pack = _pack(tmp_path)
+    _anchor_yaml(tmp_path, "a1", transcript="T1", scores={"voice": 4, "warmth": 4})
+    _stub_steps(monkeypatch)
+    _stub_scores(monkeypatch, {"T1": _rubric_score(
+        None, unsure=True,
+        criterion_medians={},
+        criterion_spreads={"voice": 2, "warmth": 4})})
+    result = await run_calibration(pack, "mockllm/model", cache_dir=None)
+    assert result.overall == 0.0
+    assert result.per_criterion_counts == {"persona:voice": (0, 1),
+                                           "persona:warmth": (0, 1)}
+    assert result.per_anchor["a1"]["criteria"]["voice"]["unsure_reason"] == \
+        "spread 2 >= 2"
+    assert result.per_anchor["a1"]["criteria"]["warmth"]["unsure_reason"] == \
+        "spread 4 >= 2"
+
+
 async def test_run_calibration_unsure_judge_counts_as_disagreement(monkeypatch, tmp_path):
-    # fail-closed: an anchor the judge cannot decide is a miss, never dropped
+    # fail-closed: an unsure anchor with NO clean per-criterion medians (e.g.
+    # unparseable draws) misses every pair, never dropped
     pack = _pack(tmp_path)
     _anchor_yaml(tmp_path, "a1", transcript="T1", scores={"voice": 4, "warmth": 4})
     _anchor_yaml(tmp_path, "a2", transcript="T2", scores={"voice": 4, "warmth": 4})

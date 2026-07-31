@@ -209,8 +209,8 @@ def calibrate(
         typer.echo(f"warning: anchor {aid!r} skipped — missing/invalid human scores "
                    f"(need integer 1-5 per criterion)", err=True)
     for aid in result.unsure:
-        typer.echo(f"warning: anchor {aid!r}: judge UNSURE — counted as disagreement",
-                   err=True)
+        typer.echo(f"warning: anchor {aid!r}: judge UNSURE — undecided criteria "
+                   f"counted as misses", err=True)
     for aid, crits in result.unmatched.items():
         typer.echo(f"warning: anchor {aid!r}: human label(s) "
                    f"{', '.join(repr(c) for c in crits)} match no rubric criterion — "
@@ -226,8 +226,9 @@ def calibrate(
         typer.echo("per-anchor agreement:")
         for aid, info in result.per_anchor.items():
             pairs = ", ".join(
-                f"{crit} judge={'-' if d['judge'] is None else d['judge']} "
-                f"human={d['human']} {'ok' if d['within'] else 'MISS'}"
+                f"{crit} judge={'-' if d['judge'] is None else d['judge']}"
+                + (f" ({d['unsure_reason']})" if d.get("unsure_reason") else "")
+                + f" human={d['human']} {'ok' if d['within'] else 'MISS'}"
                 for crit, d in info["criteria"].items())
             prefix = (f"UNSURE ({info['unsure_reason']}) — "
                       if info.get("unsure_reason") else "")
