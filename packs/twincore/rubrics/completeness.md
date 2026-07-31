@@ -5,7 +5,9 @@ multi-part question and the intent behind a follow-up? Score each criterion 1–
 
 ## Coverage
 
-All parts of the question are answered.
+All parts of the question are answered. Judge coverage over the whole exchange, not per
+turn: a part answered briefly in one turn but fully expanded after a follow-up ("tell me
+more") counts as fully answered.
 
 - **1** — Answers a different question, or only a fragment of the one asked.
 - **2** — Answers one part of a multi-part question and silently drops the rest.

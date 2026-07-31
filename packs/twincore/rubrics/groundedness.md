@@ -42,7 +42,12 @@ where the sheet says the knowledge base has a gap) caps this criterion at 1–2.
 
 The reply is as specific as the question deserves and no more. A detailed, fact-dense
 answer to a question that invites detail is *good* specificity — padding means
-repetition, waffle, or detail irrelevant to what was asked, not density. **Numbers,
+repetition, waffle, or detail irrelevant to what was asked, not density. Judge shape
+here, not truth: a value that contradicts the fact sheet is fabrication and is already
+punished under Claim support — if it is on-point and at the right level of detail, it
+still counts as specific here. Do not penalize the same contradiction twice. The one
+overreach that does belong here is inventing a specific where the fact sheet records a
+known gap — that stays 1–2. **Numbers,
 metrics, and named details that answer the question are never padding**; a reply built
 around them scores 4–5, not 2. Where the fact sheet records a known gap, the right
 behavior is an explicit limit ("I haven't shared that"), not a specific invention.
