@@ -603,6 +603,38 @@ def test_calibrate_debug_reraises_missing_rubric_file(monkeypatch, tmp_path):
     assert isinstance(result.exception, FileNotFoundError)
 
 
+def test_calibrate_exit_2_on_unparseable_steps_generation(tmp_path):
+    # fix round 1 (2026-07-31): steps generation now fails loudly (RuntimeError)
+    # — calibrate must surface it as a clean exit-2 message, never a raw
+    # traceback. mockllm's default reply is unparseable steps JSON, so the
+    # real pre-warm path raises with zero monkeypatching and zero spend.
+    pack_dir = _write_rubric_pack(tmp_path)
+    result = runner.invoke(app, ["calibrate", "--target", pack_dir,
+                                 "--rubric-judge-model", "mockllm/model"])
+    assert result.exit_code == 2
+    assert "setup error" in result.stderr and "grading steps" in result.stderr
+    assert "Traceback" not in result.stderr
+
+
+def test_calibrate_exit_2_on_malformed_committed_steps_file(tmp_path):
+    # a malformed committed rubrics/<rid>.steps.json raises ValueError in
+    # run_calibration (calibrate runs no validate_pack) — same clean contract
+    pack_dir = _write_rubric_pack(tmp_path)
+    (Path(pack_dir) / "rubrics" / "tone.steps.json").write_text("not json at all")
+    result = runner.invoke(app, ["calibrate", "--target", pack_dir,
+                                 "--rubric-judge-model", "mockllm/model"])
+    assert result.exit_code == 2
+    assert "setup error" in result.stderr and "tone.steps.json" in result.stderr
+    assert "Traceback" not in result.stderr
+
+
+def test_calibrate_debug_reraises_unparseable_steps_generation(tmp_path):
+    pack_dir = _write_rubric_pack(tmp_path)
+    result = runner.invoke(app, ["calibrate", "--target", pack_dir, "--debug",
+                                 "--rubric-judge-model", "mockllm/model"])
+    assert isinstance(result.exception, RuntimeError)
+
+
 def test_gate_update_baseline_echoes_pass_verdict(monkeypatch, tmp_path):
     monkeypatch.setenv("EVALYN_TARGET_URL", "http://localhost:8899")
     art = _artifact([_probe("ok-probe", safety=True, pass_k=1.0)])

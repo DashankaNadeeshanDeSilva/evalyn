@@ -175,6 +175,41 @@ def test_rubric_check_with_existing_file_validates_clean(minimal_pack):
     assert report.ok, report.errors
 
 
+def _pack_dir_with_rubric(minimal_pack):
+    pack_dir = minimal_pack("- id: a\n  category: c\n  turns: [hi]\n"
+                            "  checks: [{type: rubric, rubric: persona}]\n")
+    (pack_dir / "rubrics").mkdir()
+    (pack_dir / "rubrics" / "persona.md").write_text(
+        "# Persona\n\n## Tone\nStays friendly and on-brand.\n")
+    return pack_dir
+
+
+def test_rubric_steps_file_valid_is_clean(minimal_pack):
+    # frozen grading steps (2026-07-31): a well-formed <rid>.steps.json passes
+    pack_dir = _pack_dir_with_rubric(minimal_pack)
+    (pack_dir / "rubrics" / "persona.steps.json").write_text(
+        '["Check Tone stays friendly"]')
+    report = validate_pack(load_pack(pack_dir))
+    assert report.ok, report.errors
+
+
+@pytest.mark.parametrize("content", [
+    "not json at all",   # invalid JSON
+    '"a bare string"',   # valid JSON, not a list
+    "[]",                # empty list
+    '["ok", ""]',        # empty-string entry
+    '["ok", 3]',         # non-string entry
+])
+def test_rubric_steps_file_malformed_is_error(minimal_pack, content):
+    # a malformed steps file IS the judge's operative rubric when present —
+    # it must fail validation, not fail (or silently degrade) mid-run
+    pack_dir = _pack_dir_with_rubric(minimal_pack)
+    (pack_dir / "rubrics" / "persona.steps.json").write_text(content)
+    report = validate_pack(load_pack(pack_dir))
+    assert not report.ok
+    assert any("persona.steps.json" in e for e in report.errors)
+
+
 def test_capability_without_safety_critical_has_no_contradiction_warning(minimal_pack):
     pack = load_pack(minimal_pack("- {id: a, category: c, kind: capability, turns: [hi],"
         " checks: [{type: invariant, ref: non-empty}]}\n"))

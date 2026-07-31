@@ -22,6 +22,7 @@ from evalyn.scoring.rubrics import (
     grading_steps,
     load_rubric,
     load_rubric_context,
+    load_rubric_steps,
     parse_criteria,
 )
 from evalyn.scoring.tier3 import score_transcript
@@ -108,10 +109,14 @@ async def run_calibration(pack: Pack, judge_model: str,
     # Judge context parity with the gate's tier3_scorer: each rubric's optional
     # fact sheet reaches the calibration judge too (same scoring prompt).
     contexts = {rid: load_rubric_context(pack, rid) for rid in rubrics}
+    # Frozen steps (2026-07-31): a committed rubrics/<rid>.steps.json IS that
+    # rubric's grading steps — no generation, no steps-cache read/write.
+    frozen = {rid: load_rubric_steps(pack, rid) for rid in rubrics}
     # Pre-warm the grading-steps cache once per rubric BEFORE concurrent scoring
     # so first-time samples cannot race to divergent steps within one run.
-    for text, rhash in rubrics.values():
-        await grading_steps(text, rhash, judge_model, cache)
+    for rid, (text, rhash) in rubrics.items():
+        if frozen[rid] is None:
+            await grading_steps(text, rhash, judge_model, cache)
     # Bound judge concurrency: at most max_concurrency anchors in flight at
     # once (an unbounded burst risks rate-limit failures against a live API).
     sem = asyncio.Semaphore(max_concurrency)
@@ -121,7 +126,8 @@ async def run_calibration(pack: Pack, judge_model: str,
             return await score_transcript(rubrics[a.rubric][0], rubrics[a.rubric][1],
                                           a.transcript, judge_model, k=k,
                                           cache_dir=cache,
-                                          context=contexts[a.rubric])
+                                          context=contexts[a.rubric],
+                                          steps=frozen[a.rubric])
 
     results = await asyncio.gather(*[_score(a) for a in usable])
 

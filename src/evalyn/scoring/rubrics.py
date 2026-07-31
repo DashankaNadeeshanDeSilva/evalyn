@@ -25,6 +25,7 @@ Rubric:
 
 _H2_RE = re.compile(r"^##\s+(.+?)\s*$", re.MULTILINE)
 _H1_RE = re.compile(r"^#\s+(.+?)\s*$", re.MULTILINE)
+_FENCE_RE = re.compile(r"^```[a-zA-Z]*\s*\n(.*)\n?```\s*$", re.DOTALL)
 
 
 def _hash_text(text: str) -> str:
@@ -37,15 +38,56 @@ def load_rubric_context(pack, rubric_id: str) -> str | None:
     return path.read_text() if path.exists() else None
 
 
+def parse_steps_file(path: Path) -> list[str]:
+    """Parse a frozen grading-steps artifact; raise ValueError if malformed.
+
+    The contract (also enforced by validate-pack): valid JSON, a non-empty
+    list of non-empty strings. Fail-closed — when present this file IS the
+    judge's operative rubric, so a malformed one must never be judged with.
+    """
+    try:
+        steps = json.loads(path.read_text())
+    except json.JSONDecodeError as e:
+        raise ValueError(f"steps file {path.name}: invalid JSON ({e})") from e
+    if (not isinstance(steps, list) or not steps
+            or not all(isinstance(s, str) and s.strip() for s in steps)):
+        raise ValueError(
+            f"steps file {path.name}: frozen grading steps must be a "
+            f"non-empty JSON list of non-empty strings")
+    return steps
+
+
+def load_rubric_steps(pack, rubric_id: str) -> list[str] | None:
+    """Optional frozen grading steps: a sibling `<rubric_id>.steps.json`.
+
+    2026-07-31 remediation (calibration runs #1/#3): when this committed,
+    human-reviewed artifact exists it IS the grading steps for the rubric —
+    no runtime generation and no steps-cache read/write happen for it.
+    None when absent; ValueError when present but malformed (fail-closed).
+    """
+    path = Path(pack.root) / "rubrics" / f"{rubric_id}.steps.json"
+    return parse_steps_file(path) if path.exists() else None
+
+
 def load_rubric(pack, rubric_id: str) -> tuple[str, str]:
     path = Path(pack.root) / "rubrics" / f"{rubric_id}.md"
     if not path.exists():
         raise FileNotFoundError(f"rubric {rubric_id!r} not found at {path}")
     text = path.read_text()
     ctx = load_rubric_context(pack, rubric_id)
-    # The hash COVERS the fact sheet: editing facts stales calibration records,
-    # is_stale, and the grading-steps cache exactly like a rubric edit.
-    hashed = text if ctx is None else text + "\0" + ctx
+    # The hash COVERS the sibling artifacts because both change judge behavior:
+    # editing facts or frozen steps stales calibration records, is_stale, and
+    # cache keys exactly like a rubric edit. Deterministic concatenation order:
+    #   text  [+ "\0" + facts]  [+ "\0steps\0" + raw steps-file text]
+    # (facts keeps the pre-steps separator so facts-only rubrics hash exactly
+    # as before; a rubric with neither file hashes as plain sha256(text), so
+    # packs without these artifacts are unaffected).
+    hashed = text
+    if ctx is not None:
+        hashed += "\0" + ctx
+    steps_path = Path(pack.root) / "rubrics" / f"{rubric_id}.steps.json"
+    if steps_path.exists():
+        hashed += "\0steps\0" + steps_path.read_text()
     return text, _hash_text(hashed)
 
 
@@ -75,10 +117,27 @@ async def grading_steps(rubric_text: str, rubric_hash: str, judge_model: str,
             return json.loads(cache_file.read_text())
     model = get_model(judge_model)
     out = await model.generate(_STEPS_PROMPT.format(rubric=rubric_text))
+    raw = out.completion.strip()
+    fenced = _FENCE_RE.match(raw)  # a ```json fenced reply is ordinary, unwrap it
+    if fenced:
+        raw = fenced.group(1).strip()
+    # FAIL LOUD on unparseable output (2026-07-31, calibration run #3 root
+    # cause): the old silent fallback [rubric_text[:500]] was cached and judged
+    # with — a truncated rubric with no band definitions. Refusing beats
+    # judging with a corrupt instrument; nothing is ever cached on failure.
     try:
-        steps = [str(s) for s in json.loads(out.completion.strip())]
-    except Exception:
-        steps = [rubric_text.strip()[:500]]  # fallback: score against raw rubric
+        parsed = json.loads(raw)
+        if (not isinstance(parsed, list) or not parsed
+                or not all(isinstance(s, str) and s.strip() for s in parsed)):
+            raise ValueError("not a non-empty JSON array of non-empty strings")
+        steps = list(parsed)
+    except Exception as e:
+        raise RuntimeError(
+            f"judge model {judge_model!r} returned unparseable grading steps "
+            f"for rubric {rubric_hash[:16]} ({e}); output started: "
+            f"{out.completion.strip()[:200]!r}. Refusing to judge with a "
+            f"degraded rubric — re-run, or commit human-reviewed steps as "
+            f"rubrics/<rubric_id>.steps.json in the pack.") from e
     if cache_file is not None:
         # atomic write (temp file + os.replace): concurrent first-time samples
         # must never observe a partially written cache entry

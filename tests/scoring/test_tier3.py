@@ -279,6 +279,52 @@ async def test_score_transcript_without_context_prompt_is_unchanged(monkeypatch)
     assert "Reference fact sheet" not in judge.prompts[0]
 
 
+# --- frozen steps: committed `<rid>.steps.json` bypasses generation --------
+# (2026-07-31 run #3 remediation)
+
+
+async def test_score_transcript_prefers_provided_steps(monkeypatch):
+    # a caller-supplied steps list (from a committed steps file) is used
+    # verbatim — the generation path must not run at all
+    from evalyn.scoring import tier3 as t3
+    judge = _FakeJudge([_sample({"Tone": 4})] * 3)
+    monkeypatch.setattr(t3, "get_model", lambda m: judge)
+
+    async def boom(*a, **kw):
+        raise AssertionError("grading_steps must not be called with frozen steps")
+
+    monkeypatch.setattr(t3, "grading_steps", boom)
+    res = await score_transcript(TONE, _hash_text(TONE),
+                                 "User: hi\nAssistant: hello", "mockllm/model",
+                                 steps=["frozen step"])
+    assert res.medians == {"Tone": 4} and res.steps == ["frozen step"]
+    assert "- frozen step" in judge.prompts[0]
+
+
+async def test_tier3_scorer_uses_committed_steps_file_without_generation(
+        monkeypatch, tmp_path):
+    # end-to-end wiring: a pack-committed rubrics/<rid>.steps.json IS the
+    # grading steps — no generation call, and the frozen steps land in the
+    # judge prompt and the score metadata
+    from evalyn.scoring import tier3 as t3
+    pack = _pack(tmp_path)
+    (tmp_path / "rubrics" / "tone.steps.json").write_text(
+        '["Frozen: check calm tone"]')
+    judge = _FakeJudge([_sample({"Tone": 4})] * 3)
+    monkeypatch.setattr(t3, "get_model", lambda m: judge)
+
+    async def boom(*a, **kw):
+        raise AssertionError("grading_steps must not be called: steps file exists")
+
+    monkeypatch.setattr(t3, "grading_steps", boom)
+    score = tier3_scorer(pack, "mockllm/model")
+    checks = [{"type": "rubric", "rubric": "tone", "required": True}]
+    result = await score(_state("hello", checks), Target(""))
+    assert result.value == CORRECT
+    assert result.metadata["rubrics"]["tone"]["steps"] == ["Frozen: check calm tone"]
+    assert "- Frozen: check calm tone" in judge.prompts[0]
+
+
 # --- tier3 scorer ---------------------------------------------------------
 
 

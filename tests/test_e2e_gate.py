@@ -193,7 +193,15 @@ def test_cli_gate_allow_uncalibrated_is_loud_and_marks_artifact(
         toy_target, tmp_path, rubric_pack):
     """--allow-uncalibrated: same stale pack runs, but LOUDLY — warning on
     stderr, artifact marked untrusted, and the mockllm rubric judge cannot
-    silently pass the rubric check (it comes back unsure, fail-closed)."""
+    silently pass the rubric check (it comes back unsure, fail-closed).
+
+    RETIRED SEAM (2026-07-31): this test used to reach the judge via the
+    silent steps-generation fallback (mockllm's default reply is unparseable
+    as steps JSON). Generation now fails loudly, so the pack commits frozen
+    rubrics/quality.steps.json — the reviewed-artifact path — and the judge's
+    unparseable SCORE replies still yield the fail-closed unsure verdict."""
+    (rubric_pack / "rubrics" / "quality.steps.json").write_text(
+        '["Check every claim against the owner history"]')
     env = {**os.environ, "EVALYN_TARGET_URL": toy_target}
     proc = subprocess.run(
         [EVALYN_BIN, "gate", "--target", str(rubric_pack), "--allow-uncalibrated",

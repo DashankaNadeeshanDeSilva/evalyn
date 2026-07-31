@@ -197,7 +197,10 @@ def calibrate(
     try:
         result = asyncio.run(
             cal.run_calibration(pack, model, cache_dir=Path(target) / ".cache"))
-    except FileNotFoundError as e:  # anchor references a missing rubric file
+    except (FileNotFoundError, RuntimeError, ValueError) as e:
+        # missing rubric file; unparseable steps generation (fail-loud,
+        # 2026-07-31); or a malformed committed rubrics/<rid>.steps.json
+        # (calibrate runs no validate_pack, so the loader's error surfaces here)
         if debug:
             raise
         typer.echo(f"calibrate: setup error: {e}", err=True)

@@ -70,7 +70,7 @@ def _stub_scores(monkeypatch, by_anchor_transcript: dict[str, RubricScore]):
     calls = []
 
     async def fake(rubric_text, rubric_hash, transcript, judge_model, k=3,
-                   cache_dir=None, context=None):
+                   cache_dir=None, context=None, steps=None):
         calls.append(transcript.strip())
         return by_anchor_transcript[transcript.strip()]
 
@@ -89,6 +89,46 @@ def _stub_steps(monkeypatch):
 
     monkeypatch.setattr(cal, "grading_steps", fake)
     return calls
+
+
+# ----------------------------------------------- frozen steps (2026-07-31)
+
+
+async def test_run_calibration_uses_frozen_steps_without_generation(
+        monkeypatch, tmp_path):
+    # a committed rubrics/<rid>.steps.json disables the pre-warm generation
+    # call for that rubric and is handed to score_transcript verbatim
+    pack = _pack(tmp_path)
+    (tmp_path / "rubrics" / "persona.steps.json").write_text(
+        '["frozen persona step"]')
+    _anchor_yaml(tmp_path, "a1", transcript="T1",
+                 scores={"voice": 4, "warmth": 4})
+    steps_calls = _stub_steps(monkeypatch)
+    from evalyn.engine import calibrate as cal
+    seen_steps = []
+
+    async def fake(rubric_text, rubric_hash, transcript, judge_model, k=3,
+                   cache_dir=None, context=None, steps=None):
+        seen_steps.append(steps)
+        return _rubric_score({"voice": 4, "warmth": 4})
+
+    monkeypatch.setattr(cal, "score_transcript", fake)
+    result = await run_calibration(pack, "mockllm/model", cache_dir=None)
+    assert steps_calls["n"] == 0                    # no generation pre-warm
+    assert seen_steps == [["frozen persona step"]]  # frozen steps passed through
+    assert result.overall == 1.0
+
+
+async def test_run_calibration_still_generates_steps_without_frozen_file(
+        monkeypatch, tmp_path):
+    # no steps file -> the pre-warm generation path runs exactly as before
+    pack = _pack(tmp_path)
+    _anchor_yaml(tmp_path, "a1", transcript="T1",
+                 scores={"voice": 4, "warmth": 4})
+    steps_calls = _stub_steps(monkeypatch)
+    _stub_scores(monkeypatch, {"T1": _rubric_score({"voice": 4, "warmth": 4})})
+    await run_calibration(pack, "mockllm/model", cache_dir=None)
+    assert steps_calls["n"] == 1
 
 
 # ------------------------------------------------------------- load_anchors
@@ -254,7 +294,7 @@ def _stub_scores_tracking_in_flight(monkeypatch):
     state = {"in_flight": 0, "max_in_flight": 0}
 
     async def fake(rubric_text, rubric_hash, transcript, judge_model, k=3,
-                   cache_dir=None, context=None):
+                   cache_dir=None, context=None, steps=None):
         state["in_flight"] += 1
         state["max_in_flight"] = max(state["max_in_flight"], state["in_flight"])
         # Yield twice so every unbounded sibling coroutine would enter before
@@ -314,7 +354,7 @@ async def test_run_calibration_threads_facts_context_to_judge(monkeypatch, tmp_p
     seen: dict[str, str | None] = {}
 
     async def fake(rubric_text, rubric_hash, transcript, judge_model, k=3,
-                   cache_dir=None, context=None):
+                   cache_dir=None, context=None, steps=None):
         seen[transcript.strip()] = context
         return _rubric_score({"voice": 4, "warmth": 4} if "voice" in rubric_text
                              else {"Tone": 4})

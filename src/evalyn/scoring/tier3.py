@@ -23,6 +23,7 @@ from evalyn.scoring.rubrics import (
     grading_steps,
     load_rubric,
     load_rubric_context,
+    load_rubric_steps,
     parse_criteria,
 )
 from evalyn.scoring.transcript import assistant_turns, labeled_transcript
@@ -150,16 +151,20 @@ class RubricScore:
 async def score_transcript(rubric_text: str, rubric_hash: str, transcript: str,
                            judge_model: str, k: int = 3,
                            cache_dir: Path | None = None,
-                           context: str | None = None) -> RubricScore:
+                           context: str | None = None,
+                           steps: list[str] | None = None) -> RubricScore:
     """G-Eval phase 2: k self-consistency judge draws, per-criterion medians.
 
     Unsure (never averaged away) when any sample is unparseable or any
     criterion's spread across the k draws is >= 2. ``context`` (a rubric's
     fact sheet, see load_rubric_context) is injected into the scoring prompt
     as a labeled reference block; None leaves the prompt byte-identical.
+    ``steps`` (a rubric's frozen grading steps, see load_rubric_steps) is used
+    verbatim when given — generation and the steps cache are bypassed.
     """
     criteria = parse_criteria(rubric_text)
-    steps = await grading_steps(rubric_text, rubric_hash, judge_model, cache_dir)
+    if steps is None:
+        steps = await grading_steps(rubric_text, rubric_hash, judge_model, cache_dir)
     model = get_model(judge_model)
     context_block = ""
     if context:
@@ -217,7 +222,8 @@ def tier3_scorer(pack, judge_model: str, k: int = 3,
             rubric_text, rhash = load_rubric(pack, rid)
             res = await score_transcript(rubric_text, rhash, transcript,
                                          judge_model, k=k, cache_dir=cache_dir,
-                                         context=load_rubric_context(pack, rid))
+                                         context=load_rubric_context(pack, rid),
+                                         steps=load_rubric_steps(pack, rid))
             rubric_meta[rid] = {"hash": rhash, "steps": res.steps}
             if res.unsure:
                 results.append(check_result(label, 3, required, weight, None, 0.0,
