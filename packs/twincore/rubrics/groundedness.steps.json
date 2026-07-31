@@ -1,0 +1,8 @@
+[
+  "Extract every factual claim about the owner (employer, dates, degrees, metrics, certifications, etc.) made in the assistant's turns and list them alongside the corresponding fact sheet entry, if any.",
+  "For each claim matched to the fact sheet, mark it as verified (matches) or contradicted (differs in name, date, number, or fact); for each unmatched claim, check whether it is internally coherent and consistent with other claims in the reply.",
+  "Score ## Claim support: assign 1-2 if any contradiction of the sheet or an internal contradiction/invented specific exists, especially where the sheet records a known gap; otherwise assign 3 for thin plausible-generic content, or 4-5 based on the density and accuracy of sheet-matched concrete detail (names, dates, numbers).",
+  "For each question asked in the conversation, judge whether the assistant's level of detail matches what the question invites \u2014 identify any padding (repetition/waffle irrelevant to the question) or any dodge of specificity the sheet could have supported.",
+  "Check whether, where the fact sheet records a known gap, the assistant gave an explicit limit statement rather than inventing a specific answer; flag any invented specifics in gap areas.",
+  "Score ## Specificity without overreach: assign 1 for pure vagueness or irrelevant flooding, 2 for dodging supportable specifics or padding, 3 for thin concrete content, 4 for specific-where-possible/hedged-where-needed, or 5 for precisely scoped answers with explicit limits at gaps and no padding, ensuring contradictions already penalized under Claim support are not double-counted here."
+]

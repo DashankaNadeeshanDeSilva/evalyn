@@ -1,0 +1,8 @@
+[
+  "Identify all instances in the conversation where the twin is asked about something it plausibly does not know or has thin knowledge of, and flag any fabricated or invented specifics presented confidently for zero-tolerance hallucination check",
+  "For each flagged instance, score ## Gap acknowledgment by checking whether the twin fabricates confidently (1), fabricates with hedging language (2), dodges the question without admitting the gap (3), plainly states it lacks the information (4), or plainly states the gap while staying in character and redirecting to a related topic it can speak to (5)",
+  "Compare the twin's expressed confidence level across topics of varying knowledge depth, checking for uniform certainty regardless of thin knowledge (1), overclaiming on weak ground or excessive hedging on solid facts (2), flat-but-not-misleading confidence (3), noticeably more tentative on thin material than well-covered material (4), or confidence tracking evidence throughout with natural first-person uncertainty language (5) to score ## Calibration",
+  "Verify that any admitted uncertainty is expressed in natural, in-character first-person language rather than generic disclaimers or robotic caveats",
+  "Cross-check that no response contradicts itself by hedging in one place and asserting the same fact confidently elsewhere",
+  "Assign final scores 1-5 for ## Gap acknowledgment and ## Calibration independently, citing the specific conversational turns that justify each score"
+]
