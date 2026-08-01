@@ -1,3 +1,5 @@
+from collections import Counter
+
 import pytest
 
 from evalyn.engine.validate import validate_pack
@@ -28,27 +30,41 @@ def test_twincore_slug_is_substituted_into_session_paths(monkeypatch):
     assert sessions["message"].path == "/api/twin/acme-twin/chat"
 
 
-def test_twincore_committed_calibration_record_is_stale_per_rubric(monkeypatch):
-    """PR #4 fix #4 (user-ruled, KNOWN CONSEQUENCE): the committed record's
-    groundedness criteria sit at 0.6/0.6 — below the 85% per-rubric bar — so
-    despite the 0.875 overall the record is STALE and the gate must refuse
-    twincore rubric checks until groundedness is re-anchored.
-
-    Plan #2b Task 2 then rewrote groundedness.md and added the hash-coupled
-    groundedness.facts.md, so is_stale's earlier hash-change branch now fires
-    first ("changed since calibration"); the original 60% weakness is still
-    pinned directly on the record below. Task 3 recalibrates."""
-    from evalyn.engine.calibrate import is_stale, load_record, per_rubric_agreement
+def test_twincore_committed_calibration_record_is_fresh_per_rubric(monkeypatch):
+    """Plan #2b Task 3 recalibration (run #5, PASS at 93% overall): sanctioned
+    retirement of the deliberately temporary stale-record pin from PR #4 fix #4
+    (which pinned groundedness at 60% and the gate refusing). The committed
+    record is now FRESH against the current pack: every rubric's pooled
+    agreement clears the 85% bar and the anchor set carries 11 human-labelled
+    anchors per rubric."""
+    from evalyn.engine.calibrate import (
+        AGREEMENT_THRESHOLD,
+        is_stale,
+        load_anchors,
+        load_record,
+    )
 
     monkeypatch.setenv("EVALYN_TARGET_URL", "http://localhost:8000")
     pack = load_pack(PACK)
     stale, why = is_stale(pack, "anthropic/claude-sonnet-5")
-    assert stale is True
-    assert "groundedness" in why and "changed" in why
-    # pre-#2b pin, kept: even with an unchanged rubric hash the record's own
-    # groundedness agreement is 60% — below the 85% per-rubric bar
+    assert stale is False
+    assert why == "calibrated"
+
+    # record shape (kept from the old pin): per-criterion detail plus the
+    # pooled per-rubric field and raw pair counts (round-2 N8)
     rec = load_record(pack)
-    assert per_rubric_agreement(rec["per_criterion"])["groundedness"] == 0.6
+    rubrics = {"completeness", "groundedness", "honesty", "persona"}
+    assert set(rec["per_rubric_agreement"]) == rubrics
+    for rid in rubrics:
+        assert rec["per_rubric_agreement"][rid] >= AGREEMENT_THRESHOLD, rid
+    # every criterion's agreement denominator covers all 11 anchor pairs —
+    # no silent voiding (the run #3/#4 failure mode)
+    assert rec["per_criterion"]
+    assert all(total == 11 for _, total in rec["per_criterion_counts"].values())
+
+    # the anchor set itself provides >= 10 usable anchors per rubric (11 each)
+    by_rubric = Counter(a.rubric for a in load_anchors(pack) if a.scores)
+    assert by_rubric == {rid: 11 for rid in rubrics}
 
 
 # --- round-2 N9: deterministic prompt-leak tripwire on the multi-turn probe --

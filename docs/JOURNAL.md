@@ -507,6 +507,10 @@ in a fresh session — kickoff prompt in
 - [ ] Calibration observed k=3 judge sampling noise of ±1 agreement band on untouched rubrics
       (completeness 100→80→100 across runs) — passed at 88% with margin, but consider k or
       per-criterion sample count if future packs land near the threshold. *(minor, final review)*
+      **→ MITIGATED (Plan #2b Task 3):** frozen human-reviewed grading steps (hash-coupled
+      pack artifacts, never regenerated per-run) remove the steps-regeneration noise source,
+      and per-criterion unsure accounting stops a single torn criterion voiding a whole
+      anchor; residual k=3 sampling noise on the judge draws themselves remains — keep open.
 - [ ] Guardian `BOUNDARY` classification is a live-run flakiness source: if Guardian classifies
       an attack as BOUNDARY and the twin owner authored custom redirect text, the reply matches
       none of the three redirect constants and the required `contains` fails on a *safe* block.
@@ -719,5 +723,54 @@ consumed ≈150 of the monthly 500 (user confirmed ≥300 remained pre-run; 1 co
 check-level spread≥2 judge disagreement on dexter/groundedness, but the trial retained
 classifier signal — consistent); baseline **not** blessed (correct; first blessed
 baseline comes after #2b recalibration).
+
+## Plan #2b — compare + CI (`feat/plan2b-compare-ci`, cut from `dev`) *(in progress)*
+
+Plan doc: [`superpowers/plans/2026-07-28-evalyn-plan2b-compare-ci.md`](./superpowers/plans/2026-07-28-evalyn-plan2b-compare-ci.md)
+
+### Task status
+
+| Task | What | Commits | Status |
+|------|------|---------|--------|
+| 1 | `judge_usd` metering fix — metered from the returned eval log (`log.stats.model_usage`) per-eval; ContextVar seam retired (the 2026-07-28 shakedown's 100%-under-report bug) | `ce44001` | ✅ done |
+| 2 | KB fact-sheet groundedness fix — convention `rubrics/<rid>.facts.md` sibling, hash-coupled via `load_rubric` (staleness/steps-cache free); `load_rubric_context` injects it into the scoring prompt; TwinCore `groundedness.facts.md` + rubric rewritten for the judge-can-see-facts world | `7cbab02` | ✅ done |
+| 3 | Anchor growth (24 new hand-scored anchors → 11/rubric) + recalibration — **PASS on run #5** (user-gated live spend; detail below) | `44e647e` `5a6abf2` `3344dad` `f646ecb` `756aa5a` `06f086f` + fresh `calibration.json` (this commit) | ✅ done |
+
+### Task 3 — five calibrate runs to a trusted record (2026-07-30/31)
+
+1. **Run #1 FAIL** (groundedness 18%, overall 73%): regenerated grading steps had RENAMED
+   rubric criteria; tier3 `_parse` did exact-key lookup → unparseable draws → fail-closed
+   UNSURE collapse (register entry above).
+2. **Run #2 FAIL** (82%/82% knife-edge): real ±1 disagreements at the bar, no parser fault.
+3. **Run #3 FAIL/void**: a silent fallback had cached degenerate steps
+   (`[rubric_text[:500]]`) — run judged under garbage steps, results discarded.
+4. **Run #4 FAIL**: whole-anchor unsure voiding hid per-criterion signal + genuinely
+   contested core anchors.
+5. **Run #5 PASS — 93% overall; per-rubric pooled 91/95/95/91** (completeness/groundedness/
+   honesty/persona), 11 anchors per rubric, every criterion's denominator the full 11 pairs.
+   Fresh `packs/twincore/calibration.json` written; log
+   `.superpowers/sdd/2026-07-28-evalyn-plan2b-compare-ci/calibrate-run5.log`.
+
+**Structural fixes the failures forced:** tolerant fail-closed judge-key parsing in `_parse`
+(normalize + unique prefix/superset; ambiguous still uncounted); per-anchor calibrate
+reporting (judge-vs-human + unsure reasons); **frozen human-reviewed grading steps as
+hash-coupled pack artifacts** (`rubrics/<id>.steps.json`) with fail-loud, never-cached
+generation (the run #1/#3 class is now impossible — steps are reviewed, committed, and
+staleness-coupled); per-criterion unsure accounting (a torn criterion no longer voids the
+whole anchor).
+
+**User decisions:** education ruling (anchor corpus governs: MSc CS, TU Delft 2015–2017);
+rubric remedies (Coverage whole-exchange + Specificity shape-not-truth band text); two
+anchor re-scores after remedy review; kept-disagreements — genuinely contested anchors left
+disagreeing rather than label-shopped to pass.
+
+**Judge spend:** ~$4–6 total across the 5 runs (up to 44 anchors × k=3 ≈ 132 judge calls at
+full size; earlier runs smaller) + 1 steps generation. Estimate, not a measured total; runs metered under the Task 1 fix.
+
+**Wrap verification (2026-07-31):** the deliberately-temporary stale-record pin
+(`test_twincore_committed_calibration_record_is_stale_per_rubric`) retired and rewritten as
+`..._is_fresh_per_rubric`; 397 passed / 0 failed; ruff clean; `validate-pack` exit 0;
+`gate --dry-run` (incl. `--judge-model anthropic/claude-sonnet-5`) exit 0 with **no
+stale-calibration refusal**; `is_stale` → `(False, 'calibrated')`.
 
 ## Plan #3 — `discover` + flywheel *(not started)*

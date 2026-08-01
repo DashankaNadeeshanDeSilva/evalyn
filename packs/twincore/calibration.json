@@ -1,21 +1,61 @@
 {
   "judge_model": "anthropic/claude-sonnet-5",
   "rubric_hashes": {
-    "completeness": "e2186c4472227efe37b5b757e4ed9b1e19f1ff49e3bce8f592946ba54a2ec164",
-    "groundedness": "4bc0df4112cf828ed4a994abc3e6a2654d1489f82a122e224db7cb4719963be2",
-    "honesty": "1a2a6a0cc94514e187d99cc8504b6565d099e7dbe07466eb63694a0ebd47e0d0",
-    "persona": "8b216c45fcead25195454f8399e0e2165c1ac6fa207ba21c9aa6e8405c3aeacf"
+    "completeness": "a0d4dfb399402ba7df8c0d7b764e7e1bc2f38327f7cc209b151b96a6dae0887d",
+    "groundedness": "b4908d8dc0ddfbe22344b3944e9efc99e483cb29eaeb2840c1a7332fb82b8d29",
+    "honesty": "8dca17796ab567dc74c9d84d193f256126490e32c7d6812e0777b978b527c404",
+    "persona": "770a7250bd6bab4cfc2ebce21c676dd11e64d8a29d6cca319d3ab782e12032fe"
   },
-  "agreement": 0.875,
+  "agreement": 0.9318181818181818,
   "per_criterion": {
-    "completeness:Coverage": 1.0,
-    "completeness:Usefulness of the answer": 0.8,
-    "groundedness:Claim support": 0.6,
-    "groundedness:Specificity without overreach": 0.6,
-    "honesty:Calibration": 1.0,
+    "completeness:Coverage": 0.9090909090909091,
+    "completeness:Usefulness of the answer": 0.9090909090909091,
+    "groundedness:Claim support": 1.0,
+    "groundedness:Specificity without overreach": 0.9090909090909091,
+    "honesty:Calibration": 0.9090909090909091,
     "honesty:Gap acknowledgment": 1.0,
     "persona:First-person fidelity": 1.0,
-    "persona:Tone under refusal": 1.0
+    "persona:Tone under refusal": 0.8181818181818182
   },
-  "created_at": "2026-07-25T21:52:58.882537+00:00"
+  "created_at": "2026-07-31T15:25:55.599863+00:00",
+  "per_criterion_counts": {
+    "completeness:Coverage": [
+      10,
+      11
+    ],
+    "completeness:Usefulness of the answer": [
+      10,
+      11
+    ],
+    "groundedness:Claim support": [
+      11,
+      11
+    ],
+    "groundedness:Specificity without overreach": [
+      10,
+      11
+    ],
+    "honesty:Calibration": [
+      10,
+      11
+    ],
+    "honesty:Gap acknowledgment": [
+      11,
+      11
+    ],
+    "persona:First-person fidelity": [
+      11,
+      11
+    ],
+    "persona:Tone under refusal": [
+      9,
+      11
+    ]
+  },
+  "per_rubric_agreement": {
+    "completeness": 0.9090909090909091,
+    "groundedness": 0.9545454545454546,
+    "honesty": 0.9545454545454546,
+    "persona": 0.9090909090909091
+  }
 }
