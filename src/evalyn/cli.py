@@ -165,6 +165,136 @@ def gate(
 
 
 @app.command()
+def compare(
+    target: str = typer.Option(..., "--target", help="Path to a target pack directory."),
+    a: str = typer.Option(..., "--a", help="Path to gate run artifact A."),
+    b: str = typer.Option(..., "--b", help="Path to gate run artifact B."),
+    label_a: str = typer.Option("A", "--label-a", help="Display label for side A."),
+    label_b: str = typer.Option("B", "--label-b", help="Display label for side B."),
+    rubric_judge_model: str = typer.Option(
+        None, "--rubric-judge-model",
+        help="Pairwise rubric judge model (default: the pack's judge.rubric_model)."),
+    allow_uncalibrated: bool = typer.Option(
+        False, "--allow-uncalibrated",
+        help="Judge rubric pairs despite a missing/stale calibration record "
+             "(loud warning; verdicts marked untrusted in the artifact)."),
+    out_dir: str = typer.Option(
+        "runs", "--out-dir", help="Directory the compare artifact is written to."),
+    seed: int = typer.Option(
+        None, "--seed", help="Seed for the judge's order-controlled draw-2 orders."),
+    debug: bool = typer.Option(
+        False, "--debug",
+        help="Re-raise errors with full tracebacks instead of clean exit-2 messages."),
+):
+    """Blind pairwise A/B judging over two gate artifacts (advisory — no
+    target HTTP calls, no combined winner; exit 0 or 2 only)."""
+    import asyncio
+    import json
+
+    from evalyn.engine import compare as cmp_mod
+    from evalyn.engine.budget import BudgetExceeded
+    from evalyn.engine.run import RunArtifact
+    from evalyn.engine.task_builder import _model_family
+    from evalyn.engine.validate import validate_pack
+
+    # Compare never touches the target: no resolve_base_url, no HTTP.
+    try:
+        pack = load_pack(target)
+    except PackError as e:
+        if debug:
+            raise
+        typer.echo(f"compare: setup error: {e}", err=True)
+        raise typer.Exit(2)
+
+    report = validate_pack(pack)
+    for w in report.warnings:
+        typer.echo(f"warning: {w}")
+    for err in report.errors:
+        typer.echo(f"error: {err}", err=True)
+    if not report.ok:
+        typer.echo("compare: setup error: pack failed validation "
+                   "(see errors above; `evalyn validate-pack` reproduces them)", err=True)
+        raise typer.Exit(2)
+
+    # Judge != generator family (spec §2.1): compare never calls build_task,
+    # so its self-preference warning is mirrored here for the resolved judge.
+    rubric_model = rubric_judge_model or pack.spec.judge.rubric_model
+    generator_family = pack.spec.judge.generator_family
+    if generator_family and _model_family(rubric_model) == generator_family.lower():
+        typer.echo(f"warning: rubric judge model {rubric_model!r} is the same "
+                   f"model family as the target's generator "
+                   f"({generator_family!r}) — self-preference bias risk; "
+                   f"prefer a different judge family", err=True)
+
+    # Fail-closed judge calibration, BEFORE artifacts are even loaded
+    # (mirrors gate): pairwise verdicts are refused until `evalyn calibrate`
+    # has blessed the current rubrics + judge model.
+    has_rubric = any(c.type == "rubric" for p in pack.probes for c in p.checks)
+    rubric_untrusted = False
+    if has_rubric:
+        from evalyn.engine.calibrate import is_stale
+
+        stale, why = is_stale(pack, rubric_model)
+        if stale and not allow_uncalibrated:
+            typer.echo(f"compare: setup error: rubric checks require calibration ({why}); "
+                       f"run `evalyn calibrate --target {target}` or pass "
+                       f"--allow-uncalibrated", err=True)
+            raise typer.Exit(2)
+        if stale:
+            typer.echo(f"warning: judging with UNCALIBRATED rubrics ({why}) — "
+                       f"pairwise verdicts are untrusted", err=True)
+            rubric_untrusted = True
+
+    arts = {}
+    for side, path in (("A", a), ("B", b)):
+        try:
+            arts[side] = RunArtifact.from_dict(json.loads(Path(path).read_text()))
+        except (OSError, ValueError) as e:  # missing/corrupt JSON or old schema
+            if debug:
+                raise
+            typer.echo(f"compare: artifact {side} error ({path}): {e}", err=True)
+            raise typer.Exit(2)
+
+    try:
+        art = asyncio.run(cmp_mod.run_compare(
+            pack, arts["A"], arts["B"], rubric_model,
+            cache_dir=Path(target) / ".cache",
+            rubric_scores_untrusted=rubric_untrusted, seed=seed,
+            out_dir=out_dir, label_a=label_a, label_b=label_b,
+            source_a=a, source_b=b))
+    except BudgetExceeded as e:
+        if debug:
+            raise
+        typer.echo(f"compare: budget exceeded: {e} — the compare artifact is "
+                   f"on disk under {out_dir}/ for inspection", err=True)
+        raise typer.Exit(2)
+    except ValueError as e:  # locked preconditions (pack hash, transcripts)
+        if debug:
+            raise
+        typer.echo(f"compare: setup error: {e}", err=True)
+        raise typer.Exit(2)
+    except Exception as e:  # judge connection / infra
+        if debug:
+            raise
+        typer.echo(f"compare: run error: {e}", err=True)
+        raise typer.Exit(2)
+
+    # Guarded write/render: an OSError here (unwritable/full --out-dir) must
+    # stay inside compare's exit-0/2 contract, never escape as exit 1.
+    try:
+        path = cmp_mod.write_compare_artifact(art, out_dir=out_dir)
+        report_md = cmp_mod.render_compare_report(art)
+    except Exception as e:
+        if debug:
+            raise
+        typer.echo(f"compare: run error: {e}", err=True)
+        raise typer.Exit(2)
+    typer.echo(report_md)
+    typer.echo(f"compare: artifact written to {path}")
+    raise typer.Exit(0)
+
+
+@app.command()
 def calibrate(
     target: str = typer.Option(..., "--target", help="Path to a target pack directory."),
     rubric_judge_model: str = typer.Option(

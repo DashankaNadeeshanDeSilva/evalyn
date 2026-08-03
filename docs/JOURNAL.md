@@ -869,4 +869,40 @@ brief-pinned cases, a byte-identical no-context prompt pin, and a `\b[AB]\b` bli
 regex over whole prompts; +2 frozen-steps tests (RED: `TypeError`) for the ruling fix.
 431 passed, ruff clean. Zero spend (fake judge only).
 
+### Task 8 — `compare` engine + CLI + report (2026-08-03) ✅
+
+Compare mode lands: `engine/compare.py` (`CompareArtifact`, `run_compare`,
+`write_compare_artifact`, `render_compare_report`) + the `evalyn compare` CLI command.
+Consumes two gate artifacts (NO target HTTP) and judges rubric-checked probes pairwise
+with Task 7's `judge_pair`. Locked semantics implemented verbatim: preconditions raise
+`ValueError` BEFORE any judge call (`pack_fingerprint` must match both sides, message
+names which; rubric probes need non-empty `trial_records` with transcripts on both sides
+— pre-#2b artifacts refused with "predates transcript capture"); epoch-sorted zip
+pairing with leftover trials excluded and counted (`excluded_pairs`, per-probe
+`excluded_trials`); exactly one tally per (pair × criterion) into the probe's category
+(A-win/B-win/tie/unsure + flips; unsure stays in the `flip_rate` denominator); hard
+metrics ONLY from `trial_records` (exact locked p95 `sorted[max(0, ceil(0.95·n)−1)]`,
+`None` latencies excluded, trials still counted; rubric-less probes contribute metrics
+only); artifact written FIRST then `BudgetExceeded` raised (house write-before-raise);
+`Semaphore(max_concurrency)` bounds judge calls, each getting a child rng derived from
+`Random(seed)` at scheduling time (concurrent interleaving can't perturb draw-2 orders).
+Steps/context threading per the 2026-08-03 ruling: `steps=load_rubric_steps(pack, rid)`
+and `context=load_rubric_context(pack, rid)` pass to `judge_pair` as-is (None →
+judge-side generation via its cache seam). Metering-shape gotcha handled:
+`PairVerdict.usage` dicts wrapped in `SimpleNamespace` before `estimate_cost` (raw dicts
+would silently meter $0.00 — test-pinned nonzero). CLI mirrors gate's fail-closed flow
+minus the target: `validate_pack` → mirrored self-preference warning (`_model_family`;
+compare never calls `build_task`) → `is_stale` exit 2 unless `--allow-uncalibrated`
+(loud UNCALIBRATED warning + `rubric_scores_untrusted` marking) → per-side clean exit-2
+artifact loading ("artifact A/B" named) → advisory exit 0/2 only (no exit-1 path).
+Report: overview + hard-metrics tables per category, totals line, UNTRUSTED banner
+(gate's wording family), closing "no combined winner is computed". TDD: inherited the
+prior session's 31 RED tests unchanged (22 engine, RED: `ModuleNotFoundError`; 9 CLI,
+RED: missing command) and implemented to GREEN. 462 passed, ruff clean. Zero spend
+(scripted `judge_pair` stubs + CliRunner only).
+
+**Registered post-merge user action:** the first REAL A/B compare needs two live gate
+suite runs (~300 target sessions total) — user-gated spend, deliberately NOT part of
+this task; run after merge as two `evalyn gate` runs + one `evalyn compare`.
+
 ## Plan #3 — `discover` + flywheel *(not started)*

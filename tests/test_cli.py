@@ -801,3 +801,242 @@ def test_gate_out_dir_threads_to_run_gate(monkeypatch, tmp_path):
                                  "--out-dir", str(out)])
     assert result.exit_code == 0
     assert seen["out_dir"] == str(out)
+
+
+# ------------------------------------------------------- Task 8: compare command
+
+def _compare_pack(tmp_path: Path, *, generator_family: str | None = None) -> str:
+    """Pack with one rubric-checked probe (compare needs no live target)."""
+    pack_dir = tmp_path / "cmp-pack"
+    (pack_dir / "probes").mkdir(parents=True)
+    (pack_dir / "rubrics").mkdir()
+    target = ("name: cmp\nsessions:\n  open: {method: POST, path: /session}\n"
+              "  message: {method: POST, path: /chat}\n"
+              "env: {base_url: http://localhost:8899}\n"
+              "allowlist: [http://localhost:8899]\n")
+    if generator_family:
+        target += f"judge: {{generator_family: {generator_family}}}\n"
+    (pack_dir / "target.yaml").write_text(target)
+    (pack_dir / "rubrics" / "tone.md").write_text("# Tone\n## Calm\nCalm.\n")
+    (pack_dir / "probes" / "p.yaml").write_text(
+        "- id: p1\n  category: chat\n  turns: [hi]\n  checks:\n"
+        "    - { type: rubric, rubric: tone, required: true }\n")
+    return str(pack_dir)
+
+
+def _compare_artifact_files(pack_dir: str, tmp_path: Path) -> tuple[str, str]:
+    """Two on-disk gate artifacts matching the pack's fingerprint."""
+    from evalyn.engine.run import pack_fingerprint
+    from evalyn.targets.loader import load_pack
+
+    pack = load_pack(pack_dir)
+
+    def _write(name: str, created: str) -> str:
+        art = RunArtifact(
+            pack_name="cmp", pack_hash=pack_fingerprint(pack),
+            judge_model="mockllm/model", created_at=created,
+            probes=[ProbeResult(
+                id="p1", category="chat", kind="regression",
+                safety_critical=False, samples=1, trials=1,
+                trial_records=[{"epoch": 0,
+                                "transcript": "User: hi\nAssistant: hey",
+                                "session_seconds": 1.0,
+                                "invariant_failures": 0}])],
+            log_path="runs/logs")
+        p = tmp_path / name
+        p.write_text(json.dumps(art.to_dict()))
+        return str(p)
+
+    return (_write("run-a.json", "2026-08-01T00:00:00+00:00"),
+            _write("run-b.json", "2026-08-02T00:00:00+00:00"))
+
+
+def _stub_judge_pair(monkeypatch, verdict: str = "A"):
+    """Offline scripted judge_pair — zero judge tokens, no network."""
+    from evalyn.scoring.pairwise import PairVerdict
+
+    async def fake(rubric_text, rubric_hash, transcript_a, transcript_b,
+                   judge_model, *, cache_dir=None, context=None, steps=None, rng):
+        return PairVerdict(
+            verdicts={"Calm": verdict}, flipped={"Calm": False},
+            votes={"Calm": []}, justifications={"Calm": "j"},
+            steps=steps or ["s"], rubric_hash=rubric_hash,
+            usage={"openai/gpt-4o": {"input_tokens": 100, "output_tokens": 100}})
+
+    monkeypatch.setattr("evalyn.engine.compare.judge_pair", fake)
+
+
+def _fresh_calibration(pack_dir: str, model: str | None = None):
+    from evalyn.engine.calibrate import write_record
+    from evalyn.targets.loader import load_pack
+
+    pack = load_pack(pack_dir)
+    write_record(pack, 0.9, {"tone:Calm": 0.9},
+                 model or pack.spec.judge.rubric_model)
+
+
+def test_compare_refuses_stale_calibration_without_flag(monkeypatch, tmp_path):
+    # fail-closed BEFORE artifacts are even loaded (briefed flow order): the
+    # artifact paths here do not exist, yet the message is about calibration
+    pack_dir = _compare_pack(tmp_path)
+
+    async def must_not_run(*a, **k):
+        raise AssertionError("run_compare must not run uncalibrated")
+
+    monkeypatch.setattr("evalyn.engine.compare.run_compare", must_not_run)
+    result = runner.invoke(app, ["compare", "--target", pack_dir,
+                                 "--a", str(tmp_path / "no-a.json"),
+                                 "--b", str(tmp_path / "no-b.json")])
+    assert result.exit_code == 2
+    assert "setup error" in result.stderr
+    assert "calibration" in result.stderr
+    assert "--allow-uncalibrated" in result.stderr
+
+
+def test_compare_allow_uncalibrated_warns_and_marks_artifact(monkeypatch, tmp_path):
+    pack_dir = _compare_pack(tmp_path)
+    a, b = _compare_artifact_files(pack_dir, tmp_path)
+    _stub_judge_pair(monkeypatch)
+    out = tmp_path / "out"
+    result = runner.invoke(app, ["compare", "--target", pack_dir,
+                                 "--a", a, "--b", b, "--allow-uncalibrated",
+                                 "--out-dir", str(out)])
+    assert result.exit_code == 0
+    assert "UNCALIBRATED" in result.stderr  # loud, on stderr
+    written = list(out.glob("*-compare.json"))
+    assert written
+    assert json.loads(written[0].read_text())["rubric_scores_untrusted"] is True
+    assert "UNTRUSTED" in result.stdout  # report banner
+
+
+def test_compare_happy_path_exit_0_prints_overview_table(monkeypatch, tmp_path):
+    pack_dir = _compare_pack(tmp_path)
+    _fresh_calibration(pack_dir)
+    a, b = _compare_artifact_files(pack_dir, tmp_path)
+    _stub_judge_pair(monkeypatch)
+    out = tmp_path / "out"
+    result = runner.invoke(app, ["compare", "--target", pack_dir,
+                                 "--a", a, "--b", b, "--out-dir", str(out)])
+    assert result.exit_code == 0  # advisory: no exit-1 path exists
+    assert "# Evalyn compare — cmp: A vs B" in result.stdout
+    assert "| category | A wins | B wins | ties | unsure | flip rate |" in result.stdout
+    assert "| chat | 1 | 0 | 0 | 0 |" in result.stdout
+    assert "no combined winner is computed" in result.stdout
+    assert "UNCALIBRATED" not in result.stderr
+    written = list(out.glob("*-compare.json"))
+    assert written, "compare must write its artifact"
+    saved = json.loads(written[0].read_text())
+    assert saved["source_a"] == a and saved["source_b"] == b
+    assert saved["rubric_scores_untrusted"] is False
+
+
+def test_compare_labels_thread_into_report_and_artifact(monkeypatch, tmp_path):
+    pack_dir = _compare_pack(tmp_path)
+    _fresh_calibration(pack_dir)
+    a, b = _compare_artifact_files(pack_dir, tmp_path)
+    _stub_judge_pair(monkeypatch)
+    out = tmp_path / "out"
+    result = runner.invoke(app, ["compare", "--target", pack_dir,
+                                 "--a", a, "--b", b,
+                                 "--label-a", "main", "--label-b", "candidate",
+                                 "--out-dir", str(out)])
+    assert result.exit_code == 0
+    assert "cmp: main vs candidate" in result.stdout
+    saved = json.loads(next(iter(out.glob("*-compare.json"))).read_text())
+    assert saved["label_a"] == "main" and saved["label_b"] == "candidate"
+
+
+def test_compare_exit_2_on_corrupt_artifact_json(monkeypatch, tmp_path):
+    pack_dir = _compare_pack(tmp_path)
+    _fresh_calibration(pack_dir)
+    _, b = _compare_artifact_files(pack_dir, tmp_path)
+    corrupt = tmp_path / "corrupt.json"
+    corrupt.write_text("{not json at all")
+    result = runner.invoke(app, ["compare", "--target", pack_dir,
+                                 "--a", str(corrupt), "--b", b])
+    assert result.exit_code == 2
+    assert "artifact A" in result.stderr  # message names the side
+    assert "Traceback" not in result.stderr
+
+
+def test_compare_exit_2_on_old_schema_artifact_names_side_b(monkeypatch, tmp_path):
+    pack_dir = _compare_pack(tmp_path)
+    _fresh_calibration(pack_dir)
+    a, _ = _compare_artifact_files(pack_dir, tmp_path)
+    old = tmp_path / "old.json"
+    old.write_text(json.dumps({
+        "pack_name": "cmp", "pack_hash": "a" * 64, "judge_model": "m",
+        "created_at": "2026-01-01T00:00:00+00:00", "log_path": "runs/logs",
+        "probes": [{"id": "p", "passed": True}],  # Plan #1 shape
+    }))
+    result = runner.invoke(app, ["compare", "--target", pack_dir,
+                                 "--a", a, "--b", str(old)])
+    assert result.exit_code == 2
+    assert "artifact B" in result.stderr
+    assert "predates" in result.stderr
+
+
+def test_compare_warns_on_judge_generator_family_match(monkeypatch, tmp_path):
+    # compare never calls build_task, so it must mirror its self-preference
+    # warning for the resolved rubric judge (spec §2.1)
+    pack_dir = _compare_pack(tmp_path, generator_family="openai")
+    _fresh_calibration(pack_dir, model="openai/gpt-4o")
+    a, b = _compare_artifact_files(pack_dir, tmp_path)
+    _stub_judge_pair(monkeypatch)
+    result = runner.invoke(app, ["compare", "--target", pack_dir,
+                                 "--a", a, "--b", b,
+                                 "--rubric-judge-model", "openai/gpt-4o",
+                                 "--out-dir", str(tmp_path / "out")])
+    assert result.exit_code == 0  # a warning, never an error
+    assert "self-preference" in result.stderr
+
+
+def test_compare_exit_2_on_budget_exceeded(monkeypatch, tmp_path):
+    pack_dir = _compare_pack(tmp_path)
+    _fresh_calibration(pack_dir)
+    a, b = _compare_artifact_files(pack_dir, tmp_path)
+
+    async def over_budget(*args, **kwargs):
+        from evalyn.engine.budget import BudgetExceeded
+        raise BudgetExceeded("judge spend $7.5000 exceeded max_usd_per_run $5.00")
+
+    monkeypatch.setattr("evalyn.engine.compare.run_compare", over_budget)
+    result = runner.invoke(app, ["compare", "--target", pack_dir,
+                                 "--a", a, "--b", b])
+    assert result.exit_code == 2
+    assert "budget" in result.stderr.lower()
+
+
+def test_compare_exit_2_on_artifact_write_failure(monkeypatch, tmp_path):
+    # the post-run_compare write must not escape as an uncaught traceback
+    # (exit 1) — compare's contract is exit 0/2 only
+    pack_dir = _compare_pack(tmp_path)
+    _fresh_calibration(pack_dir)
+    a, b = _compare_artifact_files(pack_dir, tmp_path)
+    _stub_judge_pair(monkeypatch)
+
+    def cannot_write(art, out_dir="runs"):
+        raise OSError("disk full")
+
+    monkeypatch.setattr("evalyn.engine.compare.write_compare_artifact",
+                        cannot_write)
+    result = runner.invoke(app, ["compare", "--target", pack_dir,
+                                 "--a", a, "--b", b,
+                                 "--out-dir", str(tmp_path / "out")])
+    assert result.exit_code == 2
+    assert "run error" in result.stderr
+    assert "Traceback" not in result.stderr
+
+
+def test_compare_debug_reraises(monkeypatch, tmp_path):
+    pack_dir = _compare_pack(tmp_path)
+    _fresh_calibration(pack_dir)
+    a, b = _compare_artifact_files(pack_dir, tmp_path)
+
+    async def boom(*args, **kwargs):
+        raise ConnectionError("judge unreachable")
+
+    monkeypatch.setattr("evalyn.engine.compare.run_compare", boom)
+    result = runner.invoke(app, ["compare", "--target", pack_dir,
+                                 "--a", a, "--b", b, "--debug"])
+    assert isinstance(result.exception, ConnectionError)
