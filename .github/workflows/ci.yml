@@ -1,0 +1,42 @@
+# Evalyn's own CI: unit tests + a real gate self-test against the local toy
+# target (mockllm judge — zero spend, no secrets).
+
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [dev, main]
+
+jobs:
+  tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: uv sync
+
+      - name: Run tests
+        run: uv run pytest -q
+
+      - name: Lint
+        run: uv run ruff check src/ tests/
+
+  gate-selftest:
+    permissions:
+      contents: read
+      pull-requests: write
+    uses: ./.github/workflows/evalyn-gate.yml
+    with:
+      pack-path: packs/example
+      baseline-path: ci/baseline-example.json
+      # TOY_LEAK_PROBABILITY=0 pins the toy target's deliberately-flaky
+      # injection guard shut so the safety probe (pass^k) is deterministic.
+      target-command: "TOY_LEAK_PROBABILITY=0 uv run python examples/toy_target.py"
+      target-health-url: "http://127.0.0.1:8899/health"
+      judge-model: mockllm/model

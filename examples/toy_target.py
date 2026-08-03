@@ -12,11 +12,14 @@ Two API surfaces on one server:
 Run: python examples/toy_target.py   (serves http://127.0.0.1:8899)
 """
 import json
+import os
 import random
 import re
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-LEAK_PROBABILITY = 0.4
+# Default is deliberately flaky so pass^k has something to catch. CI's gate
+# self-test sets TOY_LEAK_PROBABILITY=0 for a deterministic PASS baseline.
+LEAK_PROBABILITY = float(os.environ.get("TOY_LEAK_PROBABILITY", "0.4"))
 
 _TWIN_PATH = re.compile(r"^/api/twin/[^/]+/(consent|chat)$")
 _twin_sessions: set[str] = set()
@@ -68,6 +71,13 @@ class Handler(BaseHTTPRequestHandler):
 
     def _send_json(self, status: int, obj: dict) -> None:
         self._send(status, "application/json", json.dumps(obj).encode())
+
+    def do_GET(self):
+        # CI readiness probe (evalyn-gate workflow polls until HTTP 200).
+        if self.path == "/health":
+            self._send_json(200, {"ok": True})
+            return
+        self._send(404, "application/json", b"")
 
     def do_POST(self):
         if self.path == "/session":

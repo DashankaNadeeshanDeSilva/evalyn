@@ -1,0 +1,152 @@
+# Reusable Evalyn gate workflow.
+#
+# Target repos call this via `uses:` (see docs/CI_ADOPTION.md). It runs the
+# deterministic probe suite against the product and diffs the result against a
+# committed blessed baseline. Exit-code contract (advisory, enforced as the
+# job's status): 0 = pass, 1 = regression vs baseline, 2 = setup/infra (the
+# eval never fully reached the product).
+
+name: evalyn-gate
+
+on:
+  workflow_call:
+    inputs:
+      pack-path:
+        description: Path to the Evalyn target pack directory.
+        required: true
+        type: string
+      baseline-path:
+        description: Path to the committed blessed baseline JSON.
+        required: true
+        type: string
+      target-command:
+        description: >-
+          Optional shell command that brings the product up; launched in the
+          background before the gate runs.
+        required: false
+        type: string
+        default: ""
+      target-health-url:
+        description: >-
+          Optional URL polled (60s timeout) until it returns HTTP 200.
+        required: false
+        type: string
+        default: ""
+      judge-model:
+        description: Judge model passed to `evalyn gate --judge-model`.
+        required: false
+        type: string
+        default: mockllm/model
+      python-version:
+        description: Python version for astral-sh/setup-uv.
+        required: false
+        type: string
+        default: "3.12"
+    secrets:
+      EVALYN_JUDGE_API_KEY:
+        description: Optional judge API key; exported as ANTHROPIC_API_KEY.
+        required: false
+
+jobs:
+  gate:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v5
+        with:
+          python-version: ${{ inputs.python-version }}
+
+      - name: Install dependencies
+        run: uv sync
+
+      - name: Launch target
+        if: inputs.target-command != ''
+        run: |
+          ${{ inputs.target-command }} > target.log 2>&1 &
+
+      - name: Wait for target
+        if: inputs.target-health-url != ''
+        run: |
+          for _ in $(seq 1 30); do
+            if [ "$(curl -s -o /dev/null -w '%{http_code}' "${{ inputs.target-health-url }}")" = "200" ]; then
+              echo "target is up"
+              exit 0
+            fi
+            sleep 2
+          done
+          echo "target did not return 200 at ${{ inputs.target-health-url }} within 60s" >&2
+          exit 1
+
+      - name: Run evalyn gate
+        id: gate
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.EVALYN_JUDGE_API_KEY }}
+        run: |
+          set +e
+          uv run evalyn gate --target "${{ inputs.pack-path }}" \
+            --judge-model "${{ inputs.judge-model }}" \
+            --baseline "${{ inputs.baseline-path }}" | tee gate-report.md
+          echo "exit_code=${PIPESTATUS[0]}" >> "$GITHUB_OUTPUT"
+
+      - name: Upsert sticky PR comment
+        if: github.event_name == 'pull_request'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const marker = '<!-- evalyn-gate-report -->';
+            let report = '';
+            try {
+              report = fs.readFileSync('gate-report.md', 'utf8');
+            } catch {
+              report = '_gate-report.md was not produced._';
+            }
+            const exitCode = '${{ steps.gate.outputs.exit_code }}';
+            const explainers = {
+              '0': 'PASS',
+              '1': "**REGRESSION** — the product's behavior changed vs the blessed baseline",
+              '2': '**SETUP/INFRA** — the eval never (fully) reached the product: ' +
+                'stale calibration, stale pack-vs-baseline, or target unreachable. ' +
+                'Not a product regression.',
+            };
+            const explainer = explainers[exitCode] ?? `unknown exit code \`${exitCode}\``;
+            const body = `${marker}\n\n${report}\n\n---\n\nEvalyn gate exit code \`${exitCode}\`: ${explainer}`;
+            const { data: comments } = await github.rest.issues.listComments({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+              per_page: 100,
+            });
+            const existing = comments.find((c) => c.body && c.body.includes(marker));
+            if (existing) {
+              await github.rest.issues.updateComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                comment_id: existing.id,
+                body,
+              });
+            } else {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: context.issue.number,
+                body,
+              });
+            }
+
+      - name: Upload gate artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: evalyn-gate-report
+          path: |
+            gate-report.md
+            runs/
+          if-no-files-found: warn
+
+      - name: Enforce gate exit code
+        run: exit "${{ steps.gate.outputs.exit_code }}"

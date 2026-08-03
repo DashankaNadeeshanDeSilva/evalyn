@@ -905,4 +905,37 @@ RED: missing command) and implemented to GREEN. 462 passed, ruff clean. Zero spe
 suite runs (~300 target sessions total) — user-gated spend, deliberately NOT part of
 this task; run after merge as two `evalyn gate` runs + one `evalyn compare`.
 
+### Task 9 — CI: reusable `evalyn-gate` workflow + self-test + committed baseline (2026-08-03) ✅
+
+"Both, lite" CI lands: `.github/workflows/evalyn-gate.yml` (reusable `workflow_call` —
+inputs `pack-path`/`baseline-path` required, `target-command`/`target-health-url`/
+`judge-model`(mockllm)/`python-version`(3.12) optional, secret `EVALYN_JUDGE_API_KEY` →
+`ANTHROPIC_API_KEY`; checkout → setup-uv → `uv sync` → background target launch → health
+poll → gate with `tee gate-report.md` + `PIPESTATUS` capture → marker-upsert sticky PR
+comment (`<!-- evalyn-gate-report -->`, one comment updated forever) with the 0/1/2
+explainer → `gate-report.md`+`runs/` artifact upload → final step exits the gate's code)
+and `.github/workflows/ci.yml` (`tests` job: pytest + ruff; `gate-selftest` job: the
+reusable workflow vs `packs/example` + the toy target, mockllm judge, no secrets).
+Two reconciliations vs the brief: (1) the toy target had NO `do_GET` (501 on any GET),
+so no URL could return 200 — review ruling kept the briefed strict poll-until-200
+contract (early-ready 502/503 warmups must not start the gate) and instead gave the toy
+target a minimal `GET /health` → 200 endpoint (POST surface byte-identical); (2) the brief's
+"round-trip exits 0" was impossible against the deliberately-flaky injection guard
+(safety pass^k gates baseline-independently → self-test red ~78–95% of runs), so
+`toy_target.py` gained a default-preserving env override
+(`TOY_LEAK_PROBABILITY`, default 0.4 unchanged — tests unaffected) and CI pins it to 0
+for a deterministic PASS. Baseline: `ci/baseline-example.json` blessed PASS (the ONE
+deliberate committed-run-artifact exception; `runs/` stays ignored, no .gitignore change
+needed — verified with `git check-ignore`); round-trip re-run exits 0, twice.
+`docs/CI_ADOPTION.md`: uses-reference, `on.pull_request.paths` filter recipe
+(placeholder paths), secret setup, baseline convention + blessing guards
+(`--update-baseline` refusal / `--force-baseline`), staleness told accurately
+(`pack_hash` mismatch = loud warning in gate mode; stale CALIBRATION = exit 2 — the
+brief's "pack_fingerprint → exit 2" is compare-mode's refusal, not gate's),
+discover-never-blocking rule, TwinCore-adoption-is-a-follow-up-in-ITS-repo note.
+Verified: both YAMLs `yaml.safe_load` clean, 464 passed, ruff clean. Zero paid spend
+(local toy target + mockllm only). **Caveat: GitHub Actions can't run locally — the
+real proof (both jobs green + the sticky comment rendering) lands with the #2b PR
+itself; fix any upsert misbehavior on the branch before merge.**
+
 ## Plan #3 — `discover` + flywheel *(not started)*
