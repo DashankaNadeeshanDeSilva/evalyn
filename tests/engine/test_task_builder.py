@@ -68,6 +68,20 @@ def test_judge_family_matching_generator_family_warns(tmp_path):
         build_task(pack, judge_model="mockllm/model")
 
 
+def test_tier2_judge_matching_generator_family_warns(tmp_path):
+    # #2b Task 10: gate parity with the tier-3 rule — the TIER-2 classifier
+    # judge gets the same self-preference-bias warning as the rubric judge.
+    # rubric_model is a DIFFERENT family so the tier-3 sibling stays silent
+    # and this warning fires independently.
+    import pytest
+    from evalyn.targets.schema import JudgeSpec
+
+    pack = _mem_pack(tmp_path, judge=JudgeSpec(
+        rubric_model="anthropic/claude-sonnet-5", generator_family="openai"))
+    with pytest.warns(UserWarning, match="(?i)tier-2"):
+        build_task(pack, judge_model="openai/gpt-4o")
+
+
 def test_rubric_judge_model_override_avoids_family_warning(tmp_path, recwarn):
     from evalyn.targets.schema import JudgeSpec
 

@@ -632,8 +632,11 @@ prompt.py:275,292; README documents the coupling); **N10** required checks need 
 (normalized-containment) evidence — fuzzy 0.6 fallback is non-required-only.
 340 tests, ruff clean, both packs validate.
 
-Re-review out-of-scope minors (registered): N4 refusal doesn't cover INCOMPLETE
-(trials<expected but >0) probes — natural tightening, extend refusal to incomplete;
+Re-review out-of-scope minors (registered): ~~N4 refusal doesn't cover INCOMPLETE
+(trials<expected but >0) probes — natural tightening, extend refusal to incomplete~~
+— **CLOSED in Plan #2b Task 10 (feat/plan2b-compare-ci)**: `--update-baseline` now also
+refuses probes with `0 < trials < expected_trials` as INCOMPLETE (`--force-baseline`
+stays the loud escape hatch, warning names the probes);
 N9 tripwires are byte-exact (em-dash) — a product-side wording tweak silently disarms them
 (judge classifier still guards; README coupling note exists, but failure is silent unlike
 redirect constants); `is_stale` trusts recorded `per_rubric_agreement` without recomputing
@@ -937,5 +940,22 @@ Verified: both YAMLs `yaml.safe_load` clean, 464 passed, ruff clean. Zero paid s
 (local toy target + mockllm only). **Caveat: GitHub Actions can't run locally — the
 real proof (both jobs green + the sticky comment rendering) lands with the #2b PR
 itself; fix any upsert misbehavior on the branch before merge.**
+
+### Task 10 — register sweep: three small guards (2026-08-03) ✅
+
+Three deferred-findings closures, all offline: (1) `--update-baseline` blessing refusal
+extended to **INCOMPLETE** probes (`0 < trials < expected_trials`; the N4 re-review
+minor — struck above) with `--force-baseline` kept as the loud escape hatch, its warning
+naming the probes; (2) `validate-pack` warns when `scope` is declared on a
+classifier/rubric check — silently ignored today, those judges always see the full
+transcript; `scope` on deterministic `contains`/`not_contains` stays warning-free
+(test-pinned); (3) TIER-2 judge-family parity — `build_task` warns (`UserWarning`,
+matching the tier-3 sibling — USER RULING 2026-08-03 overrode the plan's `RuntimeWarning`
+pin for category consistency) when `judge_model` shares the target's `generator_family`
+(mockllm exempt — it's the judge_model DEFAULT, unlike rubric_model), with the tier-3
+rubric warning proven to fire independently. Register note: only the INCOMPLETE item had a standing
+JOURNAL register line; the scope and tier-2-family items were spec-§4 sweep items with
+no JOURNAL entry to strike. TDD: 4 RED tests first (exit-0-vs-2, DID NOT WARN shown),
+then the guards to GREEN. 468 passed, ruff clean, both packs validate. Zero spend.
 
 ## Plan #3 — `discover` + flywheel *(not started)*

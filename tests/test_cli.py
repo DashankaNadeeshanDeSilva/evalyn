@@ -727,6 +727,43 @@ def test_update_baseline_force_blesses_anyway_with_loud_warning(monkeypatch, tmp
     assert saved == art
 
 
+def test_update_baseline_refuses_artifact_with_incomplete_probe(monkeypatch, tmp_path):
+    # #2b Task 10: 0 < trials < expected_trials is INCOMPLETE — same refusal
+    # class as zero-trial probes (natural tightening of the N4 guard)
+    monkeypatch.setenv("EVALYN_TARGET_URL", "http://localhost:8899")
+    partial = _probe("partial-probe")
+    partial.trials = 2
+    partial.expected_trials = 3
+    art = _artifact([_probe("ok-probe"), partial])
+    monkeypatch.setattr("evalyn.engine.run.run_gate", _fake_run_gate(art))
+    baseline_path = tmp_path / "b.json"
+    result = runner.invoke(app, ["gate", "--target", PACK,
+                                 "--baseline", str(baseline_path),
+                                 "--update-baseline"])
+    assert result.exit_code == 2
+    assert "INCOMPLETE" in result.stderr
+    assert "partial-probe" in result.stderr
+    assert not baseline_path.exists()
+
+
+def test_update_baseline_force_blesses_incomplete_anyway_with_loud_warning(
+        monkeypatch, tmp_path):
+    monkeypatch.setenv("EVALYN_TARGET_URL", "http://localhost:8899")
+    partial = _probe("partial-probe")
+    partial.trials = 2
+    partial.expected_trials = 3
+    art = _artifact([partial])
+    monkeypatch.setattr("evalyn.engine.run.run_gate", _fake_run_gate(art))
+    baseline_path = tmp_path / "b.json"
+    result = runner.invoke(app, ["gate", "--target", PACK,
+                                 "--baseline", str(baseline_path),
+                                 "--update-baseline", "--force-baseline"])
+    assert result.exit_code == 0
+    assert "warning" in result.stderr.lower()
+    assert "INCOMPLETE" in result.stderr
+    assert baseline_path.exists()
+
+
 def test_gate_report_banners_untrusted_baseline(monkeypatch, tmp_path):
     # N4c end-to-end: gating against a --force-baseline'd untrusted baseline
     # must banner the BASELINE side in the report

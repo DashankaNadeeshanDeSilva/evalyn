@@ -38,6 +38,14 @@ def validate_pack(pack: Pack) -> ValidationReport:
             errors.append(f"unknown pack invariant: {inv.id!r}")
     for probe in pack.probes:
         for chk in probe.checks:
+            # `scope` is honored only by deterministic Tier-1 checks; the
+            # classifier/rubric judges always see the full transcript, so a
+            # declared scope silently no-ops — warn, never error (#2b Task 10).
+            if chk.type in ("classifier", "rubric") and chk.scope:
+                warnings.append(
+                    f"probe {probe.id!r}: `scope: {chk.scope}` on a {chk.type} "
+                    f"check is silently ignored (these checks always judge the "
+                    f"full transcript)")
             if chk.type == "invariant":
                 if chk.ref is None:
                     errors.append(

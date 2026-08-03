@@ -47,6 +47,17 @@ def build_task(pack: Pack, judge_model: str = "mockllm/model",
             f"the target's generator ({generator_family!r}) — self-preference "
             f"bias risk; prefer a different judge family",
             UserWarning, stacklevel=2)
+    if (generator_family and not judge_model.startswith("mockllm")
+            and _model_family(judge_model) == generator_family.lower()):
+        # Same rule for the TIER-2 classifier judge (gate parity, #2b Task 10).
+        # Only this guard needs the mockllm skip: judge_model DEFAULTS to
+        # "mockllm/model" (offline tests), while rubric_model always resolves
+        # to a real model from the pack spec or an explicit override.
+        warnings.warn(
+            f"tier-2 classifier judge model {judge_model!r} is the same model "
+            f"family as the target's generator ({generator_family!r}) — "
+            f"self-preference bias risk; prefer a different judge family",
+            UserWarning, stacklevel=2)
     return Task(
         dataset=MemoryDataset(samples),
         solver=session_solver(pack),

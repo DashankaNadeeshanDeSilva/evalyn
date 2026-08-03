@@ -123,6 +123,12 @@ def gate(
         if zero_trials:
             problems.append("probe(s) with zero scored trials: "
                             + ", ".join(zero_trials))
+        incomplete = sorted(p.id for p in art.probes
+                            if p.expected_trials
+                            and 0 < p.trials < p.expected_trials)
+        if incomplete:
+            problems.append("probe(s) INCOMPLETE (fewer scored trials than "
+                            "expected): " + ", ".join(incomplete))
         if problems and not force_baseline:
             typer.echo("gate: refusing --update-baseline: "
                        + "; ".join(problems)

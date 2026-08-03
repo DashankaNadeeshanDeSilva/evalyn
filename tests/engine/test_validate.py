@@ -303,3 +303,28 @@ def test_attack_only_category_warns_but_does_not_fail(minimal_pack):
     report = validate_pack(pack)
     assert report.ok
     assert any("injection" in w for w in report.warnings)
+
+
+# --- #2b Task 10: `scope` on judge checks is silently ignored --------------
+
+
+def test_scope_on_classifier_or_rubric_check_warns_ignored(minimal_pack):
+    # classifier/rubric checks always judge the full transcript; a declared
+    # `scope` silently no-ops — warn, never error. `scope` on deterministic
+    # contains/not_contains checks is honored and must stay warning-free.
+    pack_dir = minimal_pack(
+        "- {id: a, category: c, turns: [hi], checks: [{type: classifier, question: 'ok?', scope: final}]}\n"
+        "- id: b\n  category: c\n  turns: [hi]\n"
+        "  checks: [{type: rubric, rubric: persona, scope: any_turn}]\n"
+        "- {id: det, category: c, turns: [hi], checks: [{type: contains, value: hi, scope: any_turn},"
+        " {type: not_contains, value: nope, scope: final}]}\n")
+    (pack_dir / "rubrics").mkdir()
+    (pack_dir / "rubrics" / "persona.md").write_text(
+        "# Persona\n\n## Tone\nStays friendly and on-brand.\n")
+    report = validate_pack(load_pack(pack_dir))
+    assert report.ok, report.errors
+    assert any("'a'" in w and "scope" in w and "classifier" in w
+               for w in report.warnings)
+    assert any("'b'" in w and "scope" in w and "rubric" in w
+               for w in report.warnings)
+    assert not any("'det'" in w for w in report.warnings)
