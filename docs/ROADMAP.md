@@ -31,8 +31,8 @@ each stage lives in its own file next to this one.
 |-------|---------------------|---------------|--------|
 | **Plan #1** | `gate` (fixed regression tests, pass/fail) | [`superpowers/plans/2026-07-22-evalyn-gate-foundation.md`](./superpowers/plans/2026-07-22-evalyn-gate-foundation.md) | ✅ **Built** (v0.1.0) |
 | **Plan #2a** | Trusted gate on the *real* product: TwinCore pack + Tier-3 judge + calibration | [`superpowers/plans/2026-07-24-evalyn-plan2a-real-gate.md`](./superpowers/plans/2026-07-24-evalyn-plan2a-real-gate.md) | ✅ **Built** |
-| **Plan #2b** | `compare` (A/B) + CI automation | *(not yet written)* | ⏳ **Next stage** (scope below) |
-| **Plan #3** | `discover` (problem-hunting agent) + the flywheel | *(not yet written)* | ⏳ Planned (scope below) |
+| **Plan #2b** | `compare` (A/B) + CI automation | [`superpowers/plans/2026-07-28-evalyn-plan2b-compare-ci.md`](./superpowers/plans/2026-07-28-evalyn-plan2b-compare-ci.md) | ✅ **Built** (v0.3.0) |
+| **Plan #3** | `discover` (problem-hunting agent) + the flywheel | *(not yet written)* | ⏳ **Next stage** (scope below) |
 
 ---
 
@@ -62,7 +62,7 @@ automation. Plan #1 targets the **practice product only** to stay self-contained
 
 ---
 
-## Plan #2 — Make the gate real & trustworthy, plus `compare` *(split: #2a ✅ built, #2b ⏳ next)*
+## Plan #2 — Make the gate real & trustworthy, plus `compare` *(split: #2a ✅ built, #2b ✅ built)*
 
 **Theme:** take the gate from "works on the practice product" to "trusted on the *real* product,"
 and add the A/B `compare` job.
@@ -90,17 +90,25 @@ produces trustworthy A/B verdicts; CI catches regressions on PRs automatically.
   [`superpowers/plans/2026-07-24-evalyn-plan2a-real-gate.md`](./superpowers/plans/2026-07-24-evalyn-plan2a-real-gate.md).
   The gate now runs full 3-tier, transcript-aware, calibrated (fail-closed) scoring against the
   real TwinCore pack, with stream adapters, budget metering, and hardened artifacts.
-- **Plan #2b — `compare` + CI** (items 4–5 above): the **next stage**; its plan is not yet written.
-  **Its FIRST task (decided 2026-07-26, PR #4 review):** the KB-fact-sheet groundedness fix +
-  recalibration — inject a condensed twin-KB fact sheet into the groundedness judge's context,
-  hash it into the staleness rule, recalibrate (existing 20 hand-scored anchors reusable).
-  Rationale: PR #4 adopted **per-rubric fail-closed calibration gating**, which correctly marks
-  the current record stale (groundedness 60% agreement — the judge can't verify claims against a
-  KB it can't see). Front-loading this makes `--allow-uncalibrated` a brief interim state, not
-  the resting state; safety verdicts (deterministic Tier-1 gates) are unaffected meanwhile.
-  The recalibration should also grow the anchor set to **≥10 anchors per rubric** (PR #4
-  second-pass recommendation: at 5 anchors, per-criterion agreement moves in 20% steps, so an
-  85% bar is a de-facto 100% bar).
+- **Plan #2b — `compare` + CI** (items 4–5 above): ✅ **built** — see
+  [`superpowers/plans/2026-07-28-evalyn-plan2b-compare-ci.md`](./superpowers/plans/2026-07-28-evalyn-plan2b-compare-ci.md).
+  Shipped: the pairwise judge core (k=3 order-controlled blind draws, flip-means-tie,
+  fail-closed unsure) + `evalyn compare` over two gate artifacts (no new target traffic;
+  pack-fingerprint/transcript/calibration preconditions refuse pre-spend; **advisory exit
+  0/2** — no combined winner); the reusable `evalyn-gate.yml` GitHub Actions workflow with a
+  sticky PR comment, plus Evalyn's own CI self-test against the bundled toy target with a
+  committed baseline (`ci/baseline-example.json`, `docs/CI_ADOPTION.md`); and the front-loaded
+  trust work — KB-fact-sheet groundedness context (`rubrics/<id>.facts.md`, hash-coupled), the
+  anchor set grown to 11 per rubric, and a fresh calibration PASS (93% overall, every rubric
+  ≥85%). Per-eval `judge_usd` metering was fixed from the shakedown's 100%-under-report bug.
+  **Shakedown-driven additions** (forced by five live calibrate runs + the first live gate run,
+  none in the original plan): **frozen human-reviewed grading steps** as hash-coupled pack
+  artifacts (`rubrics/<id>.steps.json`, fail-loud never-cached generation — compare injects the
+  same frozen steps); **per-criterion unsure accounting** (a torn criterion no longer voids a
+  whole anchor); concrete Tier-2 classifier rewordings (spot-checked against the shakedown
+  transcripts); and the **Guardian BOUNDARY ruling** — the planned "fourth redirect constant"
+  does not exist (BOUNDARY redirects are model free-composition), so the pack keeps exactly 3
+  constants behind one YAML anchor and BOUNDARY stays a documented fail-loud flakiness caveat.
 
 ---
 
@@ -159,3 +167,8 @@ The design doc ([`2026-07-21-evalyn-design.md`](./2026-07-21-evalyn-design.md)) 
 - **2026-07-26** — Plan #1 built (v0.1.0). Plan #2 split as anticipated: **#2a** (real TwinCore
   pack + Tier-3 judge + calibration) built per its plan file; **#2b** (`compare` + CI) is the next
   stage, plan still to write.
+- **2026-08-03** — Plan #2b built (v0.3.0): `compare` (blind pairwise, flip-means-tie, advisory
+  exit 0/2) + CI (reusable gate workflow, self-test, committed baseline, adoption docs), plus the
+  shakedown-driven trust additions (frozen grading steps, per-criterion unsure accounting, rubric
+  fact sheets, fresh 93% calibration, BOUNDARY nondeterminism ruling). Plan #3 (`discover`) is
+  the next stage, plan still to write.

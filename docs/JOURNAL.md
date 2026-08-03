@@ -165,8 +165,11 @@ still-open items carry an explicit re-deferral reason.
 - [x] ~~Empty `target.yaml` → `AttributeError`~~ — **CLOSED by #2a Task 12's narrowing**
       (controller-verified 2026-07-26: empty file now raises `PackError` with the
       ValidationError detail).
-- [ ] Missing `probes/` dir → silent empty probe list; undocumented. *(minor; re-deferred to
-      Plan #2b — `validate-pack` warning candidate, no current pack hits it)*
+- [x] ~~Missing `probes/` dir → silent empty probe list; undocumented.~~ — **MOOT (#2b Task 11
+      triage):** `validate-pack` has errored `"pack has no probes"` since Plan #1 `a870e21`
+      (validate.py:23-24) and `gate` auto-runs validate-pack (`ca025e9`), so a missing
+      `probes/` dir cannot pass silently through the CLI. Residual: bare `load_pack` library
+      callers still get an empty list. *(info; no action)*
 - [x] ~~Bare `${VAR}` unset → `""`; set-but-empty semantics~~ — **CLOSED in #2a Task 12**
       (`6a9d8ad`, bash `:-` semantics documented + implemented).
 - [x] ~~Env-var regex uppercase-only~~ — **CLOSED in #2a Task 12** (`6a9d8ad`, lowercase allowed).
@@ -190,8 +193,9 @@ still-open items carry an explicit re-deferral reason.
 - [x] ~~vercel-ai `3:`/`e:` error frames silently dropped~~ — **CLOSED in #2a Task 6**
       (`42e4e57`, surfaced as transport errors).
 - [ ] Final `.strip()` trims genuine leading/trailing reply whitespace — scorer-fidelity
-      question. *(minor; re-deferred to Plan #2b — decide with real-product transcript
-      evidence; no current probe is whitespace-sensitive)*
+      question. *(minor; #2b Task 11 triage: not decided in #2b — re-tagged #4b. Gate
+      artifacts now capture per-trial transcripts (#2b Task 6), so the real-product evidence
+      to decide with exists; no current probe is whitespace-sensitive)*
 - [x] ~~Adapter tests happy-path only~~ — **CLOSED in #2a Task 6** (`42e4e57`, malformed-frame
       / CRLF / multi-frame edge tests landed with the hardening).
 
@@ -213,8 +217,9 @@ still-open items carry an explicit re-deferral reason.
       rewritten scope-aware with `contains`/`not_contains`/`values`/non-required coverage;
       parity re-verified in Task 9).
 - [ ] `first-person` invariant regex narrow (only `he/she + 4 verbs` — misses `they`, other
-      verbs). *(minor; re-deferred to Plan #2b invariant-library growth — TwinCore pack relies
-      on rubric/classifier checks for persona, not this invariant)*
+      verbs). *(minor; #2b Task 11 triage: no invariant-library growth happened in #2b —
+      re-tagged #4b. TwinCore pack relies on rubric/classifier checks for persona, not this
+      invariant)*
 
 **Tier-2 judge (Task 7):**
 - Plan amendments (user-approved, FIXED in `8316ad6`): evidence guard no longer trusts empty
@@ -231,9 +236,11 @@ still-open items carry an explicit re-deferral reason.
 - [x] ~~`ProbeResult.trials` field decision~~ — **SUPERSEDED by #2a Task 3** (`a310844`,
       `ProbeResult` reshaped for the weighted-aggregation contract; old-artifact reads
       fail loud with the Task 12 exit-2 mapping).
-- [ ] Artifact filename has second resolution — same-second runs overwrite (plan-mandated
-      naming); add sub-second/uniquifier later. *(minor; re-deferred to Plan #2b — CLI `gate`
-      is one-run-per-process today, only `compare` makes collisions plausible)*
+- [x] ~~Artifact filename has second resolution — same-second runs overwrite (plan-mandated
+      naming); add sub-second/uniquifier later.~~ — **CLOSED (verified at #2b Task 11
+      triage):** the PR #4 review wave (2026-07-26) fixed gate artifact naming to
+      microsecond stamp + short uuid + slugified pack name (run.py:279-284); #2b Task 8's
+      `write_compare_artifact` reuses the same collision-proof house pattern.
 - [x] ~~Artifact write non-atomic + CWD-relative~~ — **CLOSED in #2a Task 8** (`bab3c14`,
       atomic `mkstemp`+`os.replace`, `out_dir` param) + CLI `--out-dir` in Task 12.
 
@@ -253,7 +260,8 @@ still-open items carry an explicit re-deferral reason.
       guard rework** (verified 2026-07-26: `value`, `values`, `question`, `rubric` all
       `.strip()`-checked uniformly in engine/validate.py).
 - [ ] `KNOWN_INVARIANTS` captured at import time — revisit if invariants become pack-extensible.
-      *(info; re-deferred to Plan #2b+ — invariants are not pack-extensible in #2a)*
+      *(info; #2b Task 11 triage: invariants are still not pack-extensible — re-tagged #4b+,
+      only relevant if/when that changes)*
 
 **CLI (Task 13):**
 - Carry-notes CLOSED at CLI level: pack-hash drift + baseline-only probes surface as `warning:`
@@ -288,7 +296,7 @@ still-open items carry an explicit re-deferral reason.
 
 ---
 
-## Plan #2 — Real product wiring + Tier-3 + `compare` *(not started)*
+## Plan #2 — Real product wiring + Tier-3 + `compare` *(split into #2a + #2b — both delivered)*
 
 ### ⚠️ Design gaps deferred from Plan #1 — MUST be addressed in Plan #2 (user decision 2026-07-23)
 
@@ -511,6 +519,8 @@ in a fresh session — kickoff prompt in
       pack artifacts, never regenerated per-run) remove the steps-regeneration noise source,
       and per-criterion unsure accounting stops a single torn criterion voiding a whole
       anchor; residual k=3 sampling noise on the judge draws themselves remains — keep open.
+      *(#2b Task 11 triage: residual re-tagged #4b — revisit k / per-criterion sample count
+      only if a future pack calibrates near the threshold)*
 - [x] Guardian `BOUNDARY` classification is a live-run flakiness source: if Guardian classifies
       an attack as BOUNDARY and the twin owner authored custom redirect text, the reply matches
       none of the three redirect constants and the required `contains` fails on a *safe* block.
@@ -540,11 +550,16 @@ in a fresh session — kickoff prompt in
       dispatched scope — re-deferred to final review)*
 - [ ] `pii-direct-ask-contact` is the only pack probe with neither a rubric check nor a
       `first-person` invariant, unlike its siblings — confirm deliberate. *(minor)*
-- [ ] `probes/grounding.yaml` `reference:` lines diverge from the anchor corpus + fact sheet
+- [x] ~~`probes/grounding.yaml` `reference:` lines diverge from the anchor corpus + fact sheet
       in two places ("master's in AI … finishing in 2019" at grounding.yaml:13; "small AI
       product team" at :33). **USER RULING 2026-07-28 (Plan #2b Task 2 gate): the anchor
-      corpus governs (MSc CS, TU Delft 2015–2017)** — fix the divergent reference lines.
-      *(minor, #2b Task 10 sweep / final review)*
+      corpus governs (MSc CS, TU Delft 2015–2017)** — fix the divergent reference lines.~~
+      — **CLOSED in Plan #2b Task 11:** both lines rewritten from the fact sheet / anchor
+      corpus verbatim facts (":13 → MSc in Computer Science at TU Delft, finishing in 2017";
+      ":33 → Staff ML Engineer at Kestrel Systems, leads the retrieval quality group").
+      Changes `pack_fingerprint` only (harmless — no TwinCore baseline committed); rubric
+      hashes untouched, calibration verified still fresh (twincore dry-run exit 0, no stale
+      refusal).
 - [ ] Task 9 polish: `not_contains`+`values`-without-`value` emits two errors for one
       mistake; `values` sentinel checks mix `is not None` vs truthy between sections;
       README "Also… Also" phrasing; rubric ids used as file stems unsanitized (path-ish
@@ -565,7 +580,10 @@ in a fresh session — kickoff prompt in
       prompt template (`rubrics.py` `_STEPS_PROMPT`) — a prompt-template edit silently reuses
       stale cached steps (bit us 2026-07-30: the hardened prompt alone would not have retired
       the poisoned groundedness steps file; it had to be deleted by hand). Candidate: fold a
-      prompt-template hash into the cache filename. *(minor, #2b register / #4b)*
+      prompt-template hash into the cache filename. *(minor; #2b Task 11 triage: largely
+      mitigated by frozen pack steps — `rubrics/<id>.steps.json` skip generation entirely
+      (Task 3), so the cache seam only serves packs without frozen steps — residual
+      re-tagged #4b)*
 - [ ] `_SCORE_PROMPT` could also instruct the judge to use exact criterion heading names
       (belt-and-braces with the tolerant parse), but adding the sentence breaks the Task 2
       byte-identity legacy-prompt pin — do it only with a conscious re-pin. Residual today:
@@ -641,8 +659,9 @@ N9 tripwires are byte-exact (em-dash) — a product-side wording tweak silently 
 (judge classifier still guards; README coupling note exists, but failure is silent unlike
 redirect constants); `is_stale` trusts recorded `per_rubric_agreement` without recomputing
 from stored counts (self-attested record, consistent with existing `agreement` field).
-*(minor, Plan #2b)* Reviewer rec adopted into ROADMAP: ≥10 anchors per rubric at the #2b
-recalibration.
+*(minor; #2b Task 11 triage: neither addressed in #2b — both re-tagged #4b)* Reviewer rec
+adopted into ROADMAP: ≥10 anchors per rubric at the #2b recalibration — **delivered in #2b
+Task 3 (11 per rubric)**.
 
 ### PR #4 review wave (2026-07-26) — 13 findings, all fixed + re-review verified
 
@@ -669,9 +688,13 @@ Scoped re-review: all ADDRESSED, no new breakage, suite independently verified.
 
 Re-review out-of-scope minors (registered): calibrate CLI comment says "mirrors is_stale
 exactly" but it checks all *scored* rubrics (superset; only fail-closed divergence);
-`per_rubric_agreement` mean-of-fractions assumes equal per-criterion pair counts
-(documented, guaranteed by `run_calibration`); named-SSE treats each `data:` line as a
-standalone frame vs spec's multi-line accumulation (pre-existing). *(minor, Plan #2b)*
+~~`per_rubric_agreement` mean-of-fractions assumes equal per-criterion pair counts
+(documented, guaranteed by `run_calibration`)~~ — **MOOT (#2b Task 11 triage):** new records
+(incl. the fresh #2b `calibration.json`) store pooled values from raw pair counts
+(`pooled_rubric_agreement`, round-2 N8); mean-of-fractions survives only as the documented
+legacy fallback for pre-counts records; named-SSE treats each `data:` line as a
+standalone frame vs spec's multi-line accumulation (pre-existing). *(minor; #2b Task 11
+triage: calibrate-CLI comment + named-SSE accumulation re-tagged #4b)*
 
 - [ ] Task 13 review minors: `--allow-uncalibrated` e2e pin's falsifiability not demonstrated
       (stale-refusal pin's was; assertions are exact-value non-vacuous — low risk); unused
@@ -731,14 +754,17 @@ consumed ≈150 of the monthly 500 (user confirmed ≥300 remained pre-run; 1 co
   answer judged "not substantive" 3/3); `grounding-not-in-kb-pets` 0.24 (honest gap
   acknowledgment penalized for the KB-grounded hobby pivot). Feeds the standing Tier-2
   reliability question (no calibration harness for classifiers) — data for the #2b
-  revisit of the stay-non-required ruling.
+  revisit of the stay-non-required ruling. **→ REVISITED in #2b Task 4:** both false-lows
+  root-caused as question vagueness, reworded to concrete criteria and spot-checked 3/3
+  true against these transcripts; classifiers remain non-required; the classifier
+  mini-calibration harness stays registered for #4b.
 
 **New-semantics checks:** MISSING 0 / INCOMPLETE 1; `total_unsure_trials` 0 (one
 check-level spread≥2 judge disagreement on dexter/groundedness, but the trial retained
 classifier signal — consistent); baseline **not** blessed (correct; first blessed
 baseline comes after #2b recalibration).
 
-## Plan #2b — compare + CI (`feat/plan2b-compare-ci`, cut from `dev`) *(in progress)*
+## Plan #2b — compare + CI (`feat/plan2b-compare-ci`, cut from `dev`) *(tasks 1–11 complete 2026-08-03; final whole-branch review + PR to `dev` pending)*
 
 Plan doc: [`superpowers/plans/2026-07-28-evalyn-plan2b-compare-ci.md`](./superpowers/plans/2026-07-28-evalyn-plan2b-compare-ci.md)
 
@@ -748,7 +774,15 @@ Plan doc: [`superpowers/plans/2026-07-28-evalyn-plan2b-compare-ci.md`](./superpo
 |------|------|---------|--------|
 | 1 | `judge_usd` metering fix — metered from the returned eval log (`log.stats.model_usage`) per-eval; ContextVar seam retired (the 2026-07-28 shakedown's 100%-under-report bug) | `ce44001` | ✅ done |
 | 2 | KB fact-sheet groundedness fix — convention `rubrics/<rid>.facts.md` sibling, hash-coupled via `load_rubric` (staleness/steps-cache free); `load_rubric_context` injects it into the scoring prompt; TwinCore `groundedness.facts.md` + rubric rewritten for the judge-can-see-facts world | `7cbab02` | ✅ done |
-| 3 | Anchor growth (24 new hand-scored anchors → 11/rubric) + recalibration — **PASS on run #5** (user-gated live spend; detail below) | `44e647e` `5a6abf2` `3344dad` `f646ecb` `756aa5a` `06f086f` + fresh `calibration.json` (this commit) | ✅ done |
+| 3 | Anchor growth (24 new hand-scored anchors → 11/rubric) + recalibration — **PASS on run #5** (user-gated live spend; detail below) | `44e647e` `5a6abf2` `3344dad` `f646ecb` `756aa5a` `06f086f` + fresh `calibration.json` (`39e1600`) | ✅ done |
+| 4 | Tier-2 classifier rewording (the two shakedown false-lows) + committed spot-check harness (`scripts/spotcheck_tier2.py`) — 3/3 true on both transcripts; classifiers stay non-required | `93c9a01` | ✅ done |
+| 5 | Guardian redirect constants behind ONE `&redirect_constants` YAML anchor (3 constants, byte-identical, pin-tested); BOUNDARY ruled inherent fail-loud nondeterminism — no fourth constant (user ruling 2026-08-03) | `3c98dc1` | ✅ done |
+| 6 | Per-trial `trial_records` in gate artifacts: judged transcript + `session_seconds` (clocked inside the concurrency gate) + `invariant_failures`; additive, pre-#2b artifacts load with `[]` | `9c25254` | ✅ done |
+| 7 | Pairwise judge core (`scoring/pairwise.py`): k=3 order-controlled blind draws, flip-means-tie over majority, fail-closed unsure never a win, frozen-steps injectable via `steps=` | `3a91712` | ✅ done |
+| 8 | `compare` engine + CLI + advisory report: consumes two gate artifacts (no target HTTP), preconditions refuse pre-spend, hard metrics from `trial_records`, exit 0/2 only | `f9f7917` | ✅ done |
+| 9 | CI: reusable `evalyn-gate.yml` (`workflow_call`, strict HTTP-200 health poll, sticky PR comment) + `ci.yml` tests + gate self-test vs toy target + blessed `ci/baseline-example.json` + `docs/CI_ADOPTION.md` | `9c6f3e4` | ✅ done |
+| 10 | Register-sweep guards: `--update-baseline` refuses INCOMPLETE probes; validate-pack warns on ignored `scope`; tier-2 judge-family `UserWarning` | `8ccb20d` | ✅ done |
+| 11 | Docs (README compare+CI, ROADMAP #2b built, CONTEXT D8–D11 + status), v0.3.0, ruled `grounding.yaml` reference fix, register sweep + close-out (detail below) | this commit | ✅ done |
 
 ### Task 3 — five calibrate runs to a trusted record (2026-07-30/31)
 
@@ -957,5 +991,45 @@ rubric warning proven to fire independently. Register note: only the INCOMPLETE 
 JOURNAL register line; the scope and tier-2-family items were spec-§4 sweep items with
 no JOURNAL entry to strike. TDD: 4 RED tests first (exit-0-vs-2, DID NOT WARN shown),
 then the guards to GREEN. 468 passed, ruff clean, both packs validate. Zero spend.
+
+### Task 11 — docs, roadmap, v0.3.0, register close-out (2026-08-03) ✅
+
+**Docs to shipped reality:** README gains a `compare` section (two-gate-runs → `evalyn
+compare --target … --a … --b …` workflow, example report tables, inherited-trust story —
+same calibrated judge/frozen steps/fact sheets as gate, flip-means-tie, fail-closed
+unsure, advisory exit 0/2 with no combined winner) and a CI section (reusable
+`evalyn-gate.yml` uses-snippet, sticky PR comment, Evalyn's own self-test dog-fooding,
+pointer to `docs/CI_ADOPTION.md`); the CLI table's fictional `--config-a/--config-b`
+flags corrected to the real ones. ROADMAP: #2b → ✅ built (v0.3.0) with the
+shakedown-driven additions noted (frozen steps, per-criterion unsure accounting, fact
+sheets, BOUNDARY ruling); change-log entry added. CONTEXT: locked decisions **D8–D11**
+recorded (pairwise semantics, compare advisory exit codes, CI shape, frozen-steps
+threading); §9/§10 rewritten to current state (they still said "no source code yet").
+`pyproject.toml` version 0.2.0 → **0.3.0**.
+
+**User-ruled pack fix (deferred from the 2026-07-28 ruling):** the two divergent
+`grounding.yaml` `reference:` lines aligned to the anchor corpus / fact sheet facts
+(register entry closed above). Deliberate consequence: `pack_fingerprint` changes
+(harmless — no TwinCore baseline is committed); rubric hashes and calibration untouched.
+
+**Register sweep (every remaining #2b-tagged item dispositioned inline above):** 2 closed
+(grounding.yaml references — fixed here; artifact-filename second-resolution — already
+fixed by the PR #4 wave's microsecond+uuid naming, verified), 2 MOOT (missing-`probes/`-dir
+silence — validate-pack has errored on it since Plan #1 and gate auto-runs validate-pack;
+`per_rubric_agreement` mean-of-fractions — new records pool from raw counts), 1 delivered
+(≥10 anchors/rubric — 11/rubric in Task 3), 1 revisit recorded (Tier-2 stay-non-required
+ruling reaffirmed via Task 4's reword + spot-check), and the genuinely-future remainder
+re-tagged **#4b** (`.strip()` fidelity, `first-person` regex, `KNOWN_INVARIANTS`
+import-time capture, residual k=3 draw noise, steps-prompt cache-key residual, N9
+byte-exact tripwires, `is_stale` self-attested agreement, calibrate-CLI comment,
+named-SSE accumulation, classifier mini-calibration harness). Items tagged *final review*
+were left for the whole-branch review; no non-#2b items touched.
+
+**Verification (all real output, zero spend):** 468 passed / ruff `All checks passed!`
+(src/ + tests/) / `validate-pack` exit 0 on both packs / `gate --target packs/example
+--dry-run` exit 0 / `evalyn compare --help` renders the full option set /
+calibration-freshness proof after the grounding.yaml edit: `gate --target packs/twincore
+--dry-run --judge-model anthropic/claude-sonnet-5` exit 0 with **no stale-calibration
+refusal** (probe edits move `pack_fingerprint`, not rubric hashes — exactly as designed).
 
 ## Plan #3 — `discover` + flywheel *(not started)*

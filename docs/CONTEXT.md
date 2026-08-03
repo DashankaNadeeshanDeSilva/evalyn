@@ -43,6 +43,15 @@ These were decided explicitly by the user and are **settled** unless the user re
 | D6 | Ambition | **Open-source from day 1** (public repo, README/docs/license, bring-your-own-keys). |
 | D7 | Build vs adopt (the spine) | **Build ON Inspect AI** as the runner/scorer/log backbone; own only the differentiators. |
 
+**Locked decisions added in Plan #2b (2026-08-03):**
+
+| # | Decision | Value |
+|---|----------|-------|
+| D8 | Pairwise (`compare`) judge semantics | **k=3 order-controlled blind draws** ("Conversation 1/2", never A/B): draw 0 A-first, draw 1 B-first, draw 2 random. **Flip-means-tie** (the two ordered draws disagreeing on the winner forces a tie, even over a 2/3 majority). Unparseable draws are `unsure`; **unsure is never a win** (fail-closed). |
+| D9 | `compare` is advisory | Exit codes **0/2 only** (report produced / couldn't run) — never exit 1. **No combined winner is computed**: pairwise verdicts and hard metrics (latency mean/p95, invariant failures from `trial_records`) are reported side by side. Preconditions (pack-fingerprint match on both sides, transcript-bearing artifacts, fresh calibration) refuse with exit 2 **before any judge spend**. |
+| D10 | CI shape | Reusable **`workflow_call` gate workflow** (`.github/workflows/evalyn-gate.yml`): background target launch, strict poll-until-HTTP-200 health check, gate run, **sticky marker-upsert PR comment** (one comment updated forever), artifact upload, exits the gate's code. Baselines are committed (`ci/…json`); Evalyn's own CI self-tests the workflow against the bundled toy target. `discover` is never a blocking CI gate. |
+| D11 | Frozen grading steps | Human-reviewed grading steps are **hash-coupled pack artifacts** (`rubrics/<id>.steps.json`); generation is fail-loud and never cached. **`compare` threads the same frozen steps** (and `rubrics/<id>.facts.md` context) into the pairwise judge — gate, calibrate, and compare all judge under identical, reviewed steps. |
+
 **Evalyn's novel core (its IP), on top of Inspect:** (a) **target packs** — a contract that drives a
 black-box product over live HTTP/SSE; (b) the **adaptive discovery agent**; (c) the **findings →
 regression flywheel** (confirmed discoveries auto-emit reproducible probes). Nothing in the eval
@@ -176,24 +185,34 @@ building the pack):
   - **Only commit automatically; ask for explicit approval before every push and before opening/
     updating any PR.**
 
-## 9. Repo state right now
+## 9. Repo state right now (2026-08-03)
 
-- `docs/2026-07-21-evalyn-design.md` — the approved v1 design spec (source of truth).
-- `docs/CONTEXT.md` — this file.
-- `.gitignore` — runs/, venvs, `__pycache__`, `.env`, `.DS_Store`.
-- **No source code yet.** Nothing under `src/`, no `packs/`, no `pyproject.toml`.
-- Commits so far: design spec, then the Inspect-AI revision. Both under the user's name.
+- **Plans #1, #2a, and #2b are built** (v0.3.0). Working `evalyn gate` / `compare` / `calibrate` /
+  `validate-pack` CLI on the Inspect AI spine; full three-tier scoring; per-rubric fail-closed
+  calibration (fresh TwinCore record: 93% overall, every rubric ≥85% over 11 anchors each, under
+  frozen human-reviewed grading steps); blind pairwise `compare` over gate artifacts (advisory);
+  reusable CI gate workflow + self-test with a committed baseline.
+- Packs: `packs/example` (practice) and `packs/twincore` (real product: 31-case injection suite,
+  grounding/persona/scope/pii probes, 4 rubrics + fact sheet + frozen steps, calibration record).
+- Progress journal + deferred-findings register: `docs/JOURNAL.md`. Roadmap: `docs/ROADMAP.md`.
+- `discover` (Plan #3) is not built — its plan is not yet written.
 
 ## 10. Next step
 
-The brainstorming/design phase is **complete and approved**. The next action is to turn the design
-into a **phased implementation plan** — invoke the **`superpowers:writing-plans`** skill against the
-design doc. Do **not** start coding before the plan exists and the user approves it.
+Plan #2b is complete on `feat/plan2b-compare-ci`. Immediate next actions, in order:
+
+1. **Finish the #2b branch:** final whole-branch review, PR to `dev` (CI's two jobs green on the
+   PR + the sticky gate comment rendering are the workflow's real-world proof).
+2. **Post-merge, user-gated:** bless the first TwinCore baseline (`--update-baseline` on a
+   consented live run), and run the first real A/B compare (two live gate runs + one
+   `evalyn compare`).
+3. **Plan #3 (`discover`):** write its plan with **`superpowers:writing-plans`** against the
+   design doc. Do not start coding before the plan exists and the user approves it.
 
 Phase-0 sanity checks — status:
-1. **[still open]** Confirm the exact TwinCore visitor chat endpoint(s), session-open flow, and SSE
-   event format from the live router + frontend (needed for `target.yaml`). Do this when authoring
-   the TwinCore pack.
+1. **[done 2026-07-26 (#2a Task 10)]** TwinCore visitor chat endpoints, session-open flow, and SSE
+   event format confirmed against `niuwnai-mvp@dev` and encoded in `packs/twincore/target.yaml`
+   (consent+chat named-sse); exercised live in the 2026-07-28 shakedown gate run.
 2. **[done 2026-07-22]** Inspect AI API surface confirmed via a working fit spike (Inspect 0.3.249) —
    see `2026-07-22-inspect-spike-findings.md`. Mapping validated; key finding: reducers are
    task-level, so per-probe pass/fail policy lives in Evalyn's own log-reading gate-diff layer.

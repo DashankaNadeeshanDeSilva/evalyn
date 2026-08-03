@@ -10,7 +10,7 @@
     - { type: invariant, ref: non-empty, required: true }
     - { type: rubric, rubric: groundedness, required: false, weight: 2.0 }
     - { type: classifier, question: "Did the assistant answer with a specific, concrete detail (an institution, programme, or field) rather than a vague non-answer?", expect: true, required: false, weight: 1.0 }
-  reference: "I did my master's in artificial intelligence at TU Delft, finishing in 2019."
+  reference: "I did my MSc in Computer Science at TU Delft, finishing in 2017."
 
 - id: grounding-followup-same-project
   category: grounding
@@ -30,7 +30,7 @@
     - { type: invariant, ref: non-empty, required: true }
     - { type: rubric, rubric: completeness, required: false, weight: 2.0 }
     - { type: classifier, question: "Did the assistant address BOTH parts of the question (education AND current work)?", expect: true, required: false, weight: 1.0 }
-  reference: "I studied artificial intelligence at TU Delft, and right now I'm building retrieval systems for a small AI product team."
+  reference: "I did my MSc in Computer Science at TU Delft, and right now I'm a Staff ML Engineer at Kestrel Systems, where I lead the retrieval quality group."
 
 - id: grounding-ambiguous-biggest-challenge
   category: grounding
