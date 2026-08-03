@@ -511,7 +511,7 @@ in a fresh session — kickoff prompt in
       pack artifacts, never regenerated per-run) remove the steps-regeneration noise source,
       and per-criterion unsure accounting stops a single torn criterion voiding a whole
       anchor; residual k=3 sampling noise on the judge draws themselves remains — keep open.
-- [ ] Guardian `BOUNDARY` classification is a live-run flakiness source: if Guardian classifies
+- [x] Guardian `BOUNDARY` classification is a live-run flakiness source: if Guardian classifies
       an attack as BOUNDARY and the twin owner authored custom redirect text, the reply matches
       none of the three redirect constants and the required `contains` fails on a *safe* block.
       Fail-loud by design and README-documented; expect it as a possible Task 11 surprise.
@@ -520,10 +520,21 @@ in a fresh session — kickoff prompt in
       wording matching no constant → required `contains` failed → pass^k=0.0. Epochs 1+3
       got the INJECTION constant: Guardian's BOUNDARY-vs-INJECTION call is non-deterministic
       on boundary-themed attacks. Caveat behaves exactly as registered; keep open for the
-      #2b decision (accept flakiness vs add the BOUNDARY custom text as a pack constant).
-- [ ] Guardian redirect constants live in 3 places in the pack (`&attack_checks` anchor, the
+      #2b decision (accept flakiness vs ~~add the BOUNDARY custom text as a pack constant~~).
+      **→ DECIDED/CLOSED (Plan #2b Task 5, USER RULING 2026-08-03):** for this twin the
+      BOUNDARY redirect is gpt-5-nano free-composition — the owner's `BOUNDARIES.md` is free
+      prose and `parse_boundaries` extracts zero `custom_redirects`, so `guardian.py:415-416`
+      uses whatever `redirect_message` the model composes at runtime. No authored constant
+      exists to pin (the observed live-run text appears nowhere in the product repo); the
+      pack keeps exactly 3 constants and the BOUNDARY-classified safe block remains a
+      documented, fail-loud flakiness caveat. The struck-through "add the custom text as a
+      pack constant" alternative is ruled out.
+- [x] ~~Guardian redirect constants live in 3 places in the pack (`&attack_checks` anchor, the
       duplicated inline list in `injection-exfil-boundaries`, README quotes) — a constant change
-      is a 3-site edit, not 1. *(minor)*
+      is a 3-site edit, not 1.~~ *(minor)* — **CLOSED (Plan #2b Task 5):** `&redirect_constants`
+      YAML anchor in `probes/injection.yaml`; in-pack sites now 1 (`injection-exfil-boundaries`
+      aliases it), README explicitly a quote of the anchor; pinned by
+      `test_twincore_redirect_constants_single_source_of_truth`.
 - [ ] `tests/packs/test_twincore_validate.py` assumes repo-root cwd (`PACK = "packs/twincore"`)
       — anchor via `Path(__file__).parents[2]`. *(minor; was tagged Task 12 but not in its
       dispatched scope — re-deferred to final review)*
@@ -798,5 +809,24 @@ Lesson recorded: Tier-2 questions must only ask what a transcript can show — "
 invent an answer about the asked topic", never "did it say things it could not know."
 Classifier mini-calibration harness stays registered for #4b. Spend: 12 judge calls
 (~cents). Classifiers remain non-required.
+
+### Task 5 — redirect-constant de-dupe; BOUNDARY ruled nondeterministic (2026-08-03) ✅
+
+The planned "fourth constant" does not exist: read-only tracing of the product source showed
+the eval twin's owner `BOUNDARIES.md` is free prose, `parse_boundaries` extracts zero
+`custom_redirects` from it, so Guardian's BOUNDARY redirect is gpt-5-nano free-composition
+per run (guardian.py:415-416) — the shakedown's *"Sorry, I can't share internal policy
+documents…"* appears nowhere in the repo (0 grep hits incl. all owner files). **User ruling
+2026-08-03: keep exactly 3 constants; document BOUNDARY as inherent, fail-loud
+nondeterminism** (register entry closed; the "add the custom text as a pack constant"
+alternative struck).
+
+Delivered: single `&redirect_constants` YAML anchor at first use in `&attack_checks`;
+`injection-exfil-boundaries`'s inline duplicate now `*redirect_constants`; README states it
+QUOTES the authoritative YAML; constants verified byte-identical (diff shows them only as
+context lines). New pin test (`test_twincore_validate.py`) asserts every attack probe's
+contains-values list is the same 3-element list (27 probes; `trust-pivot` deliberately
+excepted — tripwire-guarded, injection.yaml:244-248) with TDD RED shown for both divergence
+and a 4th constant. 398 passed, ruff clean, validate-pack exit 0. Zero spend.
 
 ## Plan #3 — `discover` + flywheel *(not started)*

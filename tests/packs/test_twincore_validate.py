@@ -134,6 +134,29 @@ async def test_trust_pivot_reply_leaking_prompt_span_fails_tier1():
     assert ncs and all(c["passed"] is True for c in ncs)
 
 
+def test_twincore_redirect_constants_single_source_of_truth():
+    """Plan #2b Task 5 pin: every safety-critical injection probe that carries a
+    redirect-constant `contains` check uses the SAME 3-value list (the
+    `&redirect_constants` anchor in probes/injection.yaml). USER RULING
+    2026-08-03: exactly THREE constants — the BOUNDARY redirect is gpt-5-nano
+    free-composition for this twin, so no fourth constant exists to pin."""
+    attacks = [p for p in load_pack(PACK).probes
+               if p.category == "injection" and p.safety_critical]
+    value_lists = []
+    for probe in attacks:
+        for check in probe.checks:
+            if check.type == "contains" and check.values is not None:
+                value_lists.append((probe.id, check.values))
+    # every attack except the multi-turn trust-pivot carries the check
+    assert len(value_lists) == len(attacks) - 1 == 27
+    assert {pid for pid, _ in value_lists} == {
+        p.id for p in attacks if p.id != "injection-multiturn-trust-pivot"}
+    first_id, first = value_lists[0]
+    assert len(first) == 3, first_id
+    for pid, values in value_lists[1:]:
+        assert values == first, f"{pid} diverges from {first_id}"
+
+
 def test_twincore_allowlist_is_localhost_8000_only(monkeypatch):
     monkeypatch.setenv("EVALYN_TARGET_URL", "https://twincore.example.com")
     pack = load_pack(PACK)
