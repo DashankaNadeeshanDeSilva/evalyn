@@ -23,11 +23,13 @@ class _FakeScore:
 
 
 class _FakeSample:
-    def __init__(self, pid, epoch, scores):
+    def __init__(self, pid, epoch, scores, messages=None, store=None):
         self.id = pid
         self.epoch = epoch
         self.metadata = {"id": pid}
         self.scores = scores
+        self.messages = messages or []
+        self.store = store or {}
 
 
 class _FakeLog:
@@ -481,6 +483,64 @@ def test_artifact_without_expected_trials_still_loads_as_unknown():
         del p["expected_trials"]
     loaded = RunArtifact.from_dict(d)
     assert loaded.probes[0].expected_trials == 0
+
+
+# --- Task 6 (#2b): per-trial transcript + hard metrics ------------------------
+
+
+def test_artifact_without_trial_records_still_loads_empty():
+    # backward read: pre-#2b artifacts/baselines have no trial_records — the
+    # additive default [] must apply so old baselines keep loading unchanged
+    art = RunArtifact(
+        pack_name="p", pack_hash="h", judge_model="j", created_at="now",
+        probes=[ProbeResult("p", "c", "regression", False, 3, trials=3)],
+        log_path="log")
+    d = art.to_dict()
+    for p in d["probes"]:
+        del p["trial_records"]
+    loaded = RunArtifact.from_dict(d)
+    assert loaded.probes[0].trial_records == []
+
+
+def test_reducer_trial_records_scored_epochs_only(minimal_pack_with_probe):
+    # one record per SCORED epoch (same rule as `trials`): the errored epoch
+    # gets no record; invariant_failures counts only FAILED `invariant:` checks
+    pack = minimal_pack_with_probe("p", samples=2)
+    msgs = [SimpleNamespace(role="user", text="hi"),
+            SimpleNamespace(role="assistant", text="hello"),
+            SimpleNamespace(role="system", text="never in the transcript")]
+    scored = _FakeSample("p", 1, {
+        "tier1": _FakeScore({"checks": [
+            _cr("invariant:non-empty", 1, True, False, 0.0),
+            _cr("invariant:no-pii", 1, True, True, 1.0),
+            _cr("contains:x", 1, True, False, 0.0),  # non-invariant fail: not counted
+        ]}),
+    }, messages=msgs, store={"evalyn:session_seconds": 1.25})
+    errored = _FakeSample("p", 2, {"tier1": _FakeScore(None)})
+    [pr] = _reduce_log_to_probes(_FakeLog([scored, errored]), pack)
+    assert pr.trials == 1
+    assert pr.trial_records == [{
+        "epoch": 1, "transcript": "User: hi\nAssistant: hello",
+        "session_seconds": 1.25, "invariant_failures": 1}]
+
+
+def test_reducer_trial_records_sorted_by_epoch_missing_seconds_is_none(
+        minimal_pack_with_probe):
+    # records come sorted by epoch regardless of log order; a sample whose
+    # store carries no session timing yields session_seconds None, not a fake 0
+    pack = minimal_pack_with_probe("p", samples=2)
+    ck = {"tier1": _FakeScore({"checks": [_cr("invariant:i", 1, True, True, 1.0)]})}
+    later = _FakeSample("p", 2, ck,
+                        messages=[SimpleNamespace(role="user", text="u2"),
+                                  SimpleNamespace(role="assistant", text="a2")])
+    first = _FakeSample("p", 1, ck,
+                        messages=[SimpleNamespace(role="user", text="u1"),
+                                  SimpleNamespace(role="assistant", text="a1")],
+                        store={"evalyn:session_seconds": 0.5})
+    [pr] = _reduce_log_to_probes(_FakeLog([later, first]), pack)
+    assert [r["epoch"] for r in pr.trial_records] == [1, 2]
+    assert pr.trial_records[0]["session_seconds"] == 0.5
+    assert pr.trial_records[1]["session_seconds"] is None
 
 
 # --- round-2 N3: required-unsure trials carry no score signal ----------------

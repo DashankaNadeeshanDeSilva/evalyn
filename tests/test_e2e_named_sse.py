@@ -59,6 +59,10 @@ invariants:
 CHECKRESULT_KEYS = {"check", "tier", "required", "weight", "passed", "score",
                     "turn", "evidence", "unsure"}
 
+# Task 6 trial-record contract: one record per SCORED epoch, exactly these keys
+# — the compare mode (Task 8) pairs runs on this shape.
+TRIAL_RECORD_KEYS = {"epoch", "transcript", "session_seconds", "invariant_failures"}
+
 ARTIFACT_PROBES = """\
 - id: sse-grounding
   category: grounding
@@ -169,6 +173,18 @@ def test_named_sse_gate_produces_self_contained_artifact(
         assert probe["checks"], f"probe {probe['id']}: representative checks missing"
         for chk in probe["checks"]:
             assert set(chk) == CHECKRESULT_KEYS  # per-turn violation data (`turn`)
+        # Task 6: per-trial transcript + hard metrics — one record per scored
+        # epoch, round-tripped through a real inspect_eval log
+        assert len(probe["trial_records"]) == probe["trials"]
+        for rec in probe["trial_records"]:
+            assert set(rec) == TRIAL_RECORD_KEYS
+            # judged-transcript format = labeled_transcript's exactly
+            assert rec["transcript"].startswith("User: ")
+            assert "\nAssistant: " in rec["transcript"]
+            assert isinstance(rec["session_seconds"], float)
+            assert rec["session_seconds"] > 0
+            assert isinstance(rec["invariant_failures"], int)
+            assert rec["invariant_failures"] >= 0
 
     result = evaluate_gate(art, baseline=None)
     assert result.exit_code == 0

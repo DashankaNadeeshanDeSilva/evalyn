@@ -829,4 +829,20 @@ contains-values list is the same 3-element list (27 probes; `trust-pivot` delibe
 excepted — tripwire-guarded, injection.yaml:244-248) with TDD RED shown for both divergence
 and a 4th constant. 398 passed, ruff clean, validate-pack exit 0. Zero spend.
 
+### Task 6 — per-trial transcript + hard metrics in gate artifacts (2026-08-03) ✅
+
+Gate artifacts now carry, per SCORED epoch (same rule as `trials`), the evidence compare
+mode (Task 8) will pair on: `ProbeResult.trial_records` — `{epoch, transcript,
+session_seconds, invariant_failures}`. The transcript is the judged one
+(`labeled_transcript` format, rebuilt from the log sample's messages); `session_seconds` is
+target session wall-clock (open + all turns, clocked inside the concurrency gate — Evalyn's
+own queue wait excluded, user ruling 2026-08-03) written via Inspect **Store**
+(`state.store.set("evalyn:session_seconds", …)`) — the e2e proved Store round-trips through
+a real `inspect_eval` log into the on-disk JSON, so the metadata fallback was never needed;
+`invariant_failures` counts failed `invariant:<id>` checks only. Additive
+(`default_factory=list`): pre-#2b artifacts/baselines load with `[]`, pinned by a
+backward-compat unit test. TDD: e2e + 3 unit tests written first (RED shown: `KeyError:
+'trial_records'` through the full toy-target pipeline), then solver.py timing + run.py
+reducer capture. 401 passed, ruff clean. Zero spend (toy target + mock judge only).
+
 ## Plan #3 — `discover` + flywheel *(not started)*
