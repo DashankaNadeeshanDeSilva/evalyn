@@ -845,4 +845,28 @@ backward-compat unit test. TDD: e2e + 3 unit tests written first (RED shown: `Ke
 'trial_records'` through the full toy-target pipeline), then solver.py timing + run.py
 reducer capture. 401 passed, ruff clean. Zero spend (toy target + mock judge only).
 
+### Task 7 — pairwise judge core (`scoring/pairwise.py`) (2026-08-03) ✅
+
+The judging primitive compare mode (Task 8) will consume: `judge_pair(rubric_text,
+rubric_hash, transcript_a, transcript_b, judge_model, *, cache_dir, context, steps, rng)` →
+`PairVerdict` with per-criterion `verdicts` (A/B/tie/unsure), `flipped`, `votes` (A/B
+terms), `justifications`, `steps`, `rubric_hash`, `usage`. Locked §2.2 semantics
+implemented verbatim: exactly 3 blind draws ("Conversation 1/2" only — never A/B), draw 0
+A-first, draw 1 B-first, draw 2 rng-chosen (`rng.random() < 0.5` → A-first); flip rule
+(both ordered draws parsed, wins naming different sides) forces tie + `flipped=True` OVER
+a 2/3 majority; < 2 parsed votes → unsure; 2 parsed → same-side win or tie; 3 parsed →
+side with ≥2 wins else tie. Fail-closed throughout — a garbled judge can only produce
+unsure, never a win. Reuses house seams, no new ones: `parse_criteria` +
+`grading_steps(…, cache_dir)` (fail-loud, shared steps cache; review finding + user
+ruling 2026-08-03: additive `steps=` kwarg injects the pack's frozen hash-coupled
+`<rid>.steps.json` verbatim and skips generation, mirroring `score_transcript` —
+`PairVerdict.steps` carries whichever were used), tier3's `_match_criterion`
+for tolerant fail-closed key resolution, tier3's verbatim "Reference fact sheet" context
+block, per-draw `out.usage` accumulation (missing → zeros). Strict `_parse_pair` mirrors
+tier3's `_parse`: wrong token ("A", ints, "TIE"), missing criterion, or bad JSON voids the
+whole draw. TDD: 28 tests written first (RED: `ModuleNotFoundError`), incl. all six
+brief-pinned cases, a byte-identical no-context prompt pin, and a `\b[AB]\b` blindness
+regex over whole prompts; +2 frozen-steps tests (RED: `TypeError`) for the ruling fix.
+431 passed, ruff clean. Zero spend (fake judge only).
+
 ## Plan #3 — `discover` + flywheel *(not started)*
