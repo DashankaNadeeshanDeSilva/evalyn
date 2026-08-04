@@ -73,6 +73,9 @@ class TargetSession:
         msg_ep = self._pack.spec.sessions["message"]
         payload = {msg_ep.message_field: message,
                    msg_ep.session_field: self._session_id}
+        # User message recorded BEFORE the HTTP call: when a turn fails, the
+        # partial transcript still shows what was sent (review fix, Task 0).
+        self._messages.append(ChatMessageUser(content=message))
         if msg_ep.stream == "sse":
             async with self._client.stream(msg_ep.method,
                                            f"{self._base_url}{msg_ep.path}",
@@ -91,7 +94,6 @@ class TargetSession:
                                  event=msg_ep.event_name,
                                  field=msg_ep.content_field)
         self._turns_used += 1
-        self._messages.append(ChatMessageUser(content=message))
         self._messages.append(ChatMessageAssistant(content=reply))
         return reply
 
@@ -107,4 +109,6 @@ class TargetSession:
 
     @property
     def messages(self) -> list[ChatMessage]:
-        return self._messages
+        # Copy: callers must not be able to corrupt session state by mutating
+        # the returned list (review minor, Task 0).
+        return list(self._messages)

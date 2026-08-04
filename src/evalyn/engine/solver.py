@@ -39,9 +39,15 @@ def session_solver(pack: Pack) -> Solver:
             # wait — otherwise compare-mode latency deltas would shift with
             # concurrency settings.
             async with TargetSession.open(pack) as session:
-                for turn in turns:
-                    last = await session.send(turn)
-            state.messages.extend(session.messages)
+                try:
+                    for turn in turns:
+                        last = await session.send(turn)
+                finally:
+                    # Runs even when a send fails mid-session: the errored
+                    # sample's log keeps the partial transcript (completed
+                    # pairs + the failed turn's dangling user message), as it
+                    # did before the TargetSession extraction.
+                    state.messages.extend(session.messages)
             elapsed = session.elapsed_seconds
         # Store persists to the log sample, where the reducer picks it up as
         # trial_records.session_seconds (Task 6, #2b).

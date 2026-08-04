@@ -7,6 +7,7 @@ solver tests drive.
 """
 from pathlib import Path
 
+import httpx
 import pytest
 
 from evalyn.targets.loader import AllowlistError, Pack, load_pack
@@ -42,12 +43,12 @@ async def test_open_refuses_non_allowlisted_base_url(monkeypatch):
             pytest.fail("session opened against a non-allowlisted base_url")
 
 
-def _capped_pack(url: str, max_turns: int) -> Pack:
+def _toy_pack(url: str, *, max_turns: int = 12, message_path: str = "/chat") -> Pack:
     spec = TargetSpec.model_validate({
         "name": "t",
         "sessions": {
             "open": {"method": "POST", "path": "/session"},
-            "message": {"method": "POST", "path": "/chat", "stream": "sse",
+            "message": {"method": "POST", "path": message_path, "stream": "sse",
                         "event_format": "vercel-ai"},
         },
         "auth": {"kind": "none"},
@@ -62,10 +63,33 @@ def _capped_pack(url: str, max_turns: int) -> Pack:
 async def test_send_past_turn_cap_raises_turn_cap_exceeded(toy_target):
     """send() at the pack's max_turns_per_session cap fails loudly BEFORE any
     HTTP for that turn -- never a silent extra turn."""
-    pack = _capped_pack(toy_target, max_turns=1)
+    pack = _toy_pack(toy_target, max_turns=1)
     async with TargetSession.open(pack) as session:
         reply = await session.send("hi")
         assert isinstance(reply, str) and reply
         with pytest.raises(TurnCapExceeded, match="max_turns_per_session=1"):
             await session.send("hi again")
     assert session.turns_used == 1
+
+
+@pytest.mark.asyncio
+async def test_failed_send_keeps_dangling_user_message(toy_target):
+    """A send whose HTTP fails still records the user message it attempted:
+    the partial transcript is honest about what was sent (review fix, Task 0)."""
+    pack = _toy_pack(toy_target, message_path="/nope")  # toy target 404s this
+    async with TargetSession.open(pack) as session:
+        with pytest.raises(httpx.HTTPStatusError):
+            await session.send("hi")
+        assert [m.role for m in session.messages] == ["user"]
+        assert session.messages[0].text == "hi"
+        assert session.turns_used == 0                  # turn never completed
+
+
+@pytest.mark.asyncio
+async def test_messages_property_returns_a_copy(toy_target):
+    """Caller mutation of session.messages must not corrupt session state."""
+    pack = _toy_pack(toy_target)
+    async with TargetSession.open(pack) as session:
+        await session.send("hi")
+        session.messages.clear()
+        assert [m.role for m in session.messages] == ["user", "assistant"]
