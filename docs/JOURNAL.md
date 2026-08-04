@@ -463,9 +463,9 @@ in a fresh session — kickoff prompt in
       process-global accumulator is out of the loop entirely, so compare's second eval cannot
       double-count. Same change as the metering fix below.
 - [ ] Budget test polish: over-cap test couples to the example pack's implicit default cap
-      (5.0); no-fallback canary assumes empty `model_usage()` context (ordering-sensitive) and
-      `caught == []` trips on any unrelated warning; CLI budget test mildly circular (fake
-      raises the message it asserts). *(minor)*
+      (5.0); `caught == []` in the rewritten no-fallback test trips on any unrelated warning
+      (the ContextVar canary itself was retired in #2b Task 1); CLI budget test mildly
+      circular (fake raises the message it asserts). *(minor)*
 - [x] ~~`_judge_usd` fail-open posture retained by design (brief-verbatim `except → 0.0`), now
       guarded by import-canary tests + loud `RuntimeWarning`; real `model_usage → estimate_cost`
       seam still never exercised with real billable usage (mockllm reports none). *(minor,

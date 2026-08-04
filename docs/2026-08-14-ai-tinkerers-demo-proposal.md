@@ -34,7 +34,7 @@ Live, I'll run the full loop against the real TwinCore endpoint: `evalyn gate` s
 50-probe suite (including a 31-case injection suite — 28 attacks, 3 controls — seeded from
 real production failures), then a
 deliberately regressed prompt turning the baseline diff red. Then the two signature moments:
-`evalyn calibrate` grading the LLM judge against 20 hand-labeled human anchors — and refusing
+`evalyn calibrate` grading the LLM judge against 44 hand-labeled human anchors (11 per rubric) — and refusing
 to run below 85% agreement — and the `discover` red-team agent auto-emitting a brand-new,
 reproducible regression probe from a failure it found seconds earlier, with the whole run
 watchable in the `evalyn ui` cockpit. Real code, real logs, no slides.
@@ -59,7 +59,7 @@ Two hard-won lessons along the way:
 
 2. **Everyone preaches "grade the grader" — no tool actually makes you.** What changed my
    results was enforcement, not advice: every rubric must individually clear 85% agreement
-   with 20 hand-labeled anchors — a weak rubric can't hide behind a strong average — or the
+   with 44 hand-labeled anchors (11 per rubric) — a weak rubric can't hide behind a strong average — or the
    judge refuses to run; verdicts are discarded unless the judge quotes its evidence verbatim;
    and the judge never shares a model family with the generator.
 
@@ -73,7 +73,7 @@ Two hard-won lessons along the way:
 - **httpx (async)** — the session driver: streams the target's real chat API through a
   four-dialect SSE parser (Vercel AI SDK frames, raw SSE, named SSE, JSON).
 - **Claude Sonnet (Anthropic API)** — Tier-3 G-Eval rubric judge: k=3 self-consistency draws
-  with median voting, abstains on disagreement, calibrated against 20 human-labeled anchors.
+  with median voting, abstains on disagreement, calibrated against 44 human-labeled anchors (11 per rubric).
 - **OpenAI API** — the generator family under test; judge ≠ generator family separation is
   warned on by default and hard-enforced for judge panels, which span ≥2 model families
   certified via Cohen's κ.

@@ -207,10 +207,9 @@ def per_rubric_agreement(per_criterion: dict) -> dict[str, float]:
     per-criterion fractions — exact only when every criterion scored the same
     number of anchor pairs (an anchor labeling a subset of criteria breaks
     that, and the error can fall OPEN across the threshold — round-2 N8).
-    Used only for records that predate `per_rubric_agreement`/counts (e.g. the
-    committed packs/twincore/calibration.json, whose equal pair counts were
-    verified by hand); new records store the pooled value from raw counts —
-    see pooled_rubric_agreement."""
+    Used only for records that predate `per_rubric_agreement`/counts (records
+    written before round-2 N8, pre-counts schema); new records store the
+    pooled value from raw counts — see pooled_rubric_agreement."""
     by_rubric: dict[str, list[float]] = {}
     for key, val in per_criterion.items():
         by_rubric.setdefault(key.split(":", 1)[0], []).append(val)

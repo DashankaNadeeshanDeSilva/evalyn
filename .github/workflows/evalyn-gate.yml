@@ -110,8 +110,8 @@ jobs:
               '0': 'PASS',
               '1': "**REGRESSION** — the product's behavior changed vs the blessed baseline",
               '2': '**SETUP/INFRA** — the eval never (fully) reached the product: ' +
-                'stale calibration, stale pack-vs-baseline, or target unreachable. ' +
-                'Not a product regression.',
+                'stale rubric calibration, an unreachable target, budget exhaustion, ' +
+                'or a corrupt/pre-#2a baseline. Not a product regression.',
             };
             const explainer = explainers[exitCode] ?? `unknown exit code \`${exitCode}\``;
             const body = `${marker}\n\n${report}\n\n---\n\nEvalyn gate exit code \`${exitCode}\`: ${explainer}`;
