@@ -61,14 +61,24 @@ def test_charge_estimate_rejects_a_negative_charge():
         meter.charge_estimate(-0.01)
 
 
-def test_missing_usage_is_loud_not_silent():
-    """A ModelOutput without usage cannot be charged exactly; the meter must
-    say so out loud (the log reconcile is the backstop), never swallow it."""
-    meter = SpendMeter(cap_usd=1.0)
+def test_missing_usage_charges_a_pessimistic_estimate():
+    """A ModelOutput without usage must still MOVE the meter — a provider that
+    omits usage omits it on every call, so a 0.0 live charge would mean
+    `exhausted()` can never trip and the loop runs on real money. Charged
+    pessimistically (16k in / 4k out at the model's price), loudly."""
+    meter = SpendMeter(cap_usd=0.05)
     out = ModelOutput(model="openai/gpt-5-mini")  # usage=None
     with pytest.warns(RuntimeWarning, match="usage"):
         meter.charge_output("openai/gpt-5-mini", out)
-    assert meter.spent_usd == 0.0
+    # 16k in / 4k out at gpt-5-mini prices (0.00025, 0.002) per 1k = 0.012
+    assert meter.spent_usd == pytest.approx(16 * 0.00025 + 4 * 0.002)
+    assert meter.spent_usd > 0.0
+
+    # ...and a run of such calls trips the cap: 5 x 0.012 >= 0.05.
+    for _ in range(4):
+        with pytest.warns(RuntimeWarning, match="usage"):
+            meter.charge_output("openai/gpt-5-mini", out)
+    assert meter.exhausted()
 
 
 def test_unpriced_model_charges_the_conservative_upper_bound():

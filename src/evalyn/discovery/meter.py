@@ -24,9 +24,20 @@ from __future__ import annotations
 
 import warnings
 
-from inspect_ai.model import ModelOutput
+from inspect_ai.model import ModelOutput, ModelUsage
 
-from evalyn.engine.budget import estimate_cost, price_for
+from evalyn.engine.budget import estimate_cost
+
+#: Safety constant: pessimistic per-call usage charged when a `ModelOutput`
+#: carries no usage. A discover reasoning prompt (persona + objective +
+#: playbook + the full labeled transcript at the pack turn cap) measures in
+#: the low thousands of input tokens and the JSON action reply in the
+#: hundreds; 16k in / 4k out is several times any such call — a deliberate
+#: OVERcharge, because a provider that omits usage omits it on EVERY call,
+#: and a 0.0 live charge would mean `exhausted()` could never trip while the
+#: loop spends real money (the runaway the budget exists to stop).
+_PESSIMISTIC_USAGE = ModelUsage(
+    input_tokens=16_000, output_tokens=4_000, total_tokens=20_000)
 
 
 class BudgetStop(Exception):
@@ -59,16 +70,18 @@ class SpendMeter:
         """Charge an agent reasoning call exactly, from its returned usage."""
         usage = getattr(out, "usage", None)
         if usage is None:
-            # Cannot charge what we cannot see — but never silently: the
-            # post-hoc `reconcile` from the eval log is the backstop.
+            # Charge a pessimistic worst-case, never 0.0: live charging must
+            # stand on its own (reasoning calls may not appear in the tier-3
+            # eval log, so the post-hoc reconcile is no backstop for them).
             warnings.warn(
-                f"model output from {model!r} carries no usage — live meter "
-                f"cannot charge this call; the post-hoc log reconcile is the "
-                f"only accounting for it", RuntimeWarning, stacklevel=2)
-            return
-        pin, pout = price_for(model)
-        self._spent += (getattr(usage, "input_tokens", 0) / 1000.0) * pin
-        self._spent += (getattr(usage, "output_tokens", 0) / 1000.0) * pout
+                f"model output from {model!r} carries no usage — charging a "
+                f"pessimistic estimate ({_PESSIMISTIC_USAGE.input_tokens} in / "
+                f"{_PESSIMISTIC_USAGE.output_tokens} out tokens) instead of "
+                f"an exact figure", RuntimeWarning, stacklevel=2)
+            usage = _PESSIMISTIC_USAGE
+        # estimate_cost, not hand-rolled token->USD arithmetic: one accounting
+        # shared with `reconcile` and `engine/run.py`, no drift surface.
+        self._spent += estimate_cost({model: usage})
 
     def charge_estimate(self, usd: float) -> None:
         """Charge a conservative estimate for a call whose usage is hidden
