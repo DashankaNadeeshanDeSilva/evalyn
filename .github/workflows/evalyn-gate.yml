@@ -65,8 +65,10 @@ jobs:
 
       - name: Launch target
         if: inputs.target-command != ''
+        env:
+          TARGET_CMD: ${{ inputs.target-command }}
         run: |
-          setsid ${{ inputs.target-command }} > target.log 2>&1 &
+          setsid bash -c "$TARGET_CMD" > target.log 2>&1 &
           echo $! > target.pid
 
       - name: Wait for target
