@@ -1058,4 +1058,113 @@ new rulings (old exact+prefix void; same-order rule-3 win; empty-records message
 throughout (10 RED failures shown first). 481 passed, ruff clean, both packs
 validate-pack OK. Zero spend (toy target + mockllm only).
 
-## Plan #3 — `discover` + flywheel *(not started)*
+## Plan #3 — `discover` + flywheel (`feat/plan3-discover`, cut from `dev` @ `6d6753d`) *(Tasks 0–5 of 14 complete; paused for a fresh session 2026-08-04)*
+
+Plan doc: [`superpowers/plans/2026-08-04-evalyn-plan3-discover.md`](./superpowers/plans/2026-08-04-evalyn-plan3-discover.md)
+Design spec: [`superpowers/specs/2026-08-04-discover-mode-design.md`](./superpowers/specs/2026-08-04-discover-mode-design.md)
+Execution: subagent-driven (fresh implementer per task → task review → fix rounds → scoped re-review).
+**Subagent model: Fable for Tasks 0–4, then Opus 5 from Task 4's re-review onward** — the Fable 5
+usage limit was hit mid-plan and the maintainer chose Opus 5 for all remaining implementers, fixers
+and reviewers.
+
+### Task status
+
+| Task | What | Commits | Status |
+|------|------|---------|--------|
+| 0 | Extract `TargetSession` from `engine/solver.py` (pure refactor) | `a5a1710`, `6c0179e` (fix) | ✅ done, review clean after 1 fix round |
+| 1 | Objective registry + run config (`objectives.py`, `config.py`) | `dc8fe06` | ✅ done, review clean (zero findings) |
+| 2 | `SpendMeter` — live USD ceiling + log reconcile | `129870b`, `799fb9c` (fix) | ✅ done, review clean after 1 fix round (Critical) |
+| 3 | `no-pii-leak` tier-1 invariant (email + E.164-ish phone) | `f09594d` | ✅ done, review clean (zero findings) |
+| 4 | `Confirmer` — the trust boundary | `b45c73b`, `088cbe2` (fix) | ✅ done, review clean after 1 fix round (5 Important) |
+| 5 | Observe→reason→pursue loop + `personas.py` | `de0f073`, `72d9589` (fix) | ✅ done, review clean after 1 fix round |
+| 6–14 | Emission/dedup, replay, orchestrator, family rule, CLI, toy weaknesses, e2e, docs, live run | — | ⏳ not started |
+
+**Controller-verified state at the pause (2026-08-04):** `uv run pytest -q -W error::RuntimeWarning`
+→ **595 passed** (481 at branch start); `uv run ruff check src/ tests/` clean; both packs
+`validate-pack` exit 0; working tree clean; 10 commits on the branch, **nothing pushed**.
+
+### What the reviews caught (would have shipped otherwise)
+
+- **Task 0:** the refactor emptied `state.messages` on a mid-send exception — Inspect records sample
+  state for errored samples, so a failed session's log transcript went from "everything up to the
+  failure" to nothing. Restored to pre-refactor behavior with a discriminating test.
+- **Task 2 (Critical):** a `ModelOutput` with no usage charged **0.0** live, so a provider that omits
+  usage — systematically, on every call — meant `exhausted()` could never trip during an autonomous
+  run. Now charges a pessimistic 16k/4k estimate through `estimate_cost`.
+- **Task 4 (2 of 5 Important):** two false-confirmation paths. A schema-legal `not_contains` with
+  `value=None` makes tier-1 emit a required failure *regardless of the transcript* (right for `gate`,
+  inverted for `discover` — it mints a finding from a misconfiguration); and a declared `classifier`
+  check was silently unevaluated by every tier the Confirmer runs. Both now fail closed via one
+  `_unevaluable(check)` guard, verified neither too permissive nor too aggressive.
+- **Task 5:** `verify_slots` accepted bare strings, under which *every* transcript element counted as
+  assistant evidence — silently degrading "the agent may not quote itself" to "substring of anything."
+
+### Open items — Plan #3 deferred findings register
+
+Triage these at Plan #3's final whole-branch review.
+
+**Binding obligations on later tasks**
+
+- **T5→T6 (must fix, or Task 6's review fails):** `loop.py` carries a private `_candidate_probe`
+  because the loop needs a `Probe` to call the trust boundary. **Task 6 must export
+  `candidate_probe`, make `loop.py` call it, and delete `_candidate_probe`** — a second definition
+  means what *confirms* a finding and what gets *emitted* as a permanent probe could diverge, the
+  exact failure the trust boundary exists to prevent. `_assert_outcome_graded` must also run on the
+  confirming probe, not only the emitted one. (Divergence today is latent and changes no verdict:
+  `samples=1` vs `3` for safety-critical, different id scheme, no `reference`.)
+- **T2→T8 (controller check owed):** `SpendMeter.reconcile` reads an Inspect eval log's
+  `stats.model_usage`, but the agent's reasoning calls happen inside the discovery solver. **Verify
+  those calls actually land in `log.stats.model_usage`.** If they do not, there is no post-hoc
+  backstop for agent spend and live charging is the only accounting there will ever be.
+- **T5→T8:** `confirm.py` deliberately re-raises `TypeError`/`AttributeError`/`NameError`/`KeyError`
+  so an Evalyn bug fails loudly, but `run_session`'s broad `except Exception` turns that into one
+  session's `stop_reason="error"` plus a `RuntimeWarning` — nearly silent unattended. The run-level
+  summary must surface **`stop_reason == "error"` counts** prominently, not just per-session.
+- **T1→T10:** `--max-usd 0` from the CLI resolves to a literal 0 ceiling ("spend nothing") while a
+  pack's `max_usd_per_run: 0` means "no ceiling" — same sentinel, opposite meanings. Task 10 must
+  reject `--max-usd 0` or document the asymmetry, and pin it with a test.
+- **T4→T9:** `Check` permits `value` and `values` together on a `contains` check; tier-1 silently
+  prefers `values`, so the candidate's `value` claim goes unevaluated. Exclusivity validation was
+  already slated for Task 9.
+- **T4 sync obligation (commented in source):** if tier-2 is ever wired into `discover`, `classifier`
+  must move into `_EVALUABLE_TYPES` in the same change, or classifier claims go from
+  silently-unevaluated to silently-rejected.
+
+**Deferred findings**
+
+- **T3 (doc-only, should fix before merge):** the `no-pii-leak` email branch matches role/service
+  addresses (`support@`, `git@github.com`), ssh targets (`deploy@prod.example.com`) and asset names
+  (`logo@2x.png`). The reviewer judged the *behavior* correct and a denylist fix wrong (it is
+  over-building, has no principled boundary, and creates false negatives on genuine leaks such as a
+  leaked `admin@corp-internal.com`) — but the source comment must name these known-match classes so a
+  pack author is not surprised. Note: the "paired `not_contains` disambiguates" defense is **wrong**,
+  since the pairing exists only inside the discovery objective and any pack may reference the
+  invariant standalone.
+- **T3:** the phone pattern misses parenthesis-grouped international numbers (`+1 (415) 555-2671`).
+  Do **not** widen the separator class without re-checking the false-positive families; pin the miss
+  in the test so it reads as a decision.
+- **T5 (relevant to Task 6):** a failed send leaves an **orphan user turn** in `session.messages`
+  (`TargetSession` appends `ChatMessageUser` before the HTTP call). Pre-fix the session ended so this
+  was unreachable; now the loop continues and that undelivered turn flows into the next prompt and
+  into the probe's `turns` list — so a finding confirmed after a transient failure carries a turn the
+  target never answered, which changes the conversation on replay.
+- **T1:** `_REGISTRY` module-global still holds a live mutable reference behind the
+  `MappingProxyType`, so the read-only guarantee is conventional, not mechanical; a negative pack
+  `max_usd_per_run` takes the permissive branch in discovery while `gate` treats it as maximally
+  strict; a pack `max_turns_per_session: 0` yields a run that can never send.
+- **T2:** `reconcile` re-states `_judge_usd`'s body (only the agreement test polices the duplication);
+  the `_PESSIMISTIC_USAGE` token ceiling is a single constant, so an agent model routinely exceeding
+  ~16k prompt tokens would be under-charged on the missing-usage path only.
+- **T4:** the unjudged-rubric guard is count-based rather than matching `rubric:` labels; a rubric
+  check with a non-blank id but a *missing* rubric file still charges before tier-3 raises.
+- **T5:** the containment guard test has two residual evasions (defence-in-depth only):
+  `from os import open as _o` evades both the substring ban and the bare-call regex, and `getattr(`
+  is unlisted while `setattr(` is.
+
+**Unverifiable until the first live run**
+
+- `build_prompt`'s wording is untested against a real model (a consequence of the zero-spend
+  constraint). `parse_action` does **no** code-fence stripping, so a fenced reply costs a retry and
+  then ends the session. Suggested cheap de-risk that costs no live spend: accept a fenced reply on
+  the **retry** only. Treat the first live `discover` run as a prompt shakedown and expect a high
+  early rejection/retry rate.
