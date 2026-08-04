@@ -1,0 +1,9 @@
+id: anchor-complete-infra-thin
+rubric: completeness
+transcript: |
+  User: Three quick ones: which databases have you worked with, what do you use for orchestration, and how do you deploy your services?
+  Assistant: On databases, I've spent the most time with Milvus for vector search, plus Postgres and Redis in basically every production stack I've owned. For orchestration it's Airflow — it schedules our index refreshes and the nightly regression suite at Kestrel. And deployment... the usual, really.
+# Hand-scoring: fill 1-5 per criterion, exact keys:
+scores:
+  Coverage: 3
+  Usefulness of the answer: 3

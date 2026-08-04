@@ -130,6 +130,10 @@ with its on-disk cache, `_median`/`_spread` helpers, and the judge-model/family 
   `unsure` (excluded from win/loss/tie counts, reported separately) — a judge outage cannot
   manufacture a winner. With exactly two parseable votes, they must agree on the same winner
   or the verdict is a tie.
+- *Amendment (2026-08-04 ruling, PR #6 review):* with exactly two parseable votes, a win
+  additionally requires the two surviving draws to have shown the conversations in OPPOSITE
+  orders; same-order agreement is a tie — a positionally biased judge must never manufacture
+  a win without order control.
 
 **Trust model:** compare inherits the absolute anchor calibration fail-closed (same record,
 same per-rubric ≥85% rule) — same judge, same rubrics, same grading steps. Pairwise adds its

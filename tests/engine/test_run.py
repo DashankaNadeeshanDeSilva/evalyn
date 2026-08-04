@@ -1,11 +1,13 @@
 import json
 import shutil
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
-from evalyn.engine.run import (ProbeResult, RunArtifact, _reduce_log_to_probes,
-                               pack_fingerprint, run_gate)
+from evalyn.engine.run import (ProbeResult, RunArtifact, _judge_usd,
+                               _reduce_log_to_probes, pack_fingerprint,
+                               run_gate)
 from evalyn.targets.loader import load_pack
 
 EXAMPLE = "packs/example"
@@ -21,11 +23,13 @@ class _FakeScore:
 
 
 class _FakeSample:
-    def __init__(self, pid, epoch, scores):
+    def __init__(self, pid, epoch, scores, messages=None, store=None):
         self.id = pid
         self.epoch = epoch
         self.metadata = {"id": pid}
         self.scores = scores
+        self.messages = messages or []
+        self.store = store or {}
 
 
 class _FakeLog:
@@ -137,8 +141,15 @@ def test_run_gate_produces_artifact_with_per_probe_trial_stats(toy_target, monke
                                                                tmp_path):
     monkeypatch.setenv("EVALYN_TARGET_URL", toy_target)
     pack = load_pack(EXAMPLE)
-    art = run_gate(pack, judge_model="mockllm/model", log_dir=str(tmp_path / "logs"),
-                   out_dir=str(tmp_path / "runs"))  # keep runs/ out of the repo CWD
+    # mockllm/model is unpriced, so real metering warns and prices it at the
+    # conservative upper bound — capturing it here also PROVES the eval's own
+    # usage reaches _judge_usd (the ContextVar seam silently returned {}).
+    with pytest.warns(RuntimeWarning, match="no price entry"):
+        art = run_gate(pack, judge_model="mockllm/model", log_dir=str(tmp_path / "logs"),
+                       out_dir=str(tmp_path / "runs"))  # keep runs/ out of the repo CWD
+    # Plan #2b Task 1 regression guard: a REAL run must meter nonzero judge
+    # spend from the returned log (live bug 2026-07-28: judge_usd == 0.0)
+    assert art.judge_usd > 0.0
     ids = {p.id for p in art.probes}
     assert "injection-trust-pivot" in ids
     inj = next(p for p in art.probes if p.id == "injection-trust-pivot")
@@ -224,6 +235,8 @@ def test_run_gate_out_dir_writes_artifact_there_not_cwd(toy_target, monkeypatch,
                                                         tmp_path):
     monkeypatch.setenv("EVALYN_TARGET_URL", toy_target)
     monkeypatch.chdir(tmp_path)  # a CWD runs/ write would be visible here
+    # metering is not this test's concern (and unpriced mockllm would warn)
+    monkeypatch.setattr("evalyn.engine.run._judge_usd", lambda log: 0.0)
     pack = load_pack(str(REPO_EXAMPLE))
     out = tmp_path / "artifacts"
     art = run_gate(pack, judge_model="mockllm/model",
@@ -247,7 +260,7 @@ def test_artifact_total_unsure_trials_sums_probe_unsure(monkeypatch, tmp_path):
     fake.status = "success"
     fake.location = None
     monkeypatch.setattr("evalyn.engine.run.inspect_eval", lambda *a, **k: [fake])
-    monkeypatch.setattr("evalyn.engine.run._judge_usd", lambda: 0.0)
+    monkeypatch.setattr("evalyn.engine.run._judge_usd", lambda log: 0.0)
     art = run_gate(pack, judge_model="mockllm/model",
                    log_dir=str(tmp_path / "logs"), out_dir=str(tmp_path / "out"))
     assert art.total_unsure_trials == 3  # 2 + 1 across probes
@@ -281,7 +294,7 @@ def test_run_gate_defaults_cache_dir_to_pack_dot_cache(monkeypatch, tmp_path):
     monkeypatch.setattr("evalyn.engine.run.build_task", fake_build_task)
     monkeypatch.setattr("evalyn.engine.run.inspect_eval",
                         lambda *a, **k: [_fake_success_log()])
-    monkeypatch.setattr("evalyn.engine.run._judge_usd", lambda: 0.0)
+    monkeypatch.setattr("evalyn.engine.run._judge_usd", lambda log: 0.0)
     with pytest.raises(RuntimeError, match="no probe collected"):  # empty log (N6)
         run_gate(pack, judge_model="mockllm/model", log_dir=str(tmp_path / "logs"),
                  out_dir=str(tmp_path / "out"))
@@ -382,7 +395,7 @@ def test_artifact_filenames_do_not_collide_back_to_back(monkeypatch, tmp_path):
     pack = load_pack(str(REPO_EXAMPLE))
     monkeypatch.setattr("evalyn.engine.run.inspect_eval",
                         lambda *a, **k: [_fake_success_log()])
-    monkeypatch.setattr("evalyn.engine.run._judge_usd", lambda: 0.0)
+    monkeypatch.setattr("evalyn.engine.run._judge_usd", lambda log: 0.0)
     out = tmp_path / "runs"
     for _ in range(2):  # same second: a coarse timestamp would os.replace-clobber
         with pytest.raises(RuntimeError, match="no probe collected"):  # empty log (N6)
@@ -397,7 +410,7 @@ def test_artifact_filename_sanitizes_hostile_pack_name(monkeypatch, tmp_path):
     pack.spec.name = "../evil/pack name"   # must not escape out_dir or crash
     monkeypatch.setattr("evalyn.engine.run.inspect_eval",
                         lambda *a, **k: [_fake_success_log()])
-    monkeypatch.setattr("evalyn.engine.run._judge_usd", lambda: 0.0)
+    monkeypatch.setattr("evalyn.engine.run._judge_usd", lambda log: 0.0)
     out = tmp_path / "runs"
     with pytest.raises(RuntimeError, match="no probe collected"):  # empty log (N6)
         run_gate(pack, judge_model="mockllm/model",
@@ -421,7 +434,7 @@ def test_run_gate_explicit_cache_dir_override_wins(monkeypatch, tmp_path):
     monkeypatch.setattr("evalyn.engine.run.build_task", fake_build_task)
     monkeypatch.setattr("evalyn.engine.run.inspect_eval",
                         lambda *a, **k: [_fake_success_log()])
-    monkeypatch.setattr("evalyn.engine.run._judge_usd", lambda: 0.0)
+    monkeypatch.setattr("evalyn.engine.run._judge_usd", lambda log: 0.0)
     custom = tmp_path / "custom-cache"
     with pytest.raises(RuntimeError, match="no probe collected"):  # empty log (N6)
         run_gate(pack, judge_model="mockllm/model", log_dir=str(tmp_path / "logs"),
@@ -470,6 +483,64 @@ def test_artifact_without_expected_trials_still_loads_as_unknown():
         del p["expected_trials"]
     loaded = RunArtifact.from_dict(d)
     assert loaded.probes[0].expected_trials == 0
+
+
+# --- Task 6 (#2b): per-trial transcript + hard metrics ------------------------
+
+
+def test_artifact_without_trial_records_still_loads_empty():
+    # backward read: pre-#2b artifacts/baselines have no trial_records — the
+    # additive default [] must apply so old baselines keep loading unchanged
+    art = RunArtifact(
+        pack_name="p", pack_hash="h", judge_model="j", created_at="now",
+        probes=[ProbeResult("p", "c", "regression", False, 3, trials=3)],
+        log_path="log")
+    d = art.to_dict()
+    for p in d["probes"]:
+        del p["trial_records"]
+    loaded = RunArtifact.from_dict(d)
+    assert loaded.probes[0].trial_records == []
+
+
+def test_reducer_trial_records_scored_epochs_only(minimal_pack_with_probe):
+    # one record per SCORED epoch (same rule as `trials`): the errored epoch
+    # gets no record; invariant_failures counts only FAILED `invariant:` checks
+    pack = minimal_pack_with_probe("p", samples=2)
+    msgs = [SimpleNamespace(role="user", text="hi"),
+            SimpleNamespace(role="assistant", text="hello"),
+            SimpleNamespace(role="system", text="never in the transcript")]
+    scored = _FakeSample("p", 1, {
+        "tier1": _FakeScore({"checks": [
+            _cr("invariant:non-empty", 1, True, False, 0.0),
+            _cr("invariant:no-pii", 1, True, True, 1.0),
+            _cr("contains:x", 1, True, False, 0.0),  # non-invariant fail: not counted
+        ]}),
+    }, messages=msgs, store={"evalyn:session_seconds": 1.25})
+    errored = _FakeSample("p", 2, {"tier1": _FakeScore(None)})
+    [pr] = _reduce_log_to_probes(_FakeLog([scored, errored]), pack)
+    assert pr.trials == 1
+    assert pr.trial_records == [{
+        "epoch": 1, "transcript": "User: hi\nAssistant: hello",
+        "session_seconds": 1.25, "invariant_failures": 1}]
+
+
+def test_reducer_trial_records_sorted_by_epoch_missing_seconds_is_none(
+        minimal_pack_with_probe):
+    # records come sorted by epoch regardless of log order; a sample whose
+    # store carries no session timing yields session_seconds None, not a fake 0
+    pack = minimal_pack_with_probe("p", samples=2)
+    ck = {"tier1": _FakeScore({"checks": [_cr("invariant:i", 1, True, True, 1.0)]})}
+    later = _FakeSample("p", 2, ck,
+                        messages=[SimpleNamespace(role="user", text="u2"),
+                                  SimpleNamespace(role="assistant", text="a2")])
+    first = _FakeSample("p", 1, ck,
+                        messages=[SimpleNamespace(role="user", text="u1"),
+                                  SimpleNamespace(role="assistant", text="a1")],
+                        store={"evalyn:session_seconds": 0.5})
+    [pr] = _reduce_log_to_probes(_FakeLog([later, first]), pack)
+    assert [r["epoch"] for r in pr.trial_records] == [1, 2]
+    assert pr.trial_records[0]["session_seconds"] == 0.5
+    assert pr.trial_records[1]["session_seconds"] is None
 
 
 # --- round-2 N3: required-unsure trials carry no score signal ----------------
@@ -525,10 +596,38 @@ def test_run_gate_raises_when_no_probe_scored_a_single_trial(monkeypatch, tmp_pa
     pack = load_pack(str(REPO_EXAMPLE))
     monkeypatch.setattr("evalyn.engine.run.inspect_eval",
                         lambda *a, **k: [_fake_success_log()])
-    monkeypatch.setattr("evalyn.engine.run._judge_usd", lambda: 0.0)
+    monkeypatch.setattr("evalyn.engine.run._judge_usd", lambda log: 0.0)
     out = tmp_path / "out"
     with pytest.raises(RuntimeError, match="no probe collected"):
         run_gate(pack, judge_model="mockllm/model",
                  log_dir=str(tmp_path / "logs"), out_dir=str(out))
     # house pattern: the artifact is written BEFORE the raise, for inspection
     assert list(out.glob("*.json")), "artifact must survive the setup-error raise"
+
+
+# --- Plan #2b Task 1: judge_usd is metered from the RETURNED eval log --------
+
+
+def _fake_log(usage: dict):
+    return SimpleNamespace(stats=SimpleNamespace(model_usage=usage))
+
+
+def test_judge_usd_reads_log_stats():
+    usage = {"anthropic/claude-sonnet-5": SimpleNamespace(input_tokens=88_035,
+                                                          output_tokens=27_037)}
+    got = _judge_usd(_fake_log(usage))
+    # sonnet-5 PRICES: (0.003, 0.015) per 1k
+    assert got == pytest.approx(88.035 * 0.003 + 27.037 * 0.015)
+
+
+def test_judge_usd_is_per_log_isolated():
+    # two different logs meter independently — no shared/global accumulator
+    with pytest.warns(RuntimeWarning, match="no price entry"):  # "m" is unpriced
+        a = _judge_usd(_fake_log({"m": SimpleNamespace(input_tokens=1000, output_tokens=0)}))
+    b = _judge_usd(_fake_log({}))
+    assert a > 0.0 and b == 0.0
+
+
+def test_judge_usd_fail_open_is_loud():
+    with pytest.warns(RuntimeWarning, match="budget cap not enforced"):
+        assert _judge_usd(SimpleNamespace()) == 0.0  # no .stats -> warn + 0.0

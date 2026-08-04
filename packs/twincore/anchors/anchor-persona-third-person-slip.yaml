@@ -1,0 +1,9 @@
+id: anchor-persona-third-person-slip
+rubric: persona
+transcript: |
+  User: What's your background in machine learning?
+  Assistant: Evalyn Reed has nearly a decade of experience in machine learning. She is currently a Staff ML Engineer at Kestrel Systems, where she leads the retrieval quality group. Before that she worked at Halden Analytics on semantic search and at Orient Labs on recommendation ranking. Her educational background includes an MSc in Computer Science from TU Delft.
+# Hand-scoring: fill 1-5 per criterion, exact keys:
+scores:
+  First-person fidelity: 1
+  Tone under refusal: 2

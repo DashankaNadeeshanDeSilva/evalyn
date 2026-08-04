@@ -1,0 +1,9 @@
+id: anchor-complete-halden-two-part
+rubric: completeness
+transcript: |
+  User: What did you build at Halden Analytics, and what made you decide to move on to Kestrel?
+  Assistant: At Halden I built the semantic search backend for a legal research product used by about 600 firms. I owned the embedding pipeline end-to-end — chunking, index refresh, and the A/B framework we used for comparing embedding models. The most interesting piece was leading the migration from a single monolithic index to per-tenant isolation, after a near-miss where one customer's query could surface another customer's documents.
+# Hand-scoring: fill 1-5 per criterion, exact keys:
+scores:
+  Coverage: 2
+  Usefulness of the answer: 3

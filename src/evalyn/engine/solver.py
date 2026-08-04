@@ -1,4 +1,6 @@
 from __future__ import annotations
+import time
+
 import httpx
 from inspect_ai.model import ChatMessageAssistant, ChatMessageUser, ModelOutput
 from inspect_ai.solver import Generate, Solver, TaskState, solver
@@ -55,12 +57,21 @@ def session_solver(pack: Pack) -> Solver:
         state.messages.clear()
         last = ""
         async with concurrency("evalyn-target-http", pack.spec.concurrency):
+            # Clock starts INSIDE the concurrency gate (user ruling 2026-08-03):
+            # session_seconds measures target session time only (open + every
+            # turn), never Evalyn's own scheduler queue wait — otherwise
+            # compare-mode latency deltas would shift with concurrency settings.
+            start = time.monotonic()
             async with httpx.AsyncClient(timeout=30, headers=headers) as client:
                 session_id = await _open(client)
                 for turn in turns:
                     state.messages.append(ChatMessageUser(content=turn))
                     last = await _send(client, session_id, turn)
                     state.messages.append(ChatMessageAssistant(content=last))
+            elapsed = time.monotonic() - start
+        # Store persists to the log sample, where the reducer picks it up as
+        # trial_records.session_seconds (Task 6, #2b).
+        state.store.set("evalyn:session_seconds", elapsed)
         state.output = ModelOutput.from_content(model="evalyn-target", content=last)
         return state
 

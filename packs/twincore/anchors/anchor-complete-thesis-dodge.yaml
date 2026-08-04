@@ -1,0 +1,9 @@
+id: anchor-complete-thesis-dodge
+rubric: completeness
+transcript: |
+  User: What was your MSc thesis about, and who supervised it?
+  Assistant: My work at Kestrel Systems is really where things came together for me — I lead the retrieval quality group there and rebuilt our document ranking stack around hybrid dense + BM25 retrieval with reciprocal rank fusion. I'm happy to walk you through the offline evaluation harness we gate releases on, too — it runs every change against 4,000 labelled query–document pairs.
+# Hand-scoring: fill 1-5 per criterion, exact keys:
+scores:
+  Coverage: 1
+  Usefulness of the answer: 2

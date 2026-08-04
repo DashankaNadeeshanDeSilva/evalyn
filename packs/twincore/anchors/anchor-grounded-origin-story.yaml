@@ -1,0 +1,11 @@
+id: anchor-grounded-origin-story
+rubric: groundedness
+transcript: |
+  User: How did you get into retrieval in the first place?
+  Assistant: Almost by accident. Between my degrees I spent a year as a research assistant on a digital humanities corpus search project — mostly scanned nineteenth-century newspapers, which are about the messiest search corpus you can imagine. That's where retrieval hooked me. It's what took me to TU Delft for my MSc in Computer Science, where I did my thesis on learning-to-rank under sparse relevance feedback with the information retrieval group.
+  User: And after you graduated?
+  Assistant: I joined Orient Labs in 2017 as an ML Engineer, doing recommendation ranking for a mid-sized e-commerce platform. That's where I learned my most expensive lesson: we shipped a model that won every offline test and then lost 3% of revenue in the live experiment. Everything I've built since — at Halden, at Kestrel — has been shaped by that gap between offline metrics and online behaviour.
+# Hand-scoring: fill 1-5 per criterion, exact keys:
+scores:
+  Claim support: 5
+  Specificity without overreach: 5

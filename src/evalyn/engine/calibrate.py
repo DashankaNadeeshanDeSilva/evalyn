@@ -18,7 +18,13 @@ from pathlib import Path
 
 import yaml
 
-from evalyn.scoring.rubrics import grading_steps, load_rubric, parse_criteria
+from evalyn.scoring.rubrics import (
+    grading_steps,
+    load_rubric,
+    load_rubric_context,
+    load_rubric_steps,
+    parse_criteria,
+)
 from evalyn.scoring.tier3 import score_transcript
 from evalyn.targets.loader import Pack, PackError
 
@@ -40,7 +46,9 @@ class CalibrationResult:
     per_criterion: dict[str, float]      # keyed "<rubric>:<criterion>"
     anchors: int                         # anchors actually scored
     skipped: list[str] = field(default_factory=list)   # anchor ids without usable labels
-    unsure: list[str] = field(default_factory=list)    # judge-unsure anchors (counted as misses)
+    # judge-unsure anchors: criteria WITHOUT a clean k-draw median on them are
+    # fail-closed misses; a clean sibling criterion is compared normally
+    unsure: list[str] = field(default_factory=list)
     # human labels whose criterion name matches no rubric criterion, per anchor
     # id — reported (never silently dropped from the agreement denominator)
     unmatched: dict[str, list[str]] = field(default_factory=dict)
@@ -48,6 +56,13 @@ class CalibrationResult:
     # pair counts behind per_criterion, so per-rubric agreement can be POOLED
     # instead of averaging fractions (which is only exact under equal counts)
     per_criterion_counts: dict[str, tuple[int, int]] = field(default_factory=dict)
+    # per-anchor diagnosis (2026-07-30 calibrate failure: aggregates alone
+    # could not say WHICH anchors disagreed or why an anchor was unsure):
+    # anchor id -> {"rubric": rid, "unsure_reason": str | None,
+    # "criteria": {name: {"judge": int | None, "human": int, "within": bool,
+    # optional "unsure_reason": str for a torn criterion (spread >= 2)}}}
+    # covering exactly the matched pairs in the agreement denominator
+    per_anchor: dict[str, dict] = field(default_factory=dict)
 
 
 def load_anchors(pack: Pack) -> list[Anchor]:
@@ -94,10 +109,17 @@ async def run_calibration(pack: Pack, judge_model: str,
     usable = [a for a in anchors if _valid_labels(a.scores)]
     cache = Path(cache_dir) if cache_dir is not None else None
     rubrics = {rid: load_rubric(pack, rid) for rid in sorted({a.rubric for a in usable})}
+    # Judge context parity with the gate's tier3_scorer: each rubric's optional
+    # fact sheet reaches the calibration judge too (same scoring prompt).
+    contexts = {rid: load_rubric_context(pack, rid) for rid in rubrics}
+    # Frozen steps (2026-07-31): a committed rubrics/<rid>.steps.json IS that
+    # rubric's grading steps — no generation, no steps-cache read/write.
+    frozen = {rid: load_rubric_steps(pack, rid) for rid in rubrics}
     # Pre-warm the grading-steps cache once per rubric BEFORE concurrent scoring
     # so first-time samples cannot race to divergent steps within one run.
-    for text, rhash in rubrics.values():
-        await grading_steps(text, rhash, judge_model, cache)
+    for rid, (text, rhash) in rubrics.items():
+        if frozen[rid] is None:
+            await grading_steps(text, rhash, judge_model, cache)
     # Bound judge concurrency: at most max_concurrency anchors in flight at
     # once (an unbounded burst risks rate-limit failures against a live API).
     sem = asyncio.Semaphore(max_concurrency)
@@ -106,7 +128,9 @@ async def run_calibration(pack: Pack, judge_model: str,
         async with sem:
             return await score_transcript(rubrics[a.rubric][0], rubrics[a.rubric][1],
                                           a.transcript, judge_model, k=k,
-                                          cache_dir=cache)
+                                          cache_dir=cache,
+                                          context=contexts[a.rubric],
+                                          steps=frozen[a.rubric])
 
     results = await asyncio.gather(*[_score(a) for a in usable])
 
@@ -114,6 +138,7 @@ async def run_calibration(pack: Pack, judge_model: str,
     totals: dict[str, int] = {}
     unsure_ids: list[str] = []
     unmatched: dict[str, list[str]] = {}
+    per_anchor: dict[str, dict] = {}
     for anchor, res in zip(usable, results):
         criteria = parse_criteria(rubrics[anchor.rubric][0])
         missing = [c for c in anchor.scores if c not in criteria]
@@ -122,21 +147,40 @@ async def run_calibration(pack: Pack, judge_model: str,
         judged = res.medians if res.medians is not None else {}
         if res.unsure:
             unsure_ids.append(anchor.id)
+        detail: dict = {"rubric": anchor.rubric,
+                        "unsure_reason": (res.reason or "unsure") if res.unsure
+                        else None,
+                        "criteria": {}}
         for crit, human in anchor.scores.items():
             if crit not in criteria:
                 continue
-            # fail closed: an undecidable judge is a miss on every matched pair
-            within = False if res.unsure else _within_one(judged[crit], human)
+            # Per-criterion unsure accounting (2026-07-31 run #4 remediation):
+            # an unsure anchor voids ONLY criteria without a clean k-draw
+            # median (spread >= 2, or unparseable draws) — those are
+            # fail-closed misses, never hits, never dropped from the
+            # denominator. A sibling criterion whose draws agree keeps its
+            # median (RubricScore.criterion_medians) and is compared normally.
+            judge = (res.criterion_medians.get(crit) if res.unsure
+                     else judged[crit])
+            within = judge is not None and _within_one(judge, human)
+            entry: dict = {"judge": judge, "human": human, "within": within}
+            if res.unsure and judge is None:
+                sp = res.criterion_spreads.get(crit)
+                if sp is not None and sp >= 2:
+                    entry["unsure_reason"] = f"spread {sp} >= 2"
+            detail["criteria"][crit] = entry
             key = f"{anchor.rubric}:{crit}"
             totals[key] = totals.get(key, 0) + 1
             hits[key] = hits.get(key, 0) + (1 if within else 0)
+        per_anchor[anchor.id] = detail
 
     per_criterion = {key: hits[key] / totals[key] for key in sorted(totals)}
     overall = sum(hits.values()) / sum(totals.values()) if totals else 0.0
     counts = {key: (hits[key], totals[key]) for key in sorted(totals)}
     return CalibrationResult(overall=overall, per_criterion=per_criterion,
                              anchors=len(usable), skipped=skipped, unsure=unsure_ids,
-                             unmatched=unmatched, per_criterion_counts=counts)
+                             unmatched=unmatched, per_criterion_counts=counts,
+                             per_anchor=per_anchor)
 
 
 def _record_path(pack: Pack) -> Path:
@@ -163,10 +207,9 @@ def per_rubric_agreement(per_criterion: dict) -> dict[str, float]:
     per-criterion fractions — exact only when every criterion scored the same
     number of anchor pairs (an anchor labeling a subset of criteria breaks
     that, and the error can fall OPEN across the threshold — round-2 N8).
-    Used only for records that predate `per_rubric_agreement`/counts (e.g. the
-    committed packs/twincore/calibration.json, whose equal pair counts were
-    verified by hand); new records store the pooled value from raw counts —
-    see pooled_rubric_agreement."""
+    Used only for records that predate `per_rubric_agreement`/counts (records
+    written before round-2 N8, pre-counts schema); new records store the
+    pooled value from raw counts — see pooled_rubric_agreement."""
     by_rubric: dict[str, list[float]] = {}
     for key, val in per_criterion.items():
         by_rubric.setdefault(key.split(":", 1)[0], []).append(val)

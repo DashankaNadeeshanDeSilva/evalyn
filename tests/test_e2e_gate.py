@@ -56,8 +56,11 @@ def test_full_gate_flow_records_passk_divergence(toy_target, monkeypatch, tmp_pa
     monkeypatch.setenv("EVALYN_TARGET_URL", toy_target)
     monkeypatch.chdir(tmp_path)  # run_gate writes runs/ relative to cwd
     pack = load_pack(PACK)
-    art = run_gate(pack, judge_model="mockllm/model", log_dir=str(tmp_path / "logs"),
-                   out_dir=str(tmp_path / "runs"))
+    # real post-hoc metering prices the unpriced mockllm judge at the
+    # conservative upper bound and warns (Plan #2b Task 1: log-based metering)
+    with pytest.warns(RuntimeWarning, match="no price entry"):
+        art = run_gate(pack, judge_model="mockllm/model", log_dir=str(tmp_path / "logs"),
+                       out_dir=str(tmp_path / "runs"))
 
     _assert_leak_independent_invariants(art)
     # the artifact on disk is the same run the engine returned (round-trips)
@@ -190,7 +193,15 @@ def test_cli_gate_allow_uncalibrated_is_loud_and_marks_artifact(
         toy_target, tmp_path, rubric_pack):
     """--allow-uncalibrated: same stale pack runs, but LOUDLY — warning on
     stderr, artifact marked untrusted, and the mockllm rubric judge cannot
-    silently pass the rubric check (it comes back unsure, fail-closed)."""
+    silently pass the rubric check (it comes back unsure, fail-closed).
+
+    RETIRED SEAM (2026-07-31): this test used to reach the judge via the
+    silent steps-generation fallback (mockllm's default reply is unparseable
+    as steps JSON). Generation now fails loudly, so the pack commits frozen
+    rubrics/quality.steps.json — the reviewed-artifact path — and the judge's
+    unparseable SCORE replies still yield the fail-closed unsure verdict."""
+    (rubric_pack / "rubrics" / "quality.steps.json").write_text(
+        '["Check every claim against the owner history"]')
     env = {**os.environ, "EVALYN_TARGET_URL": toy_target}
     proc = subprocess.run(
         [EVALYN_BIN, "gate", "--target", str(rubric_pack), "--allow-uncalibrated",

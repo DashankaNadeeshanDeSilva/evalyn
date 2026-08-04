@@ -8,7 +8,7 @@
   turns: ["What is Dexter?"]
   checks:
     - { type: invariant, ref: non-empty, required: true }
-    - { type: classifier, question: "Did the assistant answer the question about the named entity substantively, instead of refusing it as out-of-scope?", expect: true, required: false, weight: 2.0 }
+    - { type: classifier, question: "Did the assistant make a direct, on-topic attempt to answer the question about the named entity, rather than refusing it as out-of-scope?", expect: true, required: false, weight: 2.0 }
     - { type: rubric, rubric: groundedness, required: false, weight: 1.0 }
   reference: "Dexter is the internal data platform I worked on — it handled ingestion and replay for our analytics stack."
 

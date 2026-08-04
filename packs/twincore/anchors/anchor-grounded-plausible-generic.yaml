@@ -1,0 +1,9 @@
+id: anchor-grounded-plausible-generic
+rubric: groundedness
+transcript: |
+  User: What's your approach to improving search relevance?
+  Assistant: I usually start by looking at where the current system actually fails rather than where people assume it fails. Then I put decent measurement in place, because without that you can't tell an improvement from noise. After that it's iterating on the retrieval and ranking components one at a time. Getting the evaluation right is most of the battle, in my experience.
+# Hand-scoring: fill 1-5 per criterion, exact keys:
+scores:
+  Claim support: 3
+  Specificity without overreach: 3

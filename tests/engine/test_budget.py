@@ -51,36 +51,50 @@ def test_estimate_cost_sums_models():
     assert cost > 0
 
 
-# --- fail-open canaries: _judge_usd() returns 0.0 on ANY metering failure
+# --- fail-open canaries: _judge_usd(log) returns 0.0 on ANY metering failure
 # (per the brief), which silently disables the budget cap. These tests make an
-# Inspect upgrade that moves the private import a RED test, not a silent no-op.
+# Inspect upgrade that moves the log.stats.model_usage seam a RED test, not a
+# silent no-op.
 
-def test_inspect_private_model_usage_import_canary():
-    from inspect_ai.model._model import model_usage
-    assert callable(model_usage)
-    assert isinstance(model_usage(), dict)
+def test_inspect_evallog_stats_model_usage_canary():
+    # Plan #2b Task 1 seam: _judge_usd reads log.stats.model_usage from the
+    # RETURNED EvalLog (per-eval by construction — never the process-global
+    # model_usage() ContextVar, which is invisible outside the eval loop and
+    # accumulates across evals).
+    from inspect_ai.log import EvalLog, EvalStats
+
+    assert "stats" in EvalLog.model_fields
+    assert "model_usage" in EvalStats.model_fields
+    assert isinstance(EvalStats().model_usage, dict)
 
 
-def test_judge_usd_does_not_hit_fallback_under_real_import():
+def test_judge_usd_does_not_hit_fallback_on_real_evalstats():
     import warnings
+    from types import SimpleNamespace
+
+    from inspect_ai.log import EvalStats
 
     from evalyn.engine.run import _judge_usd
 
     with warnings.catch_warnings(record=True) as caught:
         warnings.simplefilter("always")
-        assert _judge_usd() == 0.0  # no eval ran in this context: empty usage
+        # a real (empty) EvalStats traverses cleanly: empty usage -> 0.0
+        assert _judge_usd(SimpleNamespace(stats=EvalStats())) == 0.0
     assert caught == []  # the except-path warning must NOT fire
 
 
 def test_judge_usd_warns_loudly_when_metering_unavailable(monkeypatch):
+    from types import SimpleNamespace
+
     from evalyn.engine import run as run_mod
 
     def boom(_usage):
         raise RuntimeError("inspect internals moved")
 
     monkeypatch.setattr(run_mod, "estimate_cost", boom)
+    log = SimpleNamespace(stats=SimpleNamespace(model_usage={}))
     with pytest.warns(RuntimeWarning, match="budget cap not enforced"):
-        assert run_mod._judge_usd() == 0.0  # return value contract unchanged
+        assert run_mod._judge_usd(log) == 0.0  # return value contract unchanged
 
 
 # --- post-hoc metering in run_gate (budget is checked AFTER the eval; the
@@ -93,7 +107,7 @@ def test_run_gate_over_cap_writes_artifact_then_raises(toy_target, monkeypatch,
     monkeypatch.setenv("EVALYN_TARGET_URL", toy_target)
     monkeypatch.chdir(tmp_path)  # keep runs/ writes out of the repo
     # example pack cap is the default max_usd_per_run=5.0; meter above it
-    monkeypatch.setattr("evalyn.engine.run._judge_usd", lambda: 7.5)
+    monkeypatch.setattr("evalyn.engine.run._judge_usd", lambda log: 7.5)
     pack = load_pack(str(REPO_EXAMPLE))
     with pytest.raises(BudgetExceeded, match="max_usd_per_run"):
         run_gate(pack, judge_model="mockllm/model", log_dir=str(tmp_path / "logs"),
@@ -108,7 +122,7 @@ def test_run_gate_under_cap_records_judge_usd(toy_target, monkeypatch, tmp_path)
 
     monkeypatch.setenv("EVALYN_TARGET_URL", toy_target)
     monkeypatch.chdir(tmp_path)
-    monkeypatch.setattr("evalyn.engine.run._judge_usd", lambda: 0.25)
+    monkeypatch.setattr("evalyn.engine.run._judge_usd", lambda log: 0.25)
     pack = load_pack(str(REPO_EXAMPLE))
     art = run_gate(pack, judge_model="mockllm/model", log_dir=str(tmp_path / "logs"),
                    out_dir=str(tmp_path / "runs"))

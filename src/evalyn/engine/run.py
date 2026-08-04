@@ -45,6 +45,17 @@ class ProbeResult:
     unsure_trials: int = 0    # NOANSWER accounting: required-unsure or no-signal
     #                           (all non-required unsure) trials, not failures
     checks: list[dict] = field(default_factory=list)  # representative CheckResults
+    # Per-trial evidence, one dict per SCORED epoch (same rule as `trials`),
+    # sorted by epoch: {"epoch": int, "transcript": str,
+    # "session_seconds": float | None, "invariant_failures": int}. The
+    # transcript is the judged one (labeled_transcript format: "User: …\n
+    # Assistant: …" — identical to what Tier-2/3 saw); session_seconds is the
+    # target session wall-clock the solver stored — concurrency-gate queue wait
+    # excluded (None on pre-#2b logs);
+    # invariant_failures counts FAILED `invariant:<id>` checks. Additive
+    # (#2b Task 6): old artifacts/baselines load with [] — this is the compare
+    # mode's pairing input (Task 8).
+    trial_records: list[dict] = field(default_factory=list)
 
 
 @dataclass
@@ -114,6 +125,23 @@ def pack_fingerprint(pack: Pack) -> str:
     return h.hexdigest()
 
 
+def _sample_transcript(sample) -> str:
+    """The judged transcript, rebuilt from the log sample's messages.
+
+    Same format as scoring/transcript.py's labeled_transcript (the text
+    Tier-2/3 judged) — by role name here because log messages are re-parsed
+    ChatMessage variants, not the solver's original instances.
+    """
+    blocks = []
+    for m in sample.messages or []:
+        role = getattr(m, "role", "")
+        if role == "user":
+            blocks.append(f"User: {m.text}")
+        elif role == "assistant":
+            blocks.append(f"Assistant: {m.text}")
+    return "\n".join(blocks)
+
+
 def _reduce_log_to_probes(log, pack: Pack) -> list[ProbeResult]:
     by_id = {p.id: p for p in pack.probes}
     # Group CheckResults per (probe_id, epoch) across ALL scorers present in the
@@ -123,12 +151,19 @@ def _reduce_log_to_probes(log, pack: Pack) -> list[ProbeResult]:
     # fully-errored probe keeps trials == 0 and the gate hard-fails it as
     # MISSING — never a silent pass (fail-closed, Plan #1 rule).
     trials: dict[str, dict[int, list[dict]]] = defaultdict(lambda: defaultdict(list))
+    # Per-sample evidence for trial_records: the judged transcript plus the
+    # session wall-clock the solver put in the sample store. Captured for every
+    # sample; only SCORED epochs (present in `trials`) ever emit a record.
+    sample_info: dict[tuple[str, int], tuple[str, float | None]] = {}
     for sample in log.samples or []:
         pid = sample.metadata["id"] if sample.metadata else sample.id
         for sc in (sample.scores or {}).values():
             checks = (sc.metadata or {}).get("checks") or []
             if checks:
                 trials[pid][sample.epoch].extend(checks)
+        sample_info[(pid, sample.epoch)] = (
+            _sample_transcript(sample),
+            (sample.store or {}).get("evalyn:session_seconds"))
 
     # The task runs EVERY probe at the pack-wide max(samples) (task_builder's
     # Epochs(k)) — record that expectation so the gate can fail probes whose
@@ -144,7 +179,9 @@ def _reduce_log_to_probes(log, pack: Pack) -> list[ProbeResult]:
         req_passes: list[bool] = []
         unsure_ct = 0
         scores: list[float] = []
-        for _epoch, crs in per_epoch.items():
+        trial_records: list[dict] = []
+        for epoch in sorted(per_epoch):
+            crs = per_epoch[epoch]
             req_pass, trial_unsure, trial_score = aggregate_trial(crs)
             req_passes.append(req_pass)
             unsure_ct += 1 if trial_unsure else 0
@@ -154,6 +191,16 @@ def _reduce_log_to_probes(log, pack: Pack) -> list[ProbeResult]:
             # fail open (PR #4 fix #1).
             if trial_score is not None:
                 scores.append(trial_score)
+            transcript, session_seconds = sample_info.get((pid, epoch), ("", None))
+            trial_records.append({
+                "epoch": epoch,
+                "transcript": transcript,
+                "session_seconds": session_seconds,
+                "invariant_failures": sum(
+                    1 for c in crs
+                    if str(c.get("check", "")).startswith("invariant:")
+                    and c.get("passed") is False),
+            })
         pass_at_k = 1.0 if any(req_passes) else 0.0
         pass_k = 1.0 if (n > 0 and all(req_passes)) else 0.0
         # no trial produced a usable score -> 0.0 (fail-closed), surfaced via
@@ -166,15 +213,21 @@ def _reduce_log_to_probes(log, pack: Pack) -> list[ProbeResult]:
             safety_critical=probe.safety_critical, samples=probe.samples,
             trials=n, expected_trials=expected, pass_at_k=pass_at_k,
             pass_k=pass_k, mean_score=mean_score,
-            unsure_trials=unsure_ct, checks=rep_checks))
+            unsure_trials=unsure_ct, checks=rep_checks,
+            trial_records=trial_records))
     return results
 
 
-def _judge_usd() -> float:
-    """Aggregate judge spend for the just-finished eval (post-hoc metering)."""
+def _judge_usd(log) -> float:
+    """Judge spend for THIS eval, read from the returned eval log.
+
+    Never the process-global model_usage() ContextVar: that value is set inside
+    Inspect's eval event-loop context and does not propagate here (it returned
+    {} on every real run — live-confirmed 2026-07-28), and it accumulates
+    across evals in one process (would double-count compare's second eval).
+    """
     try:
-        from inspect_ai.model._model import model_usage
-        return estimate_cost(model_usage())
+        return estimate_cost(log.stats.model_usage)
     except Exception as e:
         # Fail-open by design (brief): metering failure must not kill the run.
         # But be LOUD about it — a silent 0.0 would quietly disable the cap.
@@ -214,7 +267,7 @@ def run_gate(pack: Pack, judge_model: str = "mockllm/model",
         rubric_scores_untrusted=rubric_scores_untrusted,
         total_unsure_trials=sum(p.unsure_trials for p in probes),
     )
-    art.judge_usd = _judge_usd()
+    art.judge_usd = _judge_usd(log)
     # Write the artifact BEFORE any budget check so a partial/complete artifact
     # survives a budget breach for inspection. Atomic temp-then-rename so a
     # crash mid-write never leaves a torn artifact behind.

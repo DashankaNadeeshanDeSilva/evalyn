@@ -58,10 +58,20 @@ def _anchor_yaml(tmp_path, name: str, *, rubric: str = "persona",
     (d / f"{name}.yaml").write_text("\n".join(lines) + "\n")
 
 
-def _rubric_score(medians: dict[str, int] | None, *, unsure: bool = False) -> RubricScore:
+def _rubric_score(medians: dict[str, int] | None, *, unsure: bool = False,
+                  reason: str | None = None,
+                  criterion_medians: dict[str, int] | None = None,
+                  criterion_spreads: dict[str, int] | None = None) -> RubricScore:
+    # mirrors production: a clean result's criterion_medians == medians; an
+    # unsure result carries only explicitly-provided per-criterion data
+    if criterion_medians is None:
+        criterion_medians = dict(medians) if medians else {}
     return RubricScore(medians=medians, samples=[], steps=["s"],
                        rubric_hash="h", unsure=unsure,
-                       reason="stubbed disagreement" if unsure else "")
+                       reason=(reason if reason is not None
+                               else ("stubbed disagreement" if unsure else "")),
+                       criterion_medians=criterion_medians,
+                       criterion_spreads=criterion_spreads or {})
 
 
 def _stub_scores(monkeypatch, by_anchor_transcript: dict[str, RubricScore]):
@@ -69,7 +79,8 @@ def _stub_scores(monkeypatch, by_anchor_transcript: dict[str, RubricScore]):
     from evalyn.engine import calibrate as cal
     calls = []
 
-    async def fake(rubric_text, rubric_hash, transcript, judge_model, k=3, cache_dir=None):
+    async def fake(rubric_text, rubric_hash, transcript, judge_model, k=3,
+                   cache_dir=None, context=None, steps=None):
         calls.append(transcript.strip())
         return by_anchor_transcript[transcript.strip()]
 
@@ -88,6 +99,46 @@ def _stub_steps(monkeypatch):
 
     monkeypatch.setattr(cal, "grading_steps", fake)
     return calls
+
+
+# ----------------------------------------------- frozen steps (2026-07-31)
+
+
+async def test_run_calibration_uses_frozen_steps_without_generation(
+        monkeypatch, tmp_path):
+    # a committed rubrics/<rid>.steps.json disables the pre-warm generation
+    # call for that rubric and is handed to score_transcript verbatim
+    pack = _pack(tmp_path)
+    (tmp_path / "rubrics" / "persona.steps.json").write_text(
+        '["frozen persona step"]')
+    _anchor_yaml(tmp_path, "a1", transcript="T1",
+                 scores={"voice": 4, "warmth": 4})
+    steps_calls = _stub_steps(monkeypatch)
+    from evalyn.engine import calibrate as cal
+    seen_steps = []
+
+    async def fake(rubric_text, rubric_hash, transcript, judge_model, k=3,
+                   cache_dir=None, context=None, steps=None):
+        seen_steps.append(steps)
+        return _rubric_score({"voice": 4, "warmth": 4})
+
+    monkeypatch.setattr(cal, "score_transcript", fake)
+    result = await run_calibration(pack, "mockllm/model", cache_dir=None)
+    assert steps_calls["n"] == 0                    # no generation pre-warm
+    assert seen_steps == [["frozen persona step"]]  # frozen steps passed through
+    assert result.overall == 1.0
+
+
+async def test_run_calibration_still_generates_steps_without_frozen_file(
+        monkeypatch, tmp_path):
+    # no steps file -> the pre-warm generation path runs exactly as before
+    pack = _pack(tmp_path)
+    _anchor_yaml(tmp_path, "a1", transcript="T1",
+                 scores={"voice": 4, "warmth": 4})
+    steps_calls = _stub_steps(monkeypatch)
+    _stub_scores(monkeypatch, {"T1": _rubric_score({"voice": 4, "warmth": 4})})
+    await run_calibration(pack, "mockllm/model", cache_dir=None)
+    assert steps_calls["n"] == 1
 
 
 # ------------------------------------------------------------- load_anchors
@@ -197,8 +248,78 @@ async def test_run_calibration_per_criterion_and_overall(monkeypatch, tmp_path):
     assert result.skipped == [] and result.unsure == []
 
 
+# ---------- per-criterion unsure accounting (2026-07-31, run #4 remediation)
+# RETIRED SEAM: anchor-wide voiding (one torn criterion counted EVERY
+# criterion of the anchor as a miss). Now only a criterion WITHOUT a clean
+# k-draw median is the fail-closed miss; a sibling with a clean median is
+# compared normally. Denominators never shrink: torn pairs stay counted.
+
+
+async def test_run_calibration_torn_criterion_missed_clean_sibling_counted(
+        monkeypatch, tmp_path):
+    pack = _pack(tmp_path)
+    _anchor_yaml(tmp_path, "a1", transcript="T1", scores={"voice": 4, "warmth": 4})
+    _stub_steps(monkeypatch)
+    _stub_scores(monkeypatch, {"T1": _rubric_score(
+        None, unsure=True,
+        reason="judge disagreement (spread >= 2) on ['warmth']",
+        criterion_medians={"voice": 4},
+        criterion_spreads={"voice": 0, "warmth": 3})})
+    result = await run_calibration(pack, "mockllm/model", cache_dir=None)
+    # clean sibling compared normally (hit); torn criterion fail-closed miss
+    assert result.per_criterion == {"persona:voice": 1.0, "persona:warmth": 0.0}
+    # denominator preserved: the torn pair stays IN the totals
+    assert result.per_criterion_counts == {"persona:voice": (1, 1),
+                                           "persona:warmth": (0, 1)}
+    assert result.overall == 0.5
+    assert result.unsure == ["a1"]  # the anchor is still reported judge-unsure
+    assert result.per_anchor["a1"]["criteria"]["voice"] == {
+        "judge": 4, "human": 4, "within": True}
+    assert result.per_anchor["a1"]["criteria"]["warmth"] == {
+        "judge": None, "human": 4, "within": False,
+        "unsure_reason": "spread 3 >= 2"}
+
+
+async def test_run_calibration_clean_sibling_of_torn_criterion_can_still_miss(
+        monkeypatch, tmp_path):
+    # counting the clean sibling normally is not a free hit: judge 1 vs
+    # human 4 is a genuine miss
+    pack = _pack(tmp_path)
+    _anchor_yaml(tmp_path, "a1", transcript="T1", scores={"voice": 4, "warmth": 4})
+    _stub_steps(monkeypatch)
+    _stub_scores(monkeypatch, {"T1": _rubric_score(
+        None, unsure=True,
+        criterion_medians={"voice": 1},
+        criterion_spreads={"voice": 1, "warmth": 2})})
+    result = await run_calibration(pack, "mockllm/model", cache_dir=None)
+    assert result.per_criterion == {"persona:voice": 0.0, "persona:warmth": 0.0}
+    assert result.per_anchor["a1"]["criteria"]["voice"] == {
+        "judge": 1, "human": 4, "within": False}
+
+
+async def test_run_calibration_all_criteria_torn_all_miss(monkeypatch, tmp_path):
+    # spread >= 2 on BOTH criteria: both stay fail-closed misses (a torn
+    # criterion is never a hit and never leaves the denominator)
+    pack = _pack(tmp_path)
+    _anchor_yaml(tmp_path, "a1", transcript="T1", scores={"voice": 4, "warmth": 4})
+    _stub_steps(monkeypatch)
+    _stub_scores(monkeypatch, {"T1": _rubric_score(
+        None, unsure=True,
+        criterion_medians={},
+        criterion_spreads={"voice": 2, "warmth": 4})})
+    result = await run_calibration(pack, "mockllm/model", cache_dir=None)
+    assert result.overall == 0.0
+    assert result.per_criterion_counts == {"persona:voice": (0, 1),
+                                           "persona:warmth": (0, 1)}
+    assert result.per_anchor["a1"]["criteria"]["voice"]["unsure_reason"] == \
+        "spread 2 >= 2"
+    assert result.per_anchor["a1"]["criteria"]["warmth"]["unsure_reason"] == \
+        "spread 4 >= 2"
+
+
 async def test_run_calibration_unsure_judge_counts_as_disagreement(monkeypatch, tmp_path):
-    # fail-closed: an anchor the judge cannot decide is a miss, never dropped
+    # fail-closed: an unsure anchor with NO clean per-criterion medians (e.g.
+    # unparseable draws) misses every pair, never dropped
     pack = _pack(tmp_path)
     _anchor_yaml(tmp_path, "a1", transcript="T1", scores={"voice": 4, "warmth": 4})
     _anchor_yaml(tmp_path, "a2", transcript="T2", scores={"voice": 4, "warmth": 4})
@@ -252,7 +373,8 @@ def _stub_scores_tracking_in_flight(monkeypatch):
     from evalyn.engine import calibrate as cal
     state = {"in_flight": 0, "max_in_flight": 0}
 
-    async def fake(rubric_text, rubric_hash, transcript, judge_model, k=3, cache_dir=None):
+    async def fake(rubric_text, rubric_hash, transcript, judge_model, k=3,
+                   cache_dir=None, context=None, steps=None):
         state["in_flight"] += 1
         state["max_in_flight"] = max(state["max_in_flight"], state["in_flight"])
         # Yield twice so every unbounded sibling coroutine would enter before
@@ -298,6 +420,63 @@ async def test_run_calibration_rejects_nonpositive_max_concurrency(monkeypatch, 
         with pytest.raises(ValueError, match="max_concurrency"):
             await run_calibration(pack, "mockllm/model", cache_dir=None,
                                   max_concurrency=bad)
+
+
+async def test_run_calibration_threads_facts_context_to_judge(monkeypatch, tmp_path):
+    # Plan #2b Task 2: run_calibration passes each rubric's fact sheet (or
+    # None) into score_transcript, mirroring the gate's tier3_scorer
+    pack = _pack(tmp_path)
+    (tmp_path / "rubrics" / "persona.facts.md").write_text("FACT: nine years of Python")
+    _anchor_yaml(tmp_path, "a1", transcript="T1", scores={"voice": 4, "warmth": 4})
+    _anchor_yaml(tmp_path, "a2", rubric="tone", transcript="T2", scores={"Tone": 4})
+    _stub_steps(monkeypatch)
+    from evalyn.engine import calibrate as cal
+    seen: dict[str, str | None] = {}
+
+    async def fake(rubric_text, rubric_hash, transcript, judge_model, k=3,
+                   cache_dir=None, context=None, steps=None):
+        seen[transcript.strip()] = context
+        return _rubric_score({"voice": 4, "warmth": 4} if "voice" in rubric_text
+                             else {"Tone": 4})
+
+    monkeypatch.setattr(cal, "score_transcript", fake)
+    await run_calibration(pack, "mockllm/model", cache_dir=None)
+    assert seen["T1"] == "FACT: nine years of Python"  # persona has a facts sheet
+    assert seen["T2"] is None                          # tone has none
+
+
+async def test_run_calibration_reports_per_anchor_detail(monkeypatch, tmp_path):
+    # 2026-07-30 calibrate failure: nothing persisted or printed could say
+    # WHICH anchors disagreed or why an anchor was unsure — the result must
+    # carry judge-vs-human per matched criterion plus the unsure reason
+    pack = _pack(tmp_path)
+    _anchor_yaml(tmp_path, "a1", transcript="T1", scores={"voice": 4, "warmth": 5})
+    _anchor_yaml(tmp_path, "a2", transcript="T2", scores={"voice": 4})
+    _stub_steps(monkeypatch)
+    _stub_scores(monkeypatch, {
+        "T1": _rubric_score({"voice": 4, "warmth": 3}),   # voice hit, warmth miss
+        "T2": _rubric_score(None, unsure=True),
+    })
+    result = await run_calibration(pack, "mockllm/model", cache_dir=None)
+    assert result.per_anchor["a1"] == {
+        "rubric": "persona", "unsure_reason": None,
+        "criteria": {"voice": {"judge": 4, "human": 4, "within": True},
+                     "warmth": {"judge": 3, "human": 5, "within": False}}}
+    assert result.per_anchor["a2"] == {
+        "rubric": "persona", "unsure_reason": "stubbed disagreement",
+        "criteria": {"voice": {"judge": None, "human": 4, "within": False}}}
+
+
+async def test_run_calibration_per_anchor_excludes_unmatched_labels(monkeypatch, tmp_path):
+    # per-anchor detail covers only pairs in the agreement denominator; labels
+    # matching no rubric criterion stay in `unmatched`, not `per_anchor`
+    pack = _pack(tmp_path)
+    _anchor_yaml(tmp_path, "a1", transcript="T1", scores={"voice": 4, "ghost": 2})
+    _stub_steps(monkeypatch)
+    _stub_scores(monkeypatch, {"T1": _rubric_score({"voice": 4, "warmth": 4})})
+    result = await run_calibration(pack, "mockllm/model", cache_dir=None)
+    assert result.per_anchor["a1"]["criteria"] == {
+        "voice": {"judge": 4, "human": 4, "within": True}}
 
 
 async def test_run_calibration_no_usable_anchors(monkeypatch, tmp_path):
@@ -356,6 +535,19 @@ def test_is_stale_rubric_hash_change(tmp_path):
     pack = _pack(tmp_path, rubric_check="tone")
     write_record(pack, 0.9, {"tone:Calm": 0.9}, "anthropic/claude-x")
     (tmp_path / "rubrics" / "tone.md").write_text("# Tone\nEdited since calibration.\n")
+    stale, why = is_stale(pack, "anthropic/claude-x")
+    assert stale and "tone" in why and "changed" in why
+
+
+def test_is_stale_when_facts_sheet_edited_after_calibration(tmp_path):
+    # Plan #2b Task 2: load_rubric's hash covers a sibling `<rid>.facts.md`,
+    # so a facts edit stales the record with ZERO changes to this module's
+    # staleness logic
+    pack = _pack(tmp_path, rubric_check="tone")
+    write_record(pack, 0.9, {"tone:Calm": 0.9}, "anthropic/claude-x")
+    stale, _ = is_stale(pack, "anthropic/claude-x")
+    assert stale is False
+    (tmp_path / "rubrics" / "tone.facts.md").write_text("FACT: added after calibration")
     stale, why = is_stale(pack, "anthropic/claude-x")
     assert stale and "tone" in why and "changed" in why
 

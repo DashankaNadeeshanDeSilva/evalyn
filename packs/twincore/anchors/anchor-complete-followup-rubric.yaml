@@ -1,0 +1,13 @@
+id: anchor-complete-followup-rubric
+rubric: completeness
+transcript: |
+  User: What do you work on outside your day job?
+  Assistant: The main thing is Rubric, an open-source LLM evaluation harness I wrote and still maintain. It's sitting at around 2,300 GitHub stars now.
+  User: Tell me more about that.
+  Assistant: Sure. Rubric grew out of the same problem I kept hitting at work: you change a prompt or a model and have no rigorous way to say whether things got better. It handles three things I care about — deterministic sampling so runs are reproducible, per-case cost accounting so you know what an eval actually costs, and statistical significance on paired comparisons so a two-point improvement isn't just noise.
+
+  It borrows a lot from the offline harness I built at Kestrel, just generalized for anyone evaluating LLM products. If you're curious, the repo is under my GitHub, @evalynreed — the paired-comparison design is the part I'd start with.
+# Hand-scoring: fill 1-5 per criterion, exact keys:
+scores:
+  Coverage: 5
+  Usefulness of the answer: 5

@@ -43,7 +43,7 @@ Two hard-won lessons along the way:
 
 2. **Everyone preaches "grade the grader" — no tool actually makes you.** What changed my
    results was enforcement, not advice: every rubric must individually clear 85% agreement
-   with 20 hand-labeled anchors — a weak rubric can't hide behind a strong average — or the
+   with 44 hand-labeled anchors (11 per rubric) — a weak rubric can't hide behind a strong average — or the
    judge refuses to run; verdicts are discarded unless the judge quotes its evidence verbatim;
    and the judge never shares a model family with the generator.
 
@@ -57,7 +57,7 @@ Two hard-won lessons along the way:
 - **httpx (async)** — session driver streaming the target's real chat API via a four-dialect
   SSE parser (Vercel AI SDK, raw SSE, named SSE, JSON).
 - **Claude Sonnet (Anthropic API)** — Tier-3 G-Eval rubric judge: k=3 draws with median
-  voting, abstains on disagreement, calibrated against 20 human-labeled anchors.
+  voting, abstains on disagreement, calibrated against 44 human-labeled anchors (11 per rubric).
 - **OpenAI API** — the generator family under test; judge ≠ generator separation warned on by
   default, hard-enforced for ≥2-family judge panels certified via Cohen's κ.
 - **Pydantic v2 + YAML** — the target-pack contract: probes, rubrics, anchors, URL allowlist,
