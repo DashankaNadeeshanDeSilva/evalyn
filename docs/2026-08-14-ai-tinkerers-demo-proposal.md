@@ -7,49 +7,33 @@ https://bremen.aitinkerers.org/meetup/mu_2qFDcsvx_Q0/speaking
 
 ## Talk Title
 
-**My AI Product Had Zero Tests — So I Built an Eval Engine That Red-Teams It in CI**
+**Evalyn: Red-Teaming Conversational AI in CI**
 
-*(alternatives, pick your favorite:)*
-- Grading the Grader: Calibrated LLM Judges, pass^k, and a Gate That Says NO
-- Evalyn: Turning "Vibes" into a CI-Grade PASS/FAIL for LLM Products
+*(alternatives, matched to AI Tinkerers title conventions:)*
+- Evalyn: LLM Judges That Refuse to Run
+- Evalyn: CI-Grade Evals for Conversational AI
 
 ---
 
 ## What did you build? (Required)
 
-Evalyn is an open-source evaluation engine (MIT, built on Inspect AI) that black-box-drives any
-conversational AI product over its real HTTP/SSE chat API, grades every reply through a
-three-tier trust ladder — deterministic checks, an evidence-quoting classifier judge, and a
-human-calibrated rubric judge — and returns a CI-grade PASS/FAIL against a committed baseline.
-It runs in three modes — `gate` (did I break anything?), `compare` (blind A/B of two configs),
-and `discover` (a red-team agent whose confirmed findings become new regression probes) — with
-a local `evalyn ui` cockpit for watching runs, diffs, and judge-trust trends. Sessions can be
-scripted or driven by persona-based LLM-simulated users with seeded perturbations — typos,
-topic drift, mid-conversation goal shifts. The engine knows
-nothing about any specific product: everything product-specific lives in a swappable YAML
-"target pack." I built it because my own shipping product — TwinCore, a digital-AI-twin chat
-app — had zero evals.
+Evalyn is an open-source evaluation engine that black-box-drives any conversational AI product over its real HTTP/SSE chat API, grades every reply through a three-tier trust ladder — deterministic checks, an evidence-quoting classifier judge, and a human-calibrated rubric judge — and returns a CI-grade PASS/FAIL against a committed baseline. It runs in three modes — `gate` (did I break anything?), `compare` (blind A/B of two configs), and `discover` (a red-team agent whose confirmed findings become new regression probes) with a local `evalyn ui` cockpit for watching runs, diffs, and judge-trust trends. Sessions can be scripted or driven by persona-based LLM-simulated users with seeded perturbations — typos, topic drift, mid-conversation goal shifts. The engine knows nothing about any specific product: everything product-specific lives in a swappable YAML "target pack." I built it because my own shipping product — NiuwnAI, a digital-AI-twin app had zero evals.
 
-Live, I'll run the full loop against the real TwinCore endpoint: `evalyn gate` streaming a
-50-probe suite (including a 31-case injection suite — 28 attacks, 3 controls — seeded from
-real production failures), then a
-deliberately regressed prompt turning the baseline diff red. Then the two signature moments:
-`evalyn calibrate` grading the LLM judge against 44 hand-labeled human anchors (11 per rubric) — and refusing
-to run below 85% agreement — and the `discover` red-team agent auto-emitting a brand-new,
-reproducible regression probe from a failure it found seconds earlier, with the whole run
-watchable in the `evalyn ui` cockpit. Real code, real logs, no slides.
+Live, I'll run a short but real showcase against the actual NiuwnAI endpoint: a focused
+`evalyn gate` pass streaming injection-probe verdicts in the terminal, ending with a
+deliberately regressed prompt turning the baseline diff red. The rest — the calibration gate
+that refuses to run below 85% human agreement, `discover` auto-emitting new regression probes,
+the `evalyn ui` cockpit — I'll show from real logs and the repo as time allows.
 
 ---
 
 ## What will another builder learn? (Required)
 
-**The reusable pattern: strict engine/pack separation.** Evalyn's engine contains zero
-TwinCore knowledge — endpoints, probes, rubrics, human anchors, budget, and target allowlist
-all live in a YAML target pack. That's the takeaway story: evaluating *your* conversational AI
-means writing a pack for your stack, not writing eval code — the same pattern took TwinCore
-from zero evals to a CI-gated 50-probe suite with an enforced calibration gate, and it ports
-to any chat backend that speaks HTTP/SSE (novel auth or stream shapes need only a small
-adapter — the probes and rubrics are the one part that's always bespoke, and honestly so).
+**The reusable pattern: strict engine/pack separation.** The engine contains zero NiuwnAI
+knowledge — endpoints, probes, rubrics, anchors, budget, and allowlist all live in a YAML
+target pack. Evaluating *your* conversational AI means writing a pack, not eval code: the same
+pattern took NiuwnAI from zero evals to a CI-gated 50-probe suite with an enforced calibration
+gate, and it ports to any HTTP/SSE chat backend (only the probes and rubrics stay bespoke).
 
 Two hard-won lessons along the way:
 
@@ -68,28 +52,24 @@ Two hard-won lessons along the way:
 ## Technologies Used (Required)
 
 - **Inspect AI ≥0.3.249 (UK AI Safety Institute)** — the eval spine: probes compile to
-  Task/Solver/Scorer with pass@k / pass^k reducers; its immutable eval logs are what the gate
-  layer re-reads to make the PASS/FAIL call.
-- **httpx (async)** — the session driver: streams the target's real chat API through a
-  four-dialect SSE parser (Vercel AI SDK frames, raw SSE, named SSE, JSON).
-- **Claude Sonnet (Anthropic API)** — Tier-3 G-Eval rubric judge: k=3 self-consistency draws
-  with median voting, abstains on disagreement, calibrated against 44 human-labeled anchors (11 per rubric).
-- **OpenAI API** — the generator family under test; judge ≠ generator family separation is
-  warned on by default and hard-enforced for judge panels, which span ≥2 model families
-  certified via Cohen's κ.
+  Task/Solver/Scorer with pass@k / pass^k reducers; the gate re-reads its immutable eval logs
+  for the PASS/FAIL call.
+- **httpx (async)** — session driver streaming the target's real chat API via a four-dialect
+  SSE parser (Vercel AI SDK, raw SSE, named SSE, JSON).
+- **Claude Sonnet (Anthropic API)** — Tier-3 G-Eval rubric judge: k=3 draws with median
+  voting, abstains on disagreement, calibrated against 44 human-labeled anchors (11 per rubric).
+- **OpenAI API** — the generator family under test; judge ≠ generator separation warned on by
+  default, hard-enforced for ≥2-family judge panels certified via Cohen's κ.
 - **Pydantic v2 + YAML** — the target-pack contract: probes, rubrics, anchors, URL allowlist,
-  and a hard per-run USD budget ceiling.
-- **Typer** — the CLI (`evalyn gate / compare / discover / calibrate / validate-pack`) with
-  CI-meaningful exit codes: 0 pass, 1 gate fail, 2 setup error, 3 run-invalid (errored ≠
-  failed, so infra flakiness can't fail the quality gate).
-- **FastAPI + React SPA (Vite, TypeScript, Tailwind, Recharts)** — `evalyn ui`, the local
-  cockpit: prebuilt bundle shipped inside the Python wheel, `runs/` as its database, every UI
-  action mapping to a CLI-visible artifact.
-- **GitHub Actions** — a reusable `evalyn-gate.yml` workflow that runs the gate on every PR
-  and posts the Markdown gate report as a PR comment.
-- **TwinCore** — my own shipping digital-AI-twin chat product: the live demo target and
-  reference pack. A zero-key `mockllm` mode plus a bundled practice target let anyone drive
-  the transport-and-gate loop with no API keys (bring a real judge model for scoring).
+  per-run USD budget ceiling.
+- **Typer** — CLI (`gate / compare / discover / calibrate / validate-pack`); exit codes
+  0 pass / 1 fail / 2 setup error / 3 run-invalid (errored ≠ failed).
+- **FastAPI + React (Vite, TypeScript, Tailwind, Recharts)** — the `evalyn ui` local cockpit:
+  prebuilt bundle shipped in the wheel, `runs/` as its database.
+- **GitHub Actions** — reusable `evalyn-gate.yml` workflow: gates every PR, posts the report
+  as a PR comment.
+- **NiuwnAI** — my shipping digital-AI-twin chat product: live demo target and reference
+  pack; a zero-key `mockllm` mode + practice target let anyone try it without API keys.
 
 ---
 
@@ -108,9 +88,10 @@ Two hard-won lessons along the way:
 - **Complete your AI Tinkerers profile before submitting** (GitHub + social links). Their FAQ
   says organizers pass over thin submissions/profiles; this weighs as much as the proposal text.
 - **Rehearse to 5 minutes.** AI Tinkerers demos run ~5 min, live only ("show the thing running,
-  not the video of the thing running"). The timed run: gate ≈90s (pre-warmed, land on the tail)
-  → break-it-on-purpose ≈60s → calibrate-refuses-to-run ≈90s → `discover` emits a new probe
-  file ≈60s.
+  not the video of the thing running"). New pacing per the reduced live scope: ~2 min live
+  (focused gate pass on the injection subset, pre-warmed, ending on the red baseline diff) +
+  ~3 min explanation; keep calibrate / `discover` / `evalyn ui` as pre-baked logs and
+  screenshots to click into if time allows.
 - **Don't open with "I built an eval framework"** — 30+ exist and the audience is fatigued.
   Open with the product that had zero tests, or the tool that refuses to run for its own
   operator. Let "framework" be incidental.
