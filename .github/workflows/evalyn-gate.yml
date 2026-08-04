@@ -66,7 +66,8 @@ jobs:
       - name: Launch target
         if: inputs.target-command != ''
         run: |
-          ${{ inputs.target-command }} > target.log 2>&1 &
+          setsid ${{ inputs.target-command }} > target.log 2>&1 &
+          echo $! > target.pid
 
       - name: Wait for target
         if: inputs.target-health-url != ''
@@ -150,6 +151,11 @@ jobs:
             gate-report.md
             runs/
           if-no-files-found: warn
+
+      # An orphaned background target deadlocks setup-uv's post-job cache prune.
+      - name: Stop target
+        if: always()
+        run: '[ -f target.pid ] && kill -- -"$(cat target.pid)" 2>/dev/null || true'
 
       - name: Enforce gate exit code
         if: always()
