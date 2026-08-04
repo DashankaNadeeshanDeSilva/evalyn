@@ -61,7 +61,8 @@ def _stub(monkeypatch, outputs, usages=None, steps=("step one",)):
     judge = _FakeJudge(outputs, usages)
     monkeypatch.setattr(pw, "get_model", lambda m: judge)
 
-    async def fake_steps(rubric_text, rubric_hash, judge_model, cache_dir):
+    async def fake_steps(rubric_text, rubric_hash, judge_model, cache_dir,
+                         usage_acc=None):
         fake_steps.calls.append((rubric_text, rubric_hash, judge_model, cache_dir))
         return list(steps)
 
@@ -125,6 +126,21 @@ def test_parse_pair_tolerant_key_matching_keys_by_canonical_names():
 def test_parse_pair_ambiguous_key_is_unparseable():
     raw = _mv({"Claim": "1", "Claim clarity": "2"})
     assert _parse_pair(raw, ["Claim support", "Claim clarity"]) is None
+
+
+def test_parse_pair_exact_key_beats_stray_prefix_key():
+    # 2026-08-04 ruling (shared with tier3._parse): the exact-normalizing key
+    # binds; the stray prefix key is ignored — the draw parses from the exact
+    raw = _mv({"Specificity": "1", "specificity without overreach": "2"})
+    assert _parse_pair(raw, ["Specificity without overreach"]) == {
+        "Specificity without overreach": ("2", "j")}
+
+
+def test_parse_pair_two_prefix_only_keys_still_void_the_draw():
+    # equal-quality collision (two prefix-only keys, no exact) stays a
+    # whole-draw void (fail-closed, per existing strictness)
+    raw = _mv({"Specificity": "1", "Specificity without": "2"})
+    assert _parse_pair(raw, ["Specificity without overreach"]) is None
 
 
 # --- verdict rules (locked spec §2.2) --------------------------------------
@@ -213,9 +229,33 @@ async def test_exactly_two_parsed_with_a_tie_vote_is_tie(monkeypatch):
 
 async def test_draw2_order_follows_rng(monkeypatch):
     # rng >= 0.5 -> draw 2 shows B as Conversation 1, so its "2" means A;
-    # with draw 1 (B-first) also "2"=A the two parsed votes agree -> A.
-    # (an implementation ignoring the rng order would read draw 2 as B -> tie)
+    # with draw 1 (B-first) also "2"=A the two parsed votes agree in A/B
+    # terms (an implementation ignoring the rng order would read draw 2 as B).
+    # 2026-08-04 ruling: both survivors showed the SAME order (B-first), so
+    # the agreeing pair is a "tie", never a win — but the vote mapping still
+    # pins the rng-controlled order.
     res = await _judge(monkeypatch, ["garbage", _v("2"), _v("2")],
+                       rng_value=RNG_B_FIRST)
+    assert res.verdicts == {"Tone": "tie"}
+    assert res.votes == {"Tone": ["A", "A"]}
+
+
+async def test_rule3_same_order_survivors_cannot_win(monkeypatch):
+    # 2026-08-04 ruling: exactly 2 parsed draws that showed the SAME order
+    # (here d0 and d2 both A-first, d1 garbled) agreeing on A -> "tie" — a
+    # positionally biased judge must never manufacture a win without order
+    # control
+    res = await _judge(monkeypatch, [_v("1"), "garbage", _v("1")],
+                       rng_value=RNG_A_FIRST)
+    assert res.verdicts == {"Tone": "tie"}
+    assert res.flipped == {"Tone": False}
+    assert res.votes == {"Tone": ["A", "A"]}
+
+
+async def test_rule3_opposite_order_survivors_still_win(monkeypatch):
+    # d1 garbled; d0 A-first "1"=A and d2 (rng forced B-first) "2"=A agree
+    # across OPPOSITE orders -> the win stands
+    res = await _judge(monkeypatch, [_v("1"), "garbage", _v("2")],
                        rng_value=RNG_B_FIRST)
     assert res.verdicts == {"Tone": "A"}
     assert res.votes == {"Tone": ["A", "A"]}
@@ -357,6 +397,37 @@ async def test_usage_accumulated_over_three_draws(monkeypatch):
               ModelUsage(input_tokens=5, output_tokens=2)]
     res = await _judge(monkeypatch, [_v("1"), _v("2"), _v("1")], usages=usages)
     assert res.usage == {"mockllm/model": {"input_tokens": 15, "output_tokens": 6}}
+
+
+async def test_generated_steps_usage_metered_into_verdict(monkeypatch, tmp_path):
+    # steps=None + cache miss: the grading-steps generation call's tokens must
+    # reach PairVerdict.usage (they are judge spend — compare meters judge_usd
+    # from exactly this dict)
+    from evalyn.scoring import pairwise as pw
+    from evalyn.scoring import rubrics as rb
+    judge = _FakeJudge([_v("tie")] * 3,
+                       usages=[ModelUsage(input_tokens=10, output_tokens=4)] * 3)
+    steps_model = _FakeJudge(['["step one"]'],
+                             usages=[ModelUsage(input_tokens=100, output_tokens=20)])
+    monkeypatch.setattr(pw, "get_model", lambda m: judge)
+    monkeypatch.setattr(rb, "get_model", lambda m: steps_model)
+    res = await judge_pair(TONE, "hash-1", TA, TB, "mockllm/model",
+                           cache_dir=tmp_path, rng=_Rng(RNG_A_FIRST))
+    assert res.steps == ["step one"]
+    assert res.usage == {"mockllm/model": {"input_tokens": 130,
+                                           "output_tokens": 32}}
+
+
+async def test_provided_steps_add_no_generation_usage(monkeypatch):
+    # steps provided -> no generation call, usage is the 3 draws only
+    from evalyn.scoring import pairwise as pw
+    judge = _FakeJudge([_v("tie")] * 3,
+                       usages=[ModelUsage(input_tokens=10, output_tokens=4)] * 3)
+    monkeypatch.setattr(pw, "get_model", lambda m: judge)
+    res = await judge_pair(TONE, "hash-1", TA, TB, "mockllm/model",
+                           steps=["frozen"], rng=_Rng(RNG_A_FIRST))
+    assert res.usage == {"mockllm/model": {"input_tokens": 30,
+                                           "output_tokens": 12}}
 
 
 async def test_usage_all_missing_is_zeros(monkeypatch):

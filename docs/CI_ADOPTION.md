@@ -99,6 +99,10 @@ Guard rails on blessing:
   and exits 2 (see the explainer above) until you re-run `evalyn calibrate` or
   explicitly pass `--allow-uncalibrated`.
 
+Baselines deliberately **exclude per-trial transcripts** (`trial_records` is stripped on
+save — privacy and size); transcripts live in the run artifacts under `runs/`. Blessing
+evidence (pass rates, checks, trial counts) is unaffected.
+
 Review baseline diffs like code: a PR that touches `ci/baseline-*.json` is changing
 what "no regression" means.
 

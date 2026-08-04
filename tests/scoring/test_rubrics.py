@@ -188,6 +188,38 @@ async def test_grading_steps_cached_per_rubric_hash_and_judge_model(monkeypatch,
     assert calls["n"] == 2
 
 
+async def test_grading_steps_accumulates_generation_usage(monkeypatch):
+    # PR #6 fix: the optional usage_acc seam captures the generation call's
+    # tokens (model-id -> {input_tokens, output_tokens}) so callers that meter
+    # their own spend (judge_pair) can count steps generation
+    from inspect_ai.model import ModelUsage
+
+    from evalyn.scoring import rubrics as r
+
+    class _M:
+        async def generate(self, prompt):
+            out = ModelOutput.from_content("mockllm/model", '["step a"]')
+            out.usage = ModelUsage(input_tokens=7, output_tokens=3)
+            return out
+
+    monkeypatch.setattr(r, "get_model", lambda name: _M())
+    acc: dict = {}
+    steps = await grading_steps(RUBRIC, _hash_text(RUBRIC), "mockllm/model",
+                                None, usage_acc=acc)
+    assert steps == ["step a"]
+    assert acc == {"mockllm/model": {"input_tokens": 7, "output_tokens": 3}}
+
+
+async def test_grading_steps_cache_hit_accumulates_nothing(monkeypatch, tmp_path):
+    # no generation on a cache hit -> nothing metered
+    _stub_steps_model(monkeypatch, ['["step a"]'])
+    h = _hash_text(RUBRIC)
+    await grading_steps(RUBRIC, h, "mockllm/model", tmp_path)  # populate cache
+    acc: dict = {}
+    await grading_steps(RUBRIC, h, "mockllm/model", tmp_path, usage_acc=acc)
+    assert acc == {}
+
+
 async def test_grading_steps_without_cache_dir_calls_model_each_time(monkeypatch):
     calls = _stub_steps_model(monkeypatch, ['["step a"]'])
     h = _hash_text(RUBRIC)

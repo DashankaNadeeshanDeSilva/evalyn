@@ -17,8 +17,8 @@ from pathlib import Path
 
 from inspect_ai.model import get_model
 
+from evalyn.scoring._judge_keys import bind_judge_keys
 from evalyn.scoring.rubrics import grading_steps, parse_criteria
-from evalyn.scoring.tier3 import _match_criterion
 
 _PAIR_PROMPT = """You are a strict, impartial evaluation judge. Two configurations of the
 same product each produced a conversation. Compare the ASSISTANT's behavior in the two
@@ -49,21 +49,13 @@ def _parse_pair(raw: str, criteria: list[str]) -> dict[str, tuple[str, str]] | N
     Every criterion must carry a verdict that is exactly ``"1"``, ``"2"`` or
     ``"tie"`` — any missing criterion, wrong token, or malformed JSON voids
     the WHOLE draw (None), never partial credit. Judge keys resolve to
-    canonical criterion names via tier3's tolerant fail-closed
-    ``_match_criterion``; collisions stay uncounted.
+    canonical criterion names via the shared fail-closed
+    ``_judge_keys.bind_judge_keys`` (exact keys outrank stray prefix keys;
+    equal-quality collisions stay uncounted).
     """
     try:
         verdicts = json.loads(raw.strip())["verdicts"]
-        matched: dict[str, dict] = {}
-        collided: set[str] = set()
-        for key, entry in verdicts.items():
-            crit = _match_criterion(str(key), criteria)
-            if crit is None:
-                continue  # zero/ambiguous match: not counted
-            if crit in matched:
-                collided.add(crit)
-                continue
-            matched[crit] = entry
+        matched, collided = bind_judge_keys(verdicts, criteria)
         out: dict[str, tuple[str, str]] = {}
         for name in criteria:
             if name in collided or name not in matched:
@@ -111,7 +103,10 @@ async def judge_pair(rubric_text: str, rubric_hash: str,
     1. Flip rule (trumps everything): draws 0 and 1 both parsed AND both are
        wins naming different sides -> ``tie``, ``flipped=True``.
     2. < 2 parsed votes -> ``unsure``.
-    3. Exactly 2 parsed votes: same-side win -> that side; anything else -> tie.
+    3. Exactly 2 parsed votes: same-side win AND the two surviving draws
+       showed OPPOSITE orders -> that side; anything else (including
+       same-order survivors, 2026-08-04 ruling) -> tie — a positionally
+       biased judge must never manufacture a win without order control.
     4. 3 parsed votes: a side with >= 2 votes wins; no side with >= 2 -> tie
        (tie votes count toward no side; win/tie/tie -> tie).
 
@@ -123,8 +118,12 @@ async def judge_pair(rubric_text: str, rubric_hash: str,
     steps were actually used.
     """
     criteria = parse_criteria(rubric_text)
+    usage: dict[str, dict[str, int]] = {}
     if steps is None:
-        steps = await grading_steps(rubric_text, rubric_hash, judge_model, cache_dir)
+        # generation (cache miss) is judge spend: its tokens accumulate into
+        # this verdict's usage so compare's judge_usd meters them (PR #6 fix)
+        steps = await grading_steps(rubric_text, rubric_hash, judge_model,
+                                    cache_dir, usage_acc=usage)
     model = get_model(judge_model)
     context_block = ""
     if context:
@@ -134,7 +133,6 @@ async def judge_pair(rubric_text: str, rubric_hash: str,
                          "is):\n" + context + "\n")
     orders = (True, False, rng.random() < 0.5)  # a_first per draw
     draws: list[dict[str, tuple[str, str]] | None] = []
-    usage: dict[str, dict[str, int]] = {}
     for a_first in orders:
         t1, t2 = (transcript_a, transcript_b) if a_first else (transcript_b, transcript_a)
         prompt = _PAIR_PROMPT.format(
@@ -156,6 +154,11 @@ async def judge_pair(rubric_text: str, rubric_hash: str,
     votes: dict[str, list[str]] = {}
     justifications: dict[str, str] = {}
     d0, d1, _ = draws
+    # draws parse whole-or-not, so the surviving indices (and their shown
+    # orders) are the same for every criterion
+    surviving = [i for i, d in enumerate(draws) if d is not None]
+    opposite_orders = (len(surviving) == 2
+                       and orders[surviving[0]] != orders[surviving[1]])
     for c in criteria:
         cv = [d[c][0] for d in draws if d is not None]
         votes[c] = cv
@@ -170,7 +173,10 @@ async def judge_pair(rubric_text: str, rubric_hash: str,
         elif len(cv) < 2:
             verdicts[c] = "unsure"  # rule 2: a garbled judge never makes a win
         elif len(cv) == 2:
-            verdicts[c] = cv[0] if cv[0] == cv[1] and cv[0] in _WINS else "tie"
+            # rule 3 (amended 2026-08-04): a win needs same-side agreement
+            # ACROSS opposite shown orders; same-order agreement is only a tie
+            verdicts[c] = (cv[0] if cv[0] == cv[1] and cv[0] in _WINS
+                           and opposite_orders else "tie")
         else:
             wins = [s for s in _WINS if cv.count(s) >= 2]
             verdicts[c] = wins[0] if wins else "tie"

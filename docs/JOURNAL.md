@@ -1032,4 +1032,30 @@ calibration-freshness proof after the grounding.yaml edit: `gate --target packs/
 --dry-run --judge-model anthropic/claude-sonnet-5` exit 0 with **no stale-calibration
 refusal** (probe edits move `pack_fingerprint`, not rubric hashes — exactly as designed).
 
+### PR #6 review round (2026-08-04) — 7 findings, 4 user rulings, all fixed on-branch ✅
+
+Whole-branch review of `feat/plan2b-compare-ci` verified 7 findings; **4 user rulings
+(2026-08-04)**: (1) **exact-beats-prefix** key resolution — REVERSES the Task 3 collision
+ruling: an exact-normalizing judge key binds its criterion and stray prefix-only keys are
+ignored; collisions void only between equal-quality keys (two exact, or two+ prefix with
+no exact). Implemented ONCE in new shared `scoring/_judge_keys.py` (`bind_judge_keys`),
+used by both `tier3._parse` and `pairwise._parse_pair` — the cross-module private
+`_match_criterion` import is gone. (2) **Rule-3 order requirement** — amends spec §2.2
+(dated note appended): with exactly 2 parsed draws a win additionally requires the two
+survivors to have shown OPPOSITE orders; same-order agreement is a tie. (3) **Baselines
+strip transcripts** — `save_baseline` drops `trial_records` from every probe
+(privacy/size; blessing evidence stays); `ci/baseline-example.json` regenerated offline
+against the toy target, round-trip gate exit 0. (4) **Intersection pairing REJECTED** —
+positional zip after per-side epoch sort stays; attribution fixed only (additive
+`epoch_b` per pair record, docstrings reworded). Plus: workflow control flow
+(`continue-on-error` on the sticky comment, `if: always()` on exit-code enforcement — a
+fork-PR 403 can't mask the gate), grading-steps generation tokens now metered into
+`PairVerdict.usage` via an additive `grading_steps(…, usage_acc=)` seam (tier3/calibrate
+call sites untouched — Inspect log meters them), and the empty-`trial_records`
+precondition got its own "no scored trials" message (schema-era "predates transcript
+capture" reserved for records without transcripts). Three pinned tests updated to the
+new rulings (old exact+prefix void; same-order rule-3 win; empty-records message). TDD
+throughout (10 RED failures shown first). 481 passed, ruff clean, both packs
+validate-pack OK. Zero spend (toy target + mockllm only).
+
 ## Plan #3 — `discover` + flywheel *(not started)*

@@ -1,8 +1,9 @@
 """Compare mode: blind pairwise A/B judging over two gate artifacts (Plan #2b).
 
 Compare consumes two `RunArtifact`s produced by `evalyn gate` — it makes NO
-target HTTP calls. Per rubric-checked probe, trials are paired by epoch
-(sorted, zipped; leftovers excluded and counted) and each pair is judged
+target HTTP calls. Per rubric-checked probe, trials are paired positionally
+after per-side epoch sort (zipped; leftovers excluded and counted — the two
+sides' epoch numbers need not match) and each pair is judged
 blind with `judge_pair` (order-controlled draws, flip detection). Verdicts
 tally per (pair x criterion) into the probe's category; hard metrics
 (latency, invariant failures) come ONLY from `trial_records` and are never
@@ -54,8 +55,10 @@ class CompareArtifact:
     # least one judged (pair x criterion) appear here.
     categories: dict
     # per probe: {"id","category","pairs_judged","excluded_trials",
-    #   "rubrics": {rid: [per-pair {"epoch","verdicts","flipped",
-    #                               "justifications"}]}}
+    #   "rubrics": {rid: [per-pair {"epoch","epoch_b","verdicts","flipped",
+    #                               "justifications"}]}} — pairs are
+    # positional after per-side epoch sort; "epoch" is side A's, "epoch_b"
+    # side B's (additive, PR #6).
     probes: list[dict]
     # category -> {"latency_mean_a","latency_mean_b","latency_p95_a",
     #   "latency_p95_b","invariant_failures_a","invariant_failures_b",
@@ -117,7 +120,14 @@ def _check_preconditions(pack: Pack, art_a: RunArtifact, art_b: RunArtifact) -> 
             if not _probe_rubric_ids(probe):
                 continue
             recs = _sorted_records(art, probe.id)
-            if not recs or any(not rec.get("transcript") for rec in recs):
+            if not recs:
+                # a #2b artifact whose probe scored ZERO trials is a run
+                # problem, not a schema-era problem (PR #6 message split)
+                raise ValueError(
+                    f"artifact {side} probe {probe.id!r} has no scored "
+                    f"trials — the run produced no judgeable sessions for "
+                    f"it; check the target and the run report")
+            if any(not rec.get("transcript") for rec in recs):
                 raise ValueError(
                     f"artifact {side} probe {probe.id!r} has no judgeable "
                     f"transcripts — artifact predates transcript capture — "
@@ -189,7 +199,8 @@ async def run_compare(pack: Pack, art_a: RunArtifact, art_b: RunArtifact,
 
     # Build the per-probe pairing plan, then judge every (pair x rubric).
     probe_entries: list[dict] = []
-    jobs: list[tuple[dict, str, int]] = []  # (probe_entry, rid, epoch)
+    # (probe_entry, rid, epoch_a, epoch_b)
+    jobs: list[tuple[dict, str, int, int]] = []
     coros = []
     excluded_pairs = 0
     for probe in pack.probes:
@@ -207,7 +218,7 @@ async def run_compare(pack: Pack, art_a: RunArtifact, art_b: RunArtifact,
             for rid in probe_rids:
                 entry["rubrics"][rid] = []
                 for rec_a, rec_b in pairs:
-                    jobs.append((entry, rid, rec_a["epoch"]))
+                    jobs.append((entry, rid, rec_a["epoch"], rec_b["epoch"]))
                     coros.append(_judge(rid, rec_a["transcript"],
                                         rec_b["transcript"],
                                         random.Random(master.random())))
@@ -217,9 +228,10 @@ async def run_compare(pack: Pack, art_a: RunArtifact, art_b: RunArtifact,
 
     categories: dict[str, dict] = {}
     usage_acc: dict[str, dict[str, int]] = {}
-    for (entry, rid, epoch), pv in zip(jobs, verdicts):
+    for (entry, rid, epoch, epoch_b), pv in zip(jobs, verdicts):
         entry["rubrics"][rid].append({
-            "epoch": epoch,
+            "epoch": epoch,        # side A's epoch (kept for shape compat)
+            "epoch_b": epoch_b,    # side B's epoch (additive, PR #6)
             "verdicts": dict(pv.verdicts),
             "flipped": dict(pv.flipped),
             "justifications": dict(pv.justifications),

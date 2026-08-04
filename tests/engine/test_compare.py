@@ -147,12 +147,31 @@ def test_pack_hash_mismatch_side_b_named_in_message(tmp_path, monkeypatch):
     assert stub.calls == []
 
 
-def test_missing_transcripts_raises_predates_capture(tmp_path, monkeypatch):
-    # a pre-#2b artifact loads with trial_records=[] — compare must refuse it
+def test_no_scored_trials_gets_its_own_message(tmp_path, monkeypatch):
+    # PR #6 split: trial_records=[] means the run produced no judgeable
+    # sessions (a #2b artifact whose probe scored zero trials, or a pre-#2b
+    # load) — its message must point at the target/run report, NOT claim the
+    # artifact predates transcript capture
     pack = _write_pack(tmp_path)
     stub = StubJudge()
     monkeypatch.setattr("evalyn.engine.compare.judge_pair", stub)
     art_a = _art(pack, [_probe("r1", "chat", []), _probe("h1", "ops", [])])
+    _, art_b = _two_sided(pack)
+    with pytest.raises(ValueError, match="no scored trials"):
+        _run(pack, art_a, art_b)
+    assert stub.calls == []
+
+
+def test_records_without_transcript_key_predate_capture(tmp_path, monkeypatch):
+    # records exist but carry no "transcript" -> the artifact predates
+    # transcript capture -> old re-run message
+    pack = _write_pack(tmp_path)
+    stub = StubJudge()
+    monkeypatch.setattr("evalyn.engine.compare.judge_pair", stub)
+    art_a = _art(pack, [
+        _probe("r1", "chat",
+               [{"epoch": 0, "session_seconds": 1.0, "invariant_failures": 0}]),
+        _probe("h1", "ops", [])])
     _, art_b = _two_sided(pack)
     with pytest.raises(ValueError, match="predates transcript capture"):
         _run(pack, art_a, art_b)
@@ -231,6 +250,24 @@ def test_unequal_trial_counts_zip_and_count_exclusions(tmp_path, monkeypatch):
     r1 = next(p for p in art.probes if p["id"] == "r1")
     assert r1["pairs_judged"] == 1 and r1["excluded_trials"] == 2
     assert art.excluded_pairs == 2
+
+
+def test_pair_records_carry_both_sides_epochs(tmp_path, monkeypatch):
+    # pairing is positional after per-side epoch sort (intersection pairing
+    # was REJECTED 2026-08-04) — with A epochs [0,1,2] and B epochs [0,2] the
+    # second pair is A#1 vs B#2, and the record must attribute BOTH epochs:
+    # "epoch" stays A's (shape compat), additive "epoch_b" carries B's
+    pack = _write_pack(tmp_path)
+    stub = StubJudge()
+    monkeypatch.setattr("evalyn.engine.compare.judge_pair", stub)
+    art_a = _art(pack, [_probe("r1", "chat", [_rec(0), _rec(1), _rec(2)]),
+                        _probe("h1", "ops", [])])
+    art_b = _art(pack, [_probe("r1", "chat", [_rec(0), _rec(2)]),
+                        _probe("h1", "ops", [])])
+    art = _run(pack, art_a, art_b)
+    r1 = next(p for p in art.probes if p["id"] == "r1")
+    assert [(e["epoch"], e["epoch_b"]) for e in r1["rubrics"]["tone"]] == [
+        (0, 0), (1, 2)]
 
 
 def test_pairing_sorts_trial_records_by_epoch(tmp_path, monkeypatch):

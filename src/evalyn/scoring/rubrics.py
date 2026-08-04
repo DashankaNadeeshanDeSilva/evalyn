@@ -105,8 +105,17 @@ def parse_criteria(rubric_text: str) -> list[str]:
 
 
 async def grading_steps(rubric_text: str, rubric_hash: str, judge_model: str,
-                        cache_dir: Path | None) -> list[str]:
-    """G-Eval phase 1: generate grading steps once per (rubric-hash x judge-model)."""
+                        cache_dir: Path | None, *,
+                        usage_acc: dict[str, dict[str, int]] | None = None,
+                        ) -> list[str]:
+    """G-Eval phase 1: generate grading steps once per (rubric-hash x judge-model).
+
+    ``usage_acc`` (optional, PR #6): a model-id -> {"input_tokens",
+    "output_tokens"} dict the GENERATION path accumulates into, so callers
+    that meter their own judge spend (judge_pair) can count a cache-miss
+    generation call. Cache hits accumulate nothing; the default None keeps
+    every existing caller byte-compatible.
+    """
     cache_file = None
     if cache_dir is not None:
         cache_dir = Path(cache_dir)
@@ -117,6 +126,14 @@ async def grading_steps(rubric_text: str, rubric_hash: str, judge_model: str,
             return json.loads(cache_file.read_text())
     model = get_model(judge_model)
     out = await model.generate(_STEPS_PROMPT.format(rubric=rubric_text))
+    if usage_acc is not None:  # meter the generation call (same shape/zeros
+        #                        discipline as judge_pair's per-draw metering)
+        acc = usage_acc.setdefault(getattr(out, "model", "") or judge_model,
+                                   {"input_tokens": 0, "output_tokens": 0})
+        u = getattr(out, "usage", None)
+        if u is not None:
+            acc["input_tokens"] += getattr(u, "input_tokens", 0) or 0
+            acc["output_tokens"] += getattr(u, "output_tokens", 0) or 0
     raw = out.completion.strip()
     fenced = _FENCE_RE.match(raw)  # a ```json fenced reply is ordinary, unwrap it
     if fenced:

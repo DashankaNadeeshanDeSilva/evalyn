@@ -7,8 +7,15 @@ from evalyn.engine.run import RunArtifact
 
 
 def save_baseline(art: RunArtifact, path: str = "runs/baseline.json") -> None:
+    # 2026-08-04 ruling: baselines deliberately EXCLUDE per-trial transcripts
+    # (privacy/size) — trial_records live in run artifacts only. Blessing
+    # evidence (pass_k, checks, trials, ...) stays; nothing reads baseline
+    # trial_records and ProbeResult defaults the missing field to [] on load.
+    d = art.to_dict()
+    for probe in d.get("probes", []):
+        probe.pop("trial_records", None)
     Path(path).parent.mkdir(parents=True, exist_ok=True)
-    Path(path).write_text(json.dumps(art.to_dict(), indent=2, default=str))
+    Path(path).write_text(json.dumps(d, indent=2, default=str))
 
 
 def load_baseline(path: str = "runs/baseline.json") -> RunArtifact | None:

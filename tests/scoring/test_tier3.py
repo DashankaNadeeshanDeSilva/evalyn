@@ -190,10 +190,27 @@ def test_parse_empty_or_whitespace_key_is_not_counted():
     assert _parse(_sample({"   ": 4}), ["Claim support"]) is None
 
 
-def test_parse_two_keys_resolving_to_same_criterion_is_not_counted():
-    # collision: exact + prefix both hit one criterion -> undecidable which
-    # score counts -> fail closed
+def test_parse_exact_key_beats_stray_prefix_key():
+    # 2026-08-04 ruling (reverses the old exact+prefix collision): an
+    # exact-normalizing key BINDS its criterion; a stray prefix-only key
+    # landing on an exact-bound criterion is ignored, not a collision
     raw = _sample({"Specificity": 4, "specificity without overreach": 5})
+    assert _parse(raw, ["Specificity without overreach"]) == {
+        "Specificity without overreach": 5}
+
+
+def test_parse_two_prefix_only_keys_still_collide():
+    # equal-quality collision: two prefix-only keys, no exact key -> the
+    # criterion stays undecidable -> whole sample unparseable (fail-closed)
+    raw = _sample({"Specificity": 4, "Specificity without": 5})
+    assert _parse(raw, ["Specificity without overreach"]) is None
+
+
+def test_parse_two_exact_keys_still_collide():
+    # equal-quality collision: two keys both normalizing equal to the
+    # criterion -> fail closed
+    raw = _sample({"Specificity without overreach": 4,
+                   " SPECIFICITY WITHOUT OVERREACH ": 5})
     assert _parse(raw, ["Specificity without overreach"]) is None
 
 

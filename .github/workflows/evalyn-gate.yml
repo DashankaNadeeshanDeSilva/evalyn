@@ -94,6 +94,9 @@ jobs:
 
       - name: Upsert sticky PR comment
         if: github.event_name == 'pull_request'
+        # A comment failure (e.g. fork-PR 403 on pull-requests: write) must
+        # never mask the gate's exit code below.
+        continue-on-error: true
         uses: actions/github-script@v7
         with:
           script: |
@@ -149,4 +152,5 @@ jobs:
           if-no-files-found: warn
 
       - name: Enforce gate exit code
+        if: always()
         run: exit "${{ steps.gate.outputs.exit_code }}"
