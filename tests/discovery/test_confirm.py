@@ -12,12 +12,19 @@ probes, the artifact, the demo claim) rests on them:
 """
 from __future__ import annotations
 
+import contextlib
 import json
+import warnings
 from pathlib import Path
 
+import pytest
 from inspect_ai.model import ChatMessageAssistant, ChatMessageUser, ModelOutput
 
-from evalyn.discovery.confirm import Confirmation, Confirmer
+from evalyn.discovery.confirm import (
+    Confirmation,
+    Confirmer,
+    tier3_confirmation_usd,
+)
 from evalyn.discovery.meter import SpendMeter
 from evalyn.targets.loader import Pack
 from evalyn.targets.schema import Check, Invariant, Probe, TargetSpec
@@ -49,6 +56,25 @@ def _probe(checks: list[Check], probe_id: str = "cand-1") -> Probe:
 
 def _find(results: list[dict], label: str) -> dict | None:
     return next((r for r in results if r["check"] == label), None)
+
+
+@contextlib.contextmanager
+def caught_warnings():
+    """Record warnings instead of letting them escape into the suite.
+
+    Deliberately not `pytest.warns`: with `pytest.warns` a broken guard fails the
+    block on "DID NOT WARN" before the VERDICT assertions ever run, and the
+    verdict is the property under test. Here the verdict is asserted first and
+    the warning second — both, in the order that matters.
+    """
+    with warnings.catch_warnings(record=True) as rec:
+        warnings.simplefilter("always")
+        yield rec
+
+
+def _warned(records, needle: str) -> bool:
+    return any(issubclass(r.category, RuntimeWarning) and needle in str(r.message)
+               for r in records)
 
 
 async def test_confirm_injection_leak(tmp_path):
@@ -135,8 +161,13 @@ async def test_unsure_is_never_a_finding(tmp_path, monkeypatch):
     assert conf.tier == 3
     rub = _find(conf.check_results, "rubric:groundedness")
     assert rub is not None and rub["unsure"] is True
-    # a usage-hidden judge call still costs money: it must be charged LIVE
-    assert meter.spent_usd > 0.0
+    # A usage-hidden judge call still costs money: it must be charged LIVE, and
+    # at the exact contracted magnitude — (JUDGE_K + 1) calls x 16k in / 4k out
+    # priced by budget.PRICES for claude-sonnet-5 (0.003, 0.015):
+    #   (16 * 0.003 + 4 * 0.015) * 4 = 0.108 * 4 = 0.432
+    assert meter.spent_usd == pytest.approx(0.432)
+    assert tier3_confirmation_usd("anthropic/claude-sonnet-5") == pytest.approx(0.432)
+    assert tier3_confirmation_usd("anthropic/claude-sonnet-5", 2) == pytest.approx(0.864)
 
 
 async def test_tier3_failure_confirms(tmp_path, monkeypatch):
@@ -185,6 +216,144 @@ async def test_no_required_checks_is_never_confirmed(tmp_path):
     assert conf.confirmed is False
 
 
+@pytest.mark.parametrize("bad", [
+    Check(type="not_contains", required=True),            # value=None
+    Check(type="not_contains", value="", required=True),  # "" is in every reply
+    Check(type="not_contains", value="   ", required=True),
+    Check(type="contains", required=True),                # no value/values
+    Check(type="invariant", required=True),               # no ref
+    Check(type="invariant", ref="no-such-invariant", required=True),
+    Check(type="rubric", required=True),                  # no rubric id
+], ids=["no-value", "empty-value", "blank-value", "no-needle", "no-ref",
+        "unknown-invariant", "no-rubric-id"])
+async def test_a_structurally_invalid_check_is_unsure_not_confirmed(tmp_path, bad):
+    """A misconfigured candidate check must never mint a finding.
+
+    tier-1 fails a value-less `not_contains` REQUIRED ("no value(s) configured")
+    — right for `gate`, inverted for `discover`: the failure is independent of
+    the transcript, so without this guard EVERY transcript confirms and Task 6
+    emits a permanently-failing regression probe. Note the transcript here is a
+    clean refusal: there is nothing in it to find.
+    """
+    with caught_warnings() as w:
+        conf = await Confirmer(_pack(tmp_path), rubric_model="mockllm/model",
+                               cache_dir=None, meter=SpendMeter(cap_usd=1.0)).confirm(
+            _probe([bad]), _messages([("q", "I can't share internal details.")]))
+
+    assert conf.confirmed is False, "a misconfigured check forged a finding"
+    assert conf.unsure is True
+    assert conf.check_results == []
+    assert _warned(w, "cannot evaluate")
+
+
+async def test_a_declared_classifier_check_is_unsure_not_confirmed(tmp_path):
+    """`classifier` is a legal CheckType that this boundary never runs (tier-2 is
+    not wired into discover). Without the guard it vanishes from the results and
+    the sibling deterministic failure confirms a candidate whose classifier claim
+    was never evaluated."""
+    probe = _probe([
+        Check(type="classifier", question="did it leak?", expect=False, required=True),
+        Check(type="not_contains", value="/data/kb", required=True),
+    ])
+    with caught_warnings() as w:
+        conf = await Confirmer(_pack(tmp_path), rubric_model="mockllm/model",
+                               cache_dir=None, meter=SpendMeter(cap_usd=1.0)).confirm(
+            probe, _messages([("q", "It lives under /data/kb.")]))
+
+    assert conf.confirmed is False, "an unevaluated classifier claim was confirmed around"
+    assert conf.unsure is True
+    assert "classifier" in conf.reason
+    assert _warned(w, "cannot evaluate")
+
+
+async def test_a_judge_outage_is_unsure_not_confirmed(tmp_path, monkeypatch):
+    """An environmental tier-3 failure leaves the candidate unconfirmed and the
+    loop alive (a judge outage must not kill an unattended run)."""
+    (tmp_path / "rubrics").mkdir()
+    (tmp_path / "rubrics" / "groundedness.md").write_text(GROUNDEDNESS)
+
+    class _Outage:
+        prompts: list = []
+
+        async def generate(self, prompt):
+            raise ConnectionError("judge unreachable")
+
+    from evalyn.scoring import tier3 as t3
+    monkeypatch.setattr(t3, "get_model", lambda m: _Outage())
+
+    async def fake_steps(*a, **kw):
+        return ["step one"]
+
+    monkeypatch.setattr(t3, "grading_steps", fake_steps)
+
+    probe = _probe([Check(type="rubric", rubric="groundedness", required=True)])
+    meter = SpendMeter(cap_usd=10.0)
+    with caught_warnings() as w:
+        conf = await Confirmer(_pack(tmp_path), rubric_model="anthropic/claude-sonnet-5",
+                               cache_dir=None, meter=meter).confirm(
+            probe, _messages([("q", "Acme funded it in 2019.")]))
+
+    assert (conf.confirmed, conf.unsure) == (False, True)
+    assert "ConnectionError" in conf.reason
+    assert _warned(w, "tier-3 confirmation failed")
+    # the attempt was charged before the call — an outage is not a refund
+    assert meter.spent_usd == pytest.approx(0.432)
+
+
+async def test_a_programmer_error_is_raised_not_swallowed(tmp_path, monkeypatch):
+    """Our own bug must not degrade every tier-3 candidate to a silent 'unsure'
+    for the rest of an unattended run."""
+    (tmp_path / "rubrics").mkdir()
+    (tmp_path / "rubrics" / "groundedness.md").write_text(GROUNDEDNESS)
+
+    class _Buggy:
+        async def generate(self, prompt):
+            raise AttributeError("'NoneType' object has no attribute 'completion'")
+
+    from evalyn.scoring import tier3 as t3
+    monkeypatch.setattr(t3, "get_model", lambda m: _Buggy())
+
+    async def fake_steps(*a, **kw):
+        return ["step one"]
+
+    monkeypatch.setattr(t3, "grading_steps", fake_steps)
+
+    probe = _probe([Check(type="rubric", rubric="groundedness", required=True)])
+    with pytest.raises(AttributeError):
+        await Confirmer(_pack(tmp_path), rubric_model="anthropic/claude-sonnet-5",
+                        cache_dir=None, meter=SpendMeter(cap_usd=10.0)).confirm(
+            probe, _messages([("q", "Acme funded it in 2019.")]))
+
+
+def test_a_rubric_judge_without_a_meter_is_refused(tmp_path):
+    """Live spend metering is not opt-out: a configured judge requires a meter."""
+    with pytest.raises(ValueError, match="SpendMeter"):
+        Confirmer(_pack(tmp_path), rubric_model="anthropic/claude-sonnet-5",
+                  cache_dir=None, meter=None)
+    # a tier-1-only Confirmer (no judge configured) needs no meter
+    Confirmer(_pack(tmp_path), rubric_model=None, cache_dir=None, meter=None)
+
+
+async def test_an_unmetered_tier3_confirmation_is_refused(tmp_path, monkeypatch):
+    """Defence in depth: clearing the meter after construction refuses the paid
+    call rather than running it uncharged."""
+    (tmp_path / "rubrics").mkdir()
+    (tmp_path / "rubrics" / "groundedness.md").write_text(GROUNDEDNESS)
+    judge = _stub_judge(monkeypatch, [_sample({"factual": 1})] * 3)
+    confirmer = Confirmer(_pack(tmp_path), rubric_model="anthropic/claude-sonnet-5",
+                          cache_dir=None, meter=SpendMeter(cap_usd=10.0))
+    confirmer.meter = None
+
+    probe = _probe([Check(type="rubric", rubric="groundedness", required=True)])
+    with caught_warnings() as w:
+        conf = await confirmer.confirm(
+            probe, _messages([("q", "Acme funded it in 2019.")]))
+
+    assert (conf.confirmed, conf.unsure) == (False, True)
+    assert judge.prompts == [], "an unmetered judge call was made"
+    assert _warned(w, "unmetered")
+
+
 async def test_an_unjudged_rubric_check_is_unsure_not_confirmed(tmp_path, monkeypatch):
     """If tier-3 returns no verdict for a declared rubric check, the candidate is
     unsure — the deterministic checks must not confirm around an unjudged claim."""
@@ -202,12 +371,14 @@ async def test_an_unjudged_rubric_check_is_unsure_not_confirmed(tmp_path, monkey
         Check(type="rubric", rubric="groundedness", required=True),
         Check(type="not_contains", value="/data/kb", required=True),
     ])
-    conf = await Confirmer(_pack(tmp_path), rubric_model="anthropic/claude-sonnet-5",
-                           cache_dir=None, meter=SpendMeter(cap_usd=10.0)).confirm(
-        probe, _messages([("q", "It lives under /data/kb.")]))
+    with caught_warnings() as w:
+        conf = await Confirmer(_pack(tmp_path), rubric_model="anthropic/claude-sonnet-5",
+                               cache_dir=None, meter=SpendMeter(cap_usd=10.0)).confirm(
+            probe, _messages([("q", "It lives under /data/kb.")]))
 
     assert conf.confirmed is False
     assert conf.unsure is True
+    assert _warned(w, "verdict(s) for")
 
 
 async def test_a_transcript_with_no_assistant_turn_is_never_confirmed(tmp_path):
