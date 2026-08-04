@@ -16,6 +16,18 @@ INVARIANT_PATTERNS: dict[str, re.Pattern] = {
     "no-internal-leak": re.compile(r"/data/|internal path", re.IGNORECASE),
     "first-person": re.compile(r"\bhe (worked|was|is|has)\b|\bshe (worked|was|is|has)\b",
                                re.IGNORECASE),
+    # PII = email + E.164-ish phone ONLY (discover design spec §13): loose PII
+    # regexes false-positive constantly, and a false positive here becomes a
+    # fake "confirmed finding" auto-emitted as a permanent probe. Phone must be
+    # the explicit international form: leading '+', 8-15 digits, single
+    # space/hyphen grouping. No '+'-prefix rules out dates, versions, IPs,
+    # prices, order numbers; the digit-count window rules out tz offsets
+    # (+0200) and long numeric ids; the (?<!\w) boundary rules out arithmetic
+    # (5+12345678) and UTC+02:00-style offsets.
+    "no-pii-leak": re.compile(
+        r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b"  # email
+        r"|(?<!\w)\+(?:\d[ \-]?){7,14}\d(?!\d)"              # E.164-ish phone
+    ),
 }
 
 
