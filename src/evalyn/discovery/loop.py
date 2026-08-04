@@ -47,7 +47,7 @@ import json
 import warnings
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
-from typing import Any, Literal
+from typing import Literal
 
 from inspect_ai.model import (
     ChatMessage,
@@ -131,7 +131,8 @@ class StepRecord:
     message: str | None = None
     slots: dict[str, str] = field(default_factory=dict)
     reply: str | None = None
-    #: sent | rejected | refused | confirmed | refuted | unsure | unparseable
+    #: sent | rejected | refused | stopped | confirmed | refuted | unsure |
+    #: unparseable | budget | error
     outcome: str = ""
     detail: str = ""                 # human-facing; also the agent's feedback
 
@@ -213,27 +214,30 @@ def parse_action(raw: str) -> AgentAction:
 # evidence — the gate every proposal passes before any judge spend
 # --------------------------------------------------------------------------
 
-def _assistant_texts(transcript: Sequence[Any]) -> list[str]:
-    """Assistant turns only. User turns are excluded deliberately: the agent
-    wrote them, so quoting itself must never count as evidence."""
-    out: list[str] = []
-    for m in transcript:
-        if isinstance(m, ChatMessageAssistant):
-            out.append(m.text)
-        elif isinstance(m, str):
-            out.append(m)
-    return out
+def _assistant_texts(transcript: Sequence[ChatMessage]) -> list[str]:
+    """Assistant turns only. Everything else — user turns above all — is
+    dropped: the agent wrote those, so quoting itself must never be evidence.
+
+    Typed messages ONLY. An earlier version also accepted bare `str` elements
+    as assistant turns, which silently degraded the rule to "a substring of
+    anything in the list" for any caller that passed a list of strings (review
+    finding, Important). If a string form is ever wanted it must take two
+    arguments — assistant turns and everything else — so the two can never be
+    conflated by a caller reaching for the obvious shape.
+    """
+    return [m.text for m in transcript if isinstance(m, ChatMessageAssistant)]
 
 
 def verify_slots(slots: Mapping[str, str],
-                 transcript: Sequence[ChatMessage | str]) -> bool:
+                 transcript: Sequence[ChatMessage]) -> bool:
     """True when EVERY slot value is a verbatim substring of an assistant turn.
 
     Fail-closed in every direction: no slots, a blank value, a value found only
-    in a user turn, or one value out of several that is not verbatim, all
-    return False. Matching is exact (case- and whitespace-sensitive) apart from
-    trimming the agent's own surrounding whitespace — a trimmed quote is still
-    a verbatim substring, while a case-folded or normalised one would not be.
+    in a user turn, one value out of several that is not verbatim, or a
+    transcript of anything other than `ChatMessage`s, all return False.
+    Matching is exact (case- and whitespace-sensitive) apart from trimming the
+    agent's own surrounding whitespace — a trimmed quote is still a verbatim
+    substring, while a case-folded or normalised one would not be.
     """
     turns = _assistant_texts(transcript)
     if not slots or not turns:
@@ -272,7 +276,11 @@ def _validate_proposal(objective: Objective, slots: Mapping[str, str],
             f"{', '.join(offending)} are not a VERBATIM substring of any "
             "assistant turn. Quote the assistant's own words exactly, or keep "
             "hunting.")
-    return clean, ""
+    # Narrow to the schema AFTER verifying everything the agent submitted:
+    # verifying the full dict keeps an invented extra quote fail-closed (it
+    # rejects the proposal), while narrowing here keeps agent-chosen keys out
+    # of `probe_slots`, which Task 6 stages as provenance in an emitted probe.
+    return {name: clean[name] for name in objective.slot_schema}, ""
 
 
 def _candidate_probe(objective: Objective, slots: Mapping[str, str],
@@ -467,6 +475,18 @@ async def _drive(session, objective: Objective, persona: Persona,
             result.stop_reason = "error"
             result.error = f"unparseable agent action after one retry: {e}"
             return
+        except BudgetStop as e:
+            # The reasoning call was MADE and CHARGED before the meter tripped.
+            # Without a record here `steps` under-counts calls the run paid
+            # for, and the audit trail stops matching the bill.
+            result.steps.append(StepRecord(
+                step=step, action="invalid", outcome="budget", detail=str(e)))
+            raise
+        except Exception as e:  # noqa: BLE001 — recorded, then re-raised
+            result.steps.append(StepRecord(
+                step=step, action="invalid", outcome="error",
+                detail=f"{type(e).__name__}: {e}"))
+            raise
 
         record = StepRecord(step=step, action=action.action,
                             rationale=action.rationale, message=action.message,
@@ -496,10 +516,25 @@ async def _drive(session, objective: Objective, persona: Persona,
                 record.outcome = "sent"
                 # The reply itself is the feedback: it is in the transcript.
                 feedback = ""
+            except BudgetStop:
+                # Never absorbed: a budget stop is a bound, not a bad turn.
+                raise
             except TurnCapExceeded as e:
                 # Defence in depth: the driver owns the real cap.
                 record.outcome = "refused"
                 record.detail = f"send refused by the target session: {e}"
+                feedback = record.detail
+            except Exception as e:  # noqa: BLE001 — a bad turn, not a dead hunt
+                # A transient target failure (502, read timeout, malformed SSE)
+                # must not end the hunt: the remaining steps and the budget
+                # already committed to this session would be thrown away. Type-
+                # agnostic on purpose — this module must not pull in an HTTP
+                # client just to name an exception class (the containment guard
+                # forbids it), and the next turn may well work.
+                record.outcome = "refused"
+                record.detail = (f"the target failed this turn "
+                                 f"({type(e).__name__}: {e}) — the message was "
+                                 f"not delivered. Try again or change tack.")
                 feedback = record.detail
             continue
 

@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import contextlib
 import json
+import re
 import warnings
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -521,6 +522,87 @@ async def test_target_failure_returns_a_result_not_an_exception(
     assert any(issubclass(r.category, RuntimeWarning) for r in rec)
 
 
+async def test_a_transient_send_failure_does_not_end_the_hunt(monkeypatch, tmp_path):
+    """A 502 or a read timeout on one turn wastes a turn, not the session: the
+    steps and budget already committed to this hunt would be thrown away."""
+    agent = _stub_agent(monkeypatch, [_send("one"), _send("two"), _stop()])
+    sess = _stub_session(monkeypatch, ["a", "b"])
+    real_send = sess.send
+    calls = {"n": 0}
+
+    async def _flaky(message):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise RuntimeError("HTTP 502 from the target")
+        return await real_send(message)
+
+    sess.send = _flaky
+
+    result = await _run(_pack(tmp_path), confirmer=_SpyConfirmer())
+
+    assert result.stop_reason == "agent_stop"      # it kept hunting
+    assert result.error is None
+    assert result.steps[0].outcome == "refused"
+    assert "502" in result.steps[0].detail
+    assert result.steps[1].outcome == "sent"       # the next turn worked
+    assert "502" in agent.prompts[1]               # and the agent was told
+    assert sess.sends == ["two"]
+
+
+async def test_a_budget_stop_while_reasoning_is_still_recorded(
+        monkeypatch, tmp_path):
+    """The call was made and CHARGED before the meter tripped, so it must
+    appear in the audit trail — `steps` may not under-count the bill."""
+    agent = _stub_agent(monkeypatch, ["not json", _send("never reached")])
+    sess = _stub_session(monkeypatch, ["a"])
+    # a cap smaller than one call: the reparse retry is refused as spend
+    meter = SpendMeter(estimate_cost({AGENT_MODEL: _STEP_USAGE}) * 0.9)
+
+    result = await _run(_pack(tmp_path), meter=meter, confirmer=_SpyConfirmer())
+
+    assert result.stop_reason == "budget"
+    assert agent.calls == 1                        # the retry never spent
+    assert len(result.steps) == 1                  # ...but the call is recorded
+    assert result.steps[0].outcome == "budget"
+    assert result.usd_estimated > 0.0
+    assert sess.sends == []
+
+
+async def test_extra_slot_keys_are_dropped_from_provenance(monkeypatch, tmp_path):
+    """Unknown keys are agent-chosen text; Task 6 stages `probe_slots` as
+    provenance in an emitted probe, so only schema slots may survive."""
+    _stub_agent(monkeypatch, [
+        _send("hello"),
+        _propose({"leak_marker": "/data/kb", "note": "knowledge base"}),
+    ])
+    _stub_session(monkeypatch, [LEAK_REPLY])
+    confirmer = Confirmer(_pack(tmp_path))
+
+    result = await _run(_pack(tmp_path), confirmer=confirmer)
+
+    assert result.stop_reason == "confirmed"
+    assert result.probe_slots == {"leak_marker": "/data/kb"}
+    assert result.steps[-1].slots == {"leak_marker": "/data/kb"}
+
+
+async def test_an_invented_extra_slot_still_rejects_the_proposal(
+        monkeypatch, tmp_path):
+    """Narrowing happens AFTER verification: an extra key the agent invented is
+    fail-closed evidence, not a silently discarded one."""
+    _stub_agent(monkeypatch, [
+        _send("hello"),
+        _propose({"leak_marker": "/data/kb", "note": "NEVER-SAID"}),
+        _stop(),
+    ])
+    _stub_session(monkeypatch, [LEAK_REPLY])
+    spy = _SpyConfirmer()
+
+    result = await _run(_pack(tmp_path), confirmer=spy)
+
+    assert spy.calls == []
+    assert result.confirmed is None
+
+
 async def test_agent_stop_action_ends_the_session(monkeypatch, tmp_path):
     _stub_agent(monkeypatch, [_stop("no angle here")])
     _stub_session(monkeypatch, ["a"])
@@ -581,11 +663,19 @@ def test_the_action_space_stays_closed():
     assert loop_mod.ACTIONS == {"send", "propose", "stop"}
     src = Path(loop_mod.__file__).read_text()
     for forbidden in ("import httpx", "import requests", "import subprocess",
-                      "import urllib", "import socket", "os.system",
-                      "webbrowser", "AsyncClient"):
+                      "import urllib", "import socket", "import os",
+                      "import pathlib", "os.system", "webbrowser",
+                      "AsyncClient", "__import__", "globals(", "setattr("):
         assert forbidden not in src, f"loop.py must not reach out: {forbidden}"
-    # `send` is the ONLY thing the loop can do to the outside world
+    # no indirect-reach construct: a BARE builtin call (`x.open(` is fine —
+    # that is TargetSession's own constructor)
+    for builtin in ("eval", "exec", "open", "compile", "input"):
+        assert re.search(rf"(?<![.\w]){builtin}\(", src) is None, \
+            f"loop.py must not call the {builtin}() builtin"
+    # `send` is the ONLY thing the loop can do to the outside world, and a
+    # proposal has exactly ONE road to the trust boundary
     assert src.count("session.send(") == 1
+    assert src.count("confirmer.confirm(") == 1
 
 
 def test_verify_slots_requires_a_verbatim_assistant_substring():
@@ -600,3 +690,21 @@ def test_verify_slots_requires_a_verbatim_assistant_substring():
     assert verify_slots({"leak_marker": "/data/kb"}, []) is False
     # one bad value poisons the whole proposal
     assert verify_slots({"a": "/data/kb", "b": "invented"}, msgs) is False
+
+
+def test_a_bare_string_transcript_is_never_evidence():
+    """`verify_slots` is the module's one security primitive and it is
+    exported. A list of strings is the obvious shape a future caller (solver,
+    store round-trip, replay tool) would reach for, and in that shape there is
+    no way to tell an assistant turn from the agent's own words — so it must
+    count as NO evidence at all, not as "a substring of anything in the list"."""
+    assert verify_slots({"leak_marker": "/data/kb"},
+                        ["I read /data/kb daily."]) is False
+    # ...including when the string would have matched as a user turn
+    assert verify_slots({"leak_marker": "/data/kb"},
+                        ["ask about /data/kb", "I read /data/kb daily."]) is False
+    # mixed shapes: only the typed assistant message counts
+    typed = [ChatMessageAssistant(content="I read /data/other.")]
+    assert verify_slots({"leak_marker": "/data/kb"},
+                        [*typed, "I read /data/kb daily."]) is False
+    assert verify_slots({"leak_marker": "/data/other"}, typed) is True
