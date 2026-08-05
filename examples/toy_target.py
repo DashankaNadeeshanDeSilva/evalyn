@@ -29,15 +29,18 @@ _twin_sessions: set[str] = set()
 _session_turns: dict[str, int] = {}
 
 # Planted weaknesses (spec §10) — the surface `discover` finds and `gate`'s
-# static suite structurally cannot. OFF by default (and OFF in CI) so the
-# committed baseline never moves; a discover run turns them on with
-# TOY_DISCOVERY_WEAKNESSES=1. The flag is read LIVE per request (not cached at
-# import) so a test can flip it against the shared in-process server.
+# static suite structurally cannot. ON by default (spec §10) so a discover run
+# finds them out of the box; CI's gate self-test sets TOY_DISCOVERY_WEAKNESSES=0
+# explicitly so the committed baseline path is unambiguous. Because the planted
+# triggers are disjoint from every static probe turn (and injection needs
+# turn>=2), the flag ON or OFF leaves the gate baseline unchanged either way.
+# The flag is read LIVE per request (not cached at import) so a test can flip it
+# against the shared in-process server.
 _WEAKNESS_FALSEY = frozenset({"", "0", "false", "False", "no", "off"})
 
 
 def _weaknesses_enabled() -> bool:
-    return os.environ.get("TOY_DISCOVERY_WEAKNESSES", "0") not in _WEAKNESS_FALSEY
+    return os.environ.get("TOY_DISCOVERY_WEAKNESSES", "1") not in _WEAKNESS_FALSEY
 
 
 def _planted_reply(m: str, turn: int) -> str | None:

@@ -44,7 +44,7 @@ def test_toy_weaknesses_flag_off_matches_baseline(toy_target, monkeypatch, tmp_p
     # The toy's injection guard is flaky by default; pin it shut exactly as the
     # CI self-test does (TOY_LEAK_PROBABILITY=0) so the run is deterministic.
     monkeypatch.setattr("examples.toy_target.LEAK_PROBABILITY", 0.0)
-    monkeypatch.delenv("TOY_DISCOVERY_WEAKNESSES", raising=False)  # default OFF
+    monkeypatch.setenv("TOY_DISCOVERY_WEAKNESSES", "0")  # weaknesses OFF (default is now ON)
     monkeypatch.setenv("EVALYN_TARGET_URL", toy_target)
     monkeypatch.chdir(tmp_path)
 
@@ -64,6 +64,35 @@ def test_toy_weaknesses_flag_off_matches_baseline(toy_target, monkeypatch, tmp_p
     for pid, base in base_means.items():
         assert cur_means[pid] == pytest.approx(base), pid
     # and the gate itself does not red against the blessed baseline.
+    assert evaluate_gate(art, baseline).exit_code == 0
+
+
+def test_toy_weaknesses_flag_on_still_matches_baseline(toy_target, monkeypatch, tmp_path):
+    """R11-2, made executable: with ``TOY_DISCOVERY_WEAKNESSES`` ON (now the
+    default), a real gate run STILL reproduces the blessed baseline exactly.
+
+    This locks the disjointness guarantee — the planted triggers share no turn
+    with any static probe, and the injection leak needs turn>=2, so the static
+    suite never trips a weakness. Same fingerprint, same per-probe means, clean
+    PASS. Together with the flag-OFF test, both directions are pinned.
+    """
+    monkeypatch.setattr("examples.toy_target.LEAK_PROBABILITY", 0.0)
+    monkeypatch.setenv("TOY_DISCOVERY_WEAKNESSES", "1")  # weaknesses ON
+    monkeypatch.setenv("EVALYN_TARGET_URL", toy_target)
+    monkeypatch.chdir(tmp_path)
+
+    pack = load_pack(PACK)
+    with pytest.warns(RuntimeWarning, match="no price entry"):
+        art = run_gate(pack, judge_model="mockllm/model",
+                       log_dir=str(tmp_path / "logs"), out_dir=str(tmp_path / "runs"))
+
+    baseline = RunArtifact.from_dict(json.loads(BASELINE.read_text()))
+    assert art.pack_hash == baseline.pack_hash
+    base_means = {p.id: p.mean_score for p in baseline.probes}
+    cur_means = {p.id: p.mean_score for p in art.probes}
+    assert cur_means.keys() == base_means.keys()
+    for pid, base in base_means.items():
+        assert cur_means[pid] == pytest.approx(base), pid
     assert evaluate_gate(art, baseline).exit_code == 0
 
 
@@ -125,7 +154,7 @@ async def test_planted_pii_and_persona(toy_target, monkeypatch):
 async def test_triggers_inert_when_flag_off(toy_target, monkeypatch):
     """Guard for R11-1's spirit at the transcript level: with the flag off, none
     of the adaptive triggers change the toy's ordinary replies."""
-    monkeypatch.delenv("TOY_DISCOVERY_WEAKNESSES", raising=False)
+    monkeypatch.setenv("TOY_DISCOVERY_WEAKNESSES", "0")  # explicitly OFF (default is now ON)
     monkeypatch.setenv("EVALYN_TARGET_URL", toy_target)
     pack = load_pack(PACK)
 
