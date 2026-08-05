@@ -1058,7 +1058,7 @@ new rulings (old exact+prefix void; same-order rule-3 win; empty-records message
 throughout (10 RED failures shown first). 481 passed, ruff clean, both packs
 validate-pack OK. Zero spend (toy target + mockllm only).
 
-## Plan #3 — `discover` + flywheel (`feat/plan3-discover`, cut from `dev` @ `6d6753d`) *(Tasks 0–7 of 14 complete; execution resumed 2026-08-05)*
+## Plan #3 — `discover` + flywheel (`feat/plan3-discover`, cut from `dev` @ `6d6753d`) *(Tasks 0–8a of 14 complete; paused for a fresh session 2026-08-05 — see the [Task 8b handoff](./superpowers/handoffs/2026-08-05-plan3-task8b-kickoff.md))*
 
 Plan doc: [`superpowers/plans/2026-08-04-evalyn-plan3-discover.md`](./superpowers/plans/2026-08-04-evalyn-plan3-discover.md)
 Design spec: [`superpowers/specs/2026-08-04-discover-mode-design.md`](./superpowers/specs/2026-08-04-discover-mode-design.md)
@@ -1079,7 +1079,8 @@ and reviewers.
 | 5 | Observe→reason→pursue loop + `personas.py` | `de0f073`, `72d9589` (fix) | ✅ done, review clean after 1 fix round |
 | 6 | Outcome-graded probe emission + deterministic dedup | `7e4851e`, `06844cd` (fix) | ✅ done, review clean after 1 fix round (2 Important) |
 | 7 | Replay-once via the gate's own machinery | `4f12a0a`, `3a5481e` (fix) | ✅ done, review clean after 1 fix round (1 Important) |
-| 8–14 | Orchestrator, family rule, CLI, toy weaknesses, e2e, docs, live run | — | ⏳ in progress from Task 8a |
+| 8a | Discovery solver + task builder (one sample = one hunt) | `f6e776f`, `9075d37` (fix) | ✅ done, review clean after 1 fix round (1 Important) |
+| 8b–14 | Orchestrator, family rule, CLI, toy weaknesses, e2e, docs, live run | — | ⏳ next: Task 8b |
 
 **Controller-verified state at the pause (2026-08-04):** `uv run pytest -q -W error::RuntimeWarning`
 → **595 passed** (481 at branch start); `uv run ruff check src/ tests/` clean; both packs
@@ -1090,6 +1091,10 @@ packs `validate-pack` exit 0; tree clean; 12 commits on the branch, still **noth
 
 **Controller-verified after Task 7 (2026-08-05):** **635 passed** warning-clean; ruff clean; tree
 clean; 16 commits on the branch, still **nothing pushed**.
+
+**Controller-verified after Task 8a (2026-08-05):** **647 passed** warning-clean; ruff clean; both
+packs `validate-pack` exit 0; tree clean; still **nothing pushed**. Task 8 was split by controller
+ruling R8-0 into 8a (solver + task builder, done) and 8b (the orchestrator, next).
 
 **Measured, not assumed — agent spend does reach the eval log.** Task 2's review left an open
 question: `SpendMeter.reconcile` reads `log.stats.model_usage`, but the discovery agent's own
@@ -1131,6 +1136,18 @@ reports the larger of the two figures rather than either alone.
   break set; the re-review swept the C0/C1 ranges, DEL, `U+FEFF`, surrogates and non-characters in
   three shapes each and got zero smuggled entries. The pre-existing test only exercised `\n` and `#`,
   so it passed under the buggy code — the replacement was required to fail RED first.
+- **Task 8a (1 Important):** the default config would have let a whole hunt type go dark silently.
+  `DiscoveryConfig.rubric_judge_model` defaults to `None` while `objectives` defaults to all four —
+  including the hallucination hunt, which emits a *required* rubric check. With no rubric judge the
+  `Confirmer` correctly fails closed and returns `unsure` for every tier-3 candidate, and **unsure is
+  never a finding** — so an out-of-the-box run would hunt hallucination, possibly find something
+  real, and report nothing. Same failure shape as the dataset-truncation hazard, on a different axis:
+  the run reads as "found nothing" when the truth is "could not judge." Fixed as a warning in
+  `build_discovery_task` (decidable there, and it protects the Python API too, not just the CLI),
+  scoped to objectives the session cap actually schedules and driven by the objective's own
+  `confirm_checks` factory rather than its declared tier, so it cannot go quiet if those drift.
+  **Task 10 must turn this into a refuse-class CLI preflight (exit 2)**, alongside the existing
+  tier-3 staleness gate.
 - **Task 7 (1 Important):** `replay.py`'s docstring guaranteed `log_path` "is empty exactly when
   nothing ran and nothing was spent" — but if `inspect_eval` raised *after* samples had already run
   (a fatal provider error mid-eval), the code returned an empty `log_path` anyway. A tier-3 replay
@@ -1146,6 +1163,17 @@ Triage these at Plan #3's final whole-branch review.
 
 **Binding obligations on later tasks**
 
+- **T8a→T10 (refuse-class preflight):** the "rubric objective selected but no rubric judge
+  configured" case is a *warning* at task-build time. Task 10 must make it a **refuse-class CLI
+  preflight (exit 2)**, consistent with the existing tier-3 staleness gate, so an operator cannot
+  start a hallucination hunt that is structurally incapable of confirming anything.
+- **T8a→T10 (the cap drops hunts silently):** `plan_hunts` drops entire objectives when
+  `max_sessions < len(objectives)` — the operator selects four hunts, two run, and nothing says so.
+  R8-12's round-robin fixed the *distribution* but not the *silence*. Task 10's preflight should
+  print "cap dropped objectives X, Y". Also `max_sessions=0` yields an empty dataset and a silent build.
+- **T8a→T8b/T12 (unproven end-to-end):** every Task 8a test uses a spy confirmer, so the solver is
+  proven to *carry* a verdict, not that the verdict came from the real scorers. The trust boundary
+  through the solver stays unproven until 8b and the Task 12 acceptance test.
 - **T6→T8 (must fix while wiring provenance):** the header sanitizer sweeps C0+DEL but not the C1
   block (`U+0080–U+0084`, `U+0086–U+009F`), lone surrogates, or `U+FFFE`/`U+FFFF`. These **cannot**
   smuggle an entry — the escape class is closed — but PyYAML's reader *rejects* them, so a
