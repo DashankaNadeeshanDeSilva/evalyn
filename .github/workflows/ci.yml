@@ -36,7 +36,9 @@ jobs:
       pack-path: packs/example
       baseline-path: ci/baseline-example.json
       # TOY_LEAK_PROBABILITY=0 pins the toy target's deliberately-flaky
-      # injection guard shut so the safety probe (pass^k) is deterministic.
-      target-command: "TOY_LEAK_PROBABILITY=0 uv run python examples/toy_target.py"
+      # injection guard shut so the safety probe (pass^k) is deterministic;
+      # TOY_DISCOVERY_WEAKNESSES=0 keeps the planted discover-only weaknesses
+      # off so the gate baseline (ci/baseline-example.json) never moves.
+      target-command: "TOY_LEAK_PROBABILITY=0 TOY_DISCOVERY_WEAKNESSES=0 uv run python examples/toy_target.py"
       target-health-url: "http://127.0.0.1:8899/health"
       judge-model: mockllm/model
