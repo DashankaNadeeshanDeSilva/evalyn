@@ -1077,3 +1077,24 @@ def test_compare_debug_reraises(monkeypatch, tmp_path):
     result = runner.invoke(app, ["compare", "--target", pack_dir,
                                  "--a", a, "--b", b, "--debug"])
     assert isinstance(result.exception, ConnectionError)
+
+
+# -------------------------------------------------------- discover: smoke tests
+# Full preflight/exit-code coverage lives in tests/discovery/test_cli_discover.py;
+# these are the top-level registration + dry-run smoke checks.
+
+def test_discover_help_registered():
+    result = runner.invoke(app, ["discover", "--help"])
+    assert result.exit_code == 0
+    assert "--target" in result.stdout
+    assert "--objective" in result.stdout
+
+
+def test_discover_dry_run_smoke(monkeypatch):
+    async def must_not_run(pack, cfg):
+        raise AssertionError("run_discovery must not be called under --dry-run")
+
+    monkeypatch.setattr("evalyn.discovery.run.run_discovery", must_not_run)
+    result = runner.invoke(app, ["discover", "--target", PACK, "--dry-run"])
+    assert result.exit_code == 0
+    assert "dry-run" in result.stdout
