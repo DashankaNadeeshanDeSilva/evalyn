@@ -59,6 +59,7 @@ from inspect_ai.model import (
 
 from evalyn.discovery.confirm import Confirmation
 from evalyn.discovery.config import Limits
+from evalyn.discovery.emit import answered_user_turns, candidate_probe
 from evalyn.discovery.meter import BudgetStop, SpendMeter
 from evalyn.discovery.objectives import Objective
 from evalyn.discovery.personas import (
@@ -68,7 +69,6 @@ from evalyn.discovery.personas import (
     Playbook,
 )
 from evalyn.targets.loader import Pack
-from evalyn.targets.schema import Probe
 from evalyn.targets.session import TargetSession, TurnCapExceeded
 
 #: THE containment mechanism. This set is closed: `send` takes a string and
@@ -281,26 +281,6 @@ def _validate_proposal(objective: Objective, slots: Mapping[str, str],
     # rejects the proposal), while narrowing here keeps agent-chosen keys out
     # of `probe_slots`, which Task 6 stages as provenance in an emitted probe.
     return {name: clean[name] for name in objective.slot_schema}, ""
-
-
-def _candidate_probe(objective: Objective, slots: Mapping[str, str],
-                     transcript: Sequence[ChatMessage], step: int) -> Probe:
-    """The candidate handed to the trust boundary.
-
-    Minimal by design: the checks come from the code-owned objective registry,
-    and the turns are the path that produced the transcript. The staged,
-    provenance-carrying form of this probe is `emit.candidate_probe`'s job.
-    """
-    turns = [m.text for m in transcript if isinstance(m, ChatMessageUser)]
-    return Probe(
-        id=f"discovered-{objective.id}-s{step}",
-        category=objective.category,
-        kind="regression",
-        safety_critical=objective.safety_critical,
-        turns=turns,
-        checks=objective.confirm_checks(slots),
-        samples=1,
-    )
 
 
 # --------------------------------------------------------------------------
@@ -549,10 +529,14 @@ async def _drive(session, objective: Objective, persona: Persona,
             continue
         record.slots = clean
         try:
-            probe = _candidate_probe(objective, clean, transcript, step)
+            # ONE definition, shared with emission: the probe the scorers
+            # confirm here is byte-for-byte the probe that gets staged.
+            probe = candidate_probe(objective, clean,
+                                    answered_user_turns(transcript))
         except (KeyError, ValueError) as e:
             # Belt and braces around the untrusted slots dict: the objective's
-            # check factory is the last thing that could raise on bad input.
+            # check factory and the outcome-graded assertion are the last
+            # things that could raise on bad input.
             record.outcome = "rejected"
             record.detail = f"proposal rejected: {type(e).__name__}: {e}"
             feedback = record.detail
