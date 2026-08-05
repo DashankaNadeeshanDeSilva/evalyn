@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import shutil
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -275,9 +276,14 @@ async def test_replay_unknown_invariant_fails_before_any_eval(
 
 
 async def test_replay_eval_failure_is_reported_not_raised(
-        offline_pack, replay, monkeypatch):
+        offline_pack, replay, monkeypatch, tmp_path):
     """A judge outage or a target that dies mid-replay is one finding's bad
-    luck, not grounds to abort the discovery run."""
+    luck, not grounds to abort the discovery run.
+
+    R7-4: the raise may land *after* samples ran, so a tier-3 judge may already
+    have been billed. The log directory is reported as a floor, so the caller
+    always has somewhere to scan — an unreconcilable spend is exactly what that
+    ruling exists to prevent."""
     def _boom(*args, **kwargs):
         raise RuntimeError("judge provider is down")
 
@@ -288,7 +294,27 @@ async def test_replay_eval_failure_is_reported_not_raised(
 
     assert result.reproduced is False
     assert "judge provider is down" in result.reason
-    assert not result.log_path
+    assert result.log_path == str(tmp_path / "logs"), (
+        "an eval that raised may still have spent; the caller must be given a "
+        "directory to reconcile from")
+
+
+async def test_replay_reports_log_path_on_non_success_status(
+        offline_pack, replay, monkeypatch):
+    """Inspect usually turns a fatal sample error into an `error`-status log
+    rather than raising. That log is where the spend is recorded, so the
+    zero-trial verdict must carry its path (R7-4)."""
+    stub = SimpleNamespace(status="error", location="/logs/stub.eval", samples=[])
+    monkeypatch.setattr("evalyn.discovery.replay.inspect_eval",
+                        lambda *a, **kw: [stub])
+    staged = _stage(offline_pack, _probe())
+
+    result = await replay(offline_pack, staged)
+
+    assert result.reproduced is False
+    assert result.trials == 0
+    assert result.log_path == "/logs/stub.eval"
+    assert "error" in result.reason, result.reason
 
 
 async def test_replay_programmer_error_still_surfaces(

@@ -38,7 +38,11 @@ tier-3 judge — that is money, and it is outside `SpendMeter`'s live charging,
 which only sees the discovery agent's own calls. `ReplayResult.log_path` is
 therefore populated whenever an eval ran, reproduced or not, so the caller can
 reconcile the log into the meter; it is empty exactly when nothing ran and
-nothing was spent. `rubric_model` defaults to the pack's configured judge,
+nothing was spent — i.e. only on the fail-closed paths that precede
+`inspect_eval`. If the eval raised, the log *directory* comes back instead of a
+single log file: the raise may have landed after samples ran, and a spend the
+caller cannot even scan for is the failure this rule exists to prevent.
+`rubric_model` defaults to the pack's configured judge,
 which for most packs is a paid model — pass it explicitly to control that.
 
 **Nothing raises out of `replay_staged_probe`** except Evalyn's own bug
@@ -76,7 +80,9 @@ class ReplayResult:
 
     `log_path` is the Inspect eval log — populated whenever an eval ran (so the
     caller can reconcile judge spend), empty when replay failed closed before
-    the eval started. `reason` explains any verdict that is not `reproduced`.
+    the eval started. It is the log *directory* rather than a single log file
+    when the eval raised and no location was returned. `reason` explains any
+    verdict that is not `reproduced`.
     """
     reproduced: bool
     trials: int
@@ -151,8 +157,14 @@ async def replay_staged_probe(pack: Pack, staged: Path, *,
     except _PROGRAMMER_ERRORS:
         raise
     except Exception as e:  # noqa: BLE001 — a dead target/judge is a verdict
+        # The raise can land *after* samples ran (a fatal provider error
+        # mid-eval, or an unreadable log location), so a tier-3 judge may
+        # already have been billed. There is no `log.location` to hand back
+        # here, so report the directory it would have been written to — the
+        # same floor `run_gate` falls back to. Money that may have been spent
+        # must always be reconcilable (R7-4).
         return ReplayResult(
-            False, 0, 0.0,
+            False, 0, 0.0, log_path=log_dir,
             reason=f"replay eval failed ({type(e).__name__}: {e})")
 
     log_path = str(log.location) if log.location else log_dir
