@@ -1058,7 +1058,7 @@ new rulings (old exact+prefix void; same-order rule-3 win; empty-records message
 throughout (10 RED failures shown first). 481 passed, ruff clean, both packs
 validate-pack OK. Zero spend (toy target + mockllm only).
 
-## Plan #3 — `discover` + flywheel (`feat/plan3-discover`, cut from `dev` @ `6d6753d`) *(Tasks 0–5 of 14 complete; paused for a fresh session 2026-08-04)*
+## Plan #3 — `discover` + flywheel (`feat/plan3-discover`, cut from `dev` @ `6d6753d`) *(Tasks 0–6 of 14 complete; execution resumed 2026-08-05)*
 
 Plan doc: [`superpowers/plans/2026-08-04-evalyn-plan3-discover.md`](./superpowers/plans/2026-08-04-evalyn-plan3-discover.md)
 Design spec: [`superpowers/specs/2026-08-04-discover-mode-design.md`](./superpowers/specs/2026-08-04-discover-mode-design.md)
@@ -1077,11 +1077,15 @@ and reviewers.
 | 3 | `no-pii-leak` tier-1 invariant (email + E.164-ish phone) | `f09594d` | ✅ done, review clean (zero findings) |
 | 4 | `Confirmer` — the trust boundary | `b45c73b`, `088cbe2` (fix) | ✅ done, review clean after 1 fix round (5 Important) |
 | 5 | Observe→reason→pursue loop + `personas.py` | `de0f073`, `72d9589` (fix) | ✅ done, review clean after 1 fix round |
-| 6–14 | Emission/dedup, replay, orchestrator, family rule, CLI, toy weaknesses, e2e, docs, live run | — | ⏳ not started |
+| 6 | Outcome-graded probe emission + deterministic dedup | `7e4851e`, `06844cd` (fix) | ✅ done, review clean after 1 fix round (2 Important) |
+| 7–14 | Replay, orchestrator, family rule, CLI, toy weaknesses, e2e, docs, live run | — | ⏳ in progress from Task 7 |
 
 **Controller-verified state at the pause (2026-08-04):** `uv run pytest -q -W error::RuntimeWarning`
 → **595 passed** (481 at branch start); `uv run ruff check src/ tests/` clean; both packs
 `validate-pack` exit 0; working tree clean; 10 commits on the branch, **nothing pushed**.
+
+**Controller-verified after Task 6 (2026-08-05):** **621 passed** warning-clean; ruff clean; both
+packs `validate-pack` exit 0; tree clean; 12 commits on the branch, still **nothing pushed**.
 
 ### What the reviews caught (would have shipped otherwise)
 
@@ -1098,6 +1102,17 @@ and reviewers.
   `_unevaluable(check)` guard, verified neither too permissive nor too aggressive.
 - **Task 5:** `verify_slots` accepted bare strings, under which *every* transcript element counted as
   assistant evidence — silently degrading "the agent may not quote itself" to "substring of anything."
+- **Task 6 (2 Important):** the provenance header comments on a staged probe could be **escaped**.
+  The sanitizer normalized only `\r\n`/`\r`/`\n`, but PyYAML also ends a comment at `NUL`, `U+0085`,
+  `U+2028` and `U+2029` — so agent-influenced provenance text (slot values, turn excerpts) carrying
+  one of those smuggles an extra entry into the staged YAML list. The reviewer reproduced it against
+  the built module. Consequence either way is silent: `load_prior_discoveries` rejects the smuggled
+  entry and skips the *whole* file, so the genuine discovery vanishes from the dedup corpus — or a
+  human adopting the file by `git mv` carries the attacker-shaped entry into `probes/`. The
+  provenance *key* had the same hole. Both closed by sweeping C0+DEL and splitting on the full YAML
+  break set; the re-review swept the C0/C1 ranges, DEL, `U+FEFF`, surrogates and non-characters in
+  three shapes each and got zero smuggled entries. The pre-existing test only exercised `\n` and `#`,
+  so it passed under the buggy code — the replacement was required to fail RED first.
 
 ### Open items — Plan #3 deferred findings register
 
@@ -1105,7 +1120,25 @@ Triage these at Plan #3's final whole-branch review.
 
 **Binding obligations on later tasks**
 
-- **T5→T6 (must fix, or Task 6's review fails):** `loop.py` carries a private `_candidate_probe`
+- **T6→T8 (must fix while wiring provenance):** the header sanitizer sweeps C0+DEL but not the C1
+  block (`U+0080–U+0084`, `U+0086–U+009F`), lone surrogates, or `U+FFFE`/`U+FFFF`. These **cannot**
+  smuggle an entry — the escape class is closed — but PyYAML's reader *rejects* them, so a
+  provenance value carrying one produces a header the parser refuses: `load_prior_discoveries`
+  warn-skips the whole file and an adopted file fails `load_pack`. Lone surrogates crash staging
+  earlier still (`Path.write_text` raises `UnicodeEncodeError`). Latent until Task 8 wires
+  agent-influenced text into provenance. Fix: widen the sweep to the complement of PyYAML's
+  printable set.
+- **T7→T8 (spend accounting):** replaying a staged **tier-3** probe invokes the real rubric judge —
+  money spent outside `SpendMeter`'s live charging, which only sees the discovery agent's own calls.
+  `run_discovery` must reconcile every replay log into the meter and **skip replay when the meter is
+  already exhausted**, recording `replay: skipped (budget)` rather than silently spending past the cap.
+- ~~**T5→T6 (must fix, or Task 6's review fails):**~~ **CLOSED in Task 6** — `candidate_probe` is now
+  the single definition (`emit.py`), `loop.py` calls it, `_candidate_probe` is deleted, and
+  `_assert_outcome_graded` runs *inside* `candidate_probe` so there is no second call site to forget.
+  Verified independently by the reviewer, not from the report. The `samples` 1→3 bump for
+  safety-critical probes was confirmed to cost no extra judge spend (the `Confirmer` never reads that
+  field). The T5 orphan-turn finding below was closed in the same task by `answered_user_turns`.
+  Original obligation, for the record: `loop.py` carries a private `_candidate_probe`
   because the loop needs a `Probe` to call the trust boundary. **Task 6 must export
   `candidate_probe`, make `loop.py` call it, and delete `_candidate_probe`** — a second definition
   means what *confirms* a finding and what gets *emitted* as a permanent probe could diverge, the
@@ -1143,7 +1176,21 @@ Triage these at Plan #3's final whole-branch review.
 - **T3:** the phone pattern misses parenthesis-grouped international numbers (`+1 (415) 555-2671`).
   Do **not** widen the separator class without re-checking the false-positive families; pin the miss
   in the test so it reads as a decision.
-- **T5 (relevant to Task 6):** a failed send leaves an **orphan user turn** in `session.messages`
+- **T6:** `_assert_outcome_graded(probe)` called *without* `slot_values` refuses any `not_contains`
+  check — fail-closed and right in direction, but it means a Task 7/8 caller re-asserting on a probe
+  loaded back from `discoveries/` (where the slots are no longer in hand) gets a spurious
+  `ValueError`; the docstring must name the trap. `dedup._signature` collapses `values`-style checks
+  to `(type, "")`, so two multi-value checks share a signature (unreachable for emitted probes,
+  reachable for hand-edited staged files). `stage_probe` builds a filename from `probe.id` with no
+  validation — safe only because all four registry objective ids are `[a-z0-9-]` slugs, and the
+  function is public (**should fix before merge:** one `re.fullmatch` guard makes the property
+  local). `_probe_id` truncates sha256 to 32 bits, so a collision silently overwrites another staged
+  discovery. `loop.py` now transitively imports filesystem code via `emit.py`; the containment guard
+  scans loop.py's *own* imports so it stays green and the real mechanism (the closed `ACTIONS`
+  frozenset) is untouched, but the guard now under-approximates the module graph.
+- ~~**T5 (relevant to Task 6):**~~ **CLOSED in Task 6** by `answered_user_turns`, which drops
+  mid-conversation, trailing and consecutive orphans, verified through the real `run_session` path.
+  For the record: a failed send leaves an **orphan user turn** in `session.messages`
   (`TargetSession` appends `ChatMessageUser` before the HTTP call). Pre-fix the session ended so this
   was unreachable; now the loop continues and that undelivered turn flows into the next prompt and
   into the probe's `turns` list — so a finding confirmed after a transient failure carries a turn the
