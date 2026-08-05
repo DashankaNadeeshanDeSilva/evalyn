@@ -1058,7 +1058,7 @@ new rulings (old exact+prefix void; same-order rule-3 win; empty-records message
 throughout (10 RED failures shown first). 481 passed, ruff clean, both packs
 validate-pack OK. Zero spend (toy target + mockllm only).
 
-## Plan #3 — `discover` + flywheel (`feat/plan3-discover`, cut from `dev` @ `6d6753d`) *(Tasks 0–9 + 11 of 14 complete; Task 10 next, then 12–13, then the USER-GATED Task 14)*
+## Plan #3 — `discover` + flywheel (`feat/plan3-discover`, cut from `dev` @ `6d6753d`) *(Tasks 0–11 of 14 complete; Task 12 next, then 13, then the USER-GATED Task 14)*
 
 Plan doc: [`superpowers/plans/2026-08-04-evalyn-plan3-discover.md`](./superpowers/plans/2026-08-04-evalyn-plan3-discover.md)
 Design spec: [`superpowers/specs/2026-08-04-discover-mode-design.md`](./superpowers/specs/2026-08-04-discover-mode-design.md)
@@ -1093,7 +1093,8 @@ waits, not the review loop.
 | 8b | Orchestrator `run.py` (`run_discovery`, `DiscoveryArtifact`, report) + shared `atomic_write_artifact` + emit C1-sanitizer | `5d17127` | ✅ done, review clean (zero above Minor; 3 minors deferred) |
 | 9 | Family rule — `family_warnings(discovery_model=…)` + `REFUSE_PREFIX` | `0d3f0bc` (merge `89f592d`) | ✅ done, review clean (zero findings) |
 | 11 | Toy planted weaknesses + persona/playbook (default ON per §10) | `6290955`, `f822f09` (fix) (merge `61f1478`) | ✅ done, review clean after 1 fix round |
-| 10, 12, 13 | CLI `discover`, e2e acceptance, docs/version | — | ⏳ next: Task 10 |
+| 10 | CLI `discover` subcommand (§8 flags, exit 0/2/3, preflight refusals, dry-run notes) | `0bb00e6`, `8869e99` (fix) | ✅ done, review clean after 1 fix round (1 Important — dry-run preview) |
+| 12, 13 | e2e acceptance, docs/version | — | ⏳ next: Task 12 |
 | 14 | USER-GATED live TwinCore pre-run | — | ⛔ gated — fresh consent + cost first |
 
 **Controller-verified state at the pause (2026-08-04):** `uv run pytest -q -W error::RuntimeWarning`
@@ -1114,6 +1115,13 @@ ruling R8-0 into 8a (solver + task builder, done) and 8b (the orchestrator, next
 ruff clean; both packs `validate-pack` exit 0; tree clean; both worktrees removed and their branches
 deleted (`-d`, i.e. confirmed merged). HEAD `61f1478`, still **nothing pushed**. The default-ON toy
 flip (Task 11) did not break 8b's real-scorer e2e tests — verified by the post-merge full-suite run.
+
+**Controller-verified after Task 10 (2026-08-06):** **694 passed** warning-clean; ruff clean; both
+packs `validate-pack` exit 0; `evalyn discover --help` exit 0; tree clean; HEAD `8869e99`; **29
+commits** on the branch since `dev @ 6d6753d`, still **nothing pushed**. Task 10 shipped `0bb00e6`
+(the subcommand) + `8869e99` (fix: dry-run refusal notes + family-check aligned to the run's rubric
+model). `openai 2.53.0` added and locked. Session handoff written here for a fresh session to resume
+at Task 12 — same branch, no new cut.
 
 **Measured, not assumed — agent spend does reach the eval log.** Task 2's review left an open
 question: `SpendMeter.reconcile` reads `log.stats.model_usage`, but the discovery agent's own
@@ -1194,17 +1202,19 @@ Triage these at Plan #3's final whole-branch review.
 
 **Binding obligations on later tasks**
 
-- **T8a→T10 (refuse-class preflight):** the "rubric objective selected but no rubric judge
-  configured" case is a *warning* at task-build time. Task 10 must make it a **refuse-class CLI
-  preflight (exit 2)**, consistent with the existing tier-3 staleness gate, so an operator cannot
-  start a hallucination hunt that is structurally incapable of confirming anything.
-- **T8a→T10 (the cap drops hunts silently):** `plan_hunts` drops entire objectives when
-  `max_sessions < len(objectives)` — the operator selects four hunts, two run, and nothing says so.
-  R8-12's round-robin fixed the *distribution* but not the *silence*. Task 10's preflight should
-  print "cap dropped objectives X, Y". Also `max_sessions=0` yields an empty dataset and a silent build.
-- **T8a→T8b/T12 (unproven end-to-end):** every Task 8a test uses a spy confirmer, so the solver is
-  proven to *carry* a verdict, not that the verdict came from the real scorers. The trust boundary
-  through the solver stays unproven until 8b and the Task 12 acceptance test.
+- ~~**T8a→T10 (refuse-class preflight):**~~ **CLOSED in Task 10 (R10-2, `0bb00e6`):** a selected
+  rubric-needing objective with `rubric_judge_model is None` is now a **refuse-class CLI preflight
+  (exit 2)**, membership decided by the objective's own `confirm_checks` factory (not declared tier),
+  no auto-override; a deterministic-only selection does not trigger it; and `--dry-run` surfaces it as
+  a "would REFUSE" note (fix `8869e99`) rather than silently passing.
+- ~~**T8a→T10 (the cap drops hunts silently):**~~ **CLOSED in Task 10 (R10-3):** the preflight prints
+  a notice naming the dropped objectives when `max_sessions < len(selected)`, and `max_sessions == 0`
+  is a setup error (exit 2), not a silent exit-0 no-op.
+- **T8a→T8b/T12 (unproven end-to-end):** every Task 8a test used a spy confirmer. **8b closed half of
+  this** — its `test_end_to_end_real_scorer_confirms_and_replays` drives a real Inspect eval and
+  confirms a finding via the REAL tier-1 scorer (no spy) through the orchestrator. The remaining half
+  — the full `discover`→confirmed→emit→replay→adopt→`gate`-reds flywheel end to end — is **Task 12's**
+  acceptance test.
 - **T6→T8 (must fix while wiring provenance):** the header sanitizer sweeps C0+DEL but not the C1
   block (`U+0080–U+0084`, `U+0086–U+009F`), lone surrogates, or `U+FFFE`/`U+FFFF`. These **cannot**
   smuggle an entry — the escape class is closed — but PyYAML's reader *rejects* them, so a
@@ -1262,9 +1272,9 @@ Triage these at Plan #3's final whole-branch review.
   re-raises `TypeError`/`AttributeError`/`NameError`/`KeyError` so an Evalyn bug fails loudly, but
   `run_session`'s broad `except Exception` turned that into one session's `stop_reason="error"` plus a
   `RuntimeWarning` — nearly silent unattended.
-- **T1→T10:** `--max-usd 0` from the CLI resolves to a literal 0 ceiling ("spend nothing") while a
-  pack's `max_usd_per_run: 0` means "no ceiling" — same sentinel, opposite meanings. Task 10 must
-  reject `--max-usd 0` or document the asymmetry, and pin it with a test.
+- ~~**T1→T10:**~~ **CLOSED in Task 10 (R10-4, `0bb00e6`):** the CLI **rejects `--max-usd 0`** (exit 2)
+  with a message explaining the asymmetry and pointing at the pack's `budget.max_usd_per_run` field for
+  "no ceiling"; pinned by a test.
 - **T4→T9:** `Check` permits `value` and `values` together on a `contains` check; tier-1 silently
   prefers `values`, so the candidate's `value` claim goes unevaluated. Exclusivity validation was
   already slated for Task 9.
@@ -1336,6 +1346,14 @@ Triage these at Plan #3's final whole-branch review.
 - **T11 (1 minor):** `examples/toy_target.py` `_session_turns` grows unbounded (no eviction) — harmless
   for a throwaway toy/test server; not fixed in the default-flip round because changing eviction risks
   the ≥2-turn injection logic and the baseline. Optional cap/clear if the toy is ever long-lived.
+- **T10 (1 minor, deferred):** `cli.py` maps a mid-run exception from `run_discovery` to **Exit 2**,
+  whose contract is "refuse *before any spend*" — a post-spend crash landing there muddies the 0/2/3
+  contract slightly. Low-risk (mirrors `gate`; `run_discovery` never raises on budget, it returns a
+  partial), but a distinct code would be semantically cleaner. Triage at final review.
+- **T10→T9 (note for the family owner):** the `discover` family preflight was aligned to
+  `cfg.rubric_judge_model` (the model the run actually invokes) rather than the pack default, closing a
+  spurious-over-refusal edge. If Task 9's `family_warnings` is ever made selection-aware, keep this
+  call-site semantics (check the model that will actually judge, not the pack's default).
 
 **Unverifiable until the first live run**
 
