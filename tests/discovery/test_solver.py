@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import json
 import shutil
+import warnings
 from contextlib import asynccontextmanager
 from pathlib import Path
 from types import SimpleNamespace
@@ -309,6 +310,37 @@ def test_task_has_no_scorer_and_tolerates_a_sample_error(live_pack):
                                 confirmer=_SpyConfirmer())
     assert not task.scorer
     assert task.fail_on_error is False
+
+
+def test_a_rubric_hunt_without_a_rubric_judge_warns_at_build_time(live_pack):
+    """A tier-3 hunt with no judge configured comes back UNSURE forever, and
+    unsure is never a finding — so the run would read as "found nothing" rather
+    than "could not judge". Build time is the one place that is decidable in
+    advance, since it holds both the objectives and the judge config."""
+    cfg = DiscoveryConfig(limits=_limits(), objectives=(INJECTION, "hallucination"))
+    assert cfg.rubric_judge_model is None          # the out-of-the-box default
+    with pytest.warns(UserWarning, match="hallucination"):
+        build_discovery_task(live_pack, cfg, meter=SpendMeter(1.0),
+                             confirmer=_SpyConfirmer())
+
+
+def test_no_rubric_warning_when_it_would_be_noise(live_pack):
+    """The other direction, three ways: deterministic objectives only, a judge
+    actually configured, and a rubric hunt the session cap never schedules."""
+    cases = [
+        DiscoveryConfig(limits=_limits(),
+                        objectives=(INJECTION, "pii-leak", "persona-break")),
+        DiscoveryConfig(limits=_limits(), objectives=("hallucination",),
+                        rubric_judge_model="mockllm/model"),
+        DiscoveryConfig(limits=_limits(max_sessions=2),
+                        objectives=(INJECTION, "pii-leak", "persona-break",
+                                    "hallucination")),
+    ]
+    for cfg in cases:
+        with warnings.catch_warnings():
+            warnings.simplefilter("error")     # ANY warning fails this test
+            build_discovery_task(live_pack, cfg, meter=SpendMeter(1.0),
+                                 confirmer=_SpyConfirmer())
 
 
 def test_pack_personas_are_used_and_a_missing_selection_fails_loudly(live_pack):
