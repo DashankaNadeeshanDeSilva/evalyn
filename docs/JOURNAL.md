@@ -1058,14 +1058,24 @@ new rulings (old exact+prefix void; same-order rule-3 win; empty-records message
 throughout (10 RED failures shown first). 481 passed, ruff clean, both packs
 validate-pack OK. Zero spend (toy target + mockllm only).
 
-## Plan #3 — `discover` + flywheel (`feat/plan3-discover`, cut from `dev` @ `6d6753d`) *(Tasks 0–8a of 14 complete; paused for a fresh session 2026-08-05 — see the [Task 8b handoff](./superpowers/handoffs/2026-08-05-plan3-task8b-kickoff.md))*
+## Plan #3 — `discover` + flywheel (`feat/plan3-discover`, cut from `dev` @ `6d6753d`) *(Tasks 0–9 + 11 of 14 complete; Task 10 next, then 12–13, then the USER-GATED Task 14)*
 
 Plan doc: [`superpowers/plans/2026-08-04-evalyn-plan3-discover.md`](./superpowers/plans/2026-08-04-evalyn-plan3-discover.md)
 Design spec: [`superpowers/specs/2026-08-04-discover-mode-design.md`](./superpowers/specs/2026-08-04-discover-mode-design.md)
 Execution: subagent-driven (fresh implementer per task → task review → fix rounds → scoped re-review).
 **Subagent model: Fable for Tasks 0–4, then Opus 5 from Task 4's re-review onward** — the Fable 5
 usage limit was hit mid-plan and the maintainer chose Opus 5 for all remaining implementers, fixers
-and reviewers.
+and reviewers. **From Task 8b (2026-08-05): controller session runs on Fable 5, all subagents on
+Opus 5** (maintainer decision).
+
+**Parallel execution (2026-08-05):** Tasks 8b, 9 and 11 were implemented concurrently — 8b directly
+on `feat/plan3-discover`, 9 and 11 each in its own git worktree (maintainer-approved, since their
+file sets are provably disjoint). Both worktrees were mis-seeded by the tooling at `1c1836f` (Plan
+#2a era) and each implementer caught it and `git reset --hard 2753aad` onto the intended base — a
+gotcha to watch if more worktrees are spun up. After each task cleared its review, its branch was
+merged back with `--no-ff` (clean 3-way, no conflicts), the full suite re-run green after each merge,
+and the worktrees removed. Reviews still ran one at a time; parallelism collapsed the implementation
+waits, not the review loop.
 
 ### Task status
 
@@ -1080,7 +1090,11 @@ and reviewers.
 | 6 | Outcome-graded probe emission + deterministic dedup | `7e4851e`, `06844cd` (fix) | ✅ done, review clean after 1 fix round (2 Important) |
 | 7 | Replay-once via the gate's own machinery | `4f12a0a`, `3a5481e` (fix) | ✅ done, review clean after 1 fix round (1 Important) |
 | 8a | Discovery solver + task builder (one sample = one hunt) | `f6e776f`, `9075d37` (fix) | ✅ done, review clean after 1 fix round (1 Important) |
-| 8b–14 | Orchestrator, family rule, CLI, toy weaknesses, e2e, docs, live run | — | ⏳ next: Task 8b |
+| 8b | Orchestrator `run.py` (`run_discovery`, `DiscoveryArtifact`, report) + shared `atomic_write_artifact` + emit C1-sanitizer | `5d17127` | ✅ done, review clean (zero above Minor; 3 minors deferred) |
+| 9 | Family rule — `family_warnings(discovery_model=…)` + `REFUSE_PREFIX` | `0d3f0bc` (merge `89f592d`) | ✅ done, review clean (zero findings) |
+| 11 | Toy planted weaknesses + persona/playbook (default ON per §10) | `6290955`, `f822f09` (fix) (merge `61f1478`) | ✅ done, review clean after 1 fix round |
+| 10, 12, 13 | CLI `discover`, e2e acceptance, docs/version | — | ⏳ next: Task 10 |
+| 14 | USER-GATED live TwinCore pre-run | — | ⛔ gated — fresh consent + cost first |
 
 **Controller-verified state at the pause (2026-08-04):** `uv run pytest -q -W error::RuntimeWarning`
 → **595 passed** (481 at branch start); `uv run ruff check src/ tests/` clean; both packs
@@ -1095,6 +1109,11 @@ clean; 16 commits on the branch, still **nothing pushed**.
 **Controller-verified after Task 8a (2026-08-05):** **647 passed** warning-clean; ruff clean; both
 packs `validate-pack` exit 0; tree clean; still **nothing pushed**. Task 8 was split by controller
 ruling R8-0 into 8a (solver + task builder, done) and 8b (the orchestrator, next).
+
+**Controller-verified after Tasks 8b + 9 + 11 merged (2026-08-05):** **665 passed** warning-clean;
+ruff clean; both packs `validate-pack` exit 0; tree clean; both worktrees removed and their branches
+deleted (`-d`, i.e. confirmed merged). HEAD `61f1478`, still **nothing pushed**. The default-ON toy
+flip (Task 11) did not break 8b's real-scorer e2e tests — verified by the post-merge full-suite run.
 
 **Measured, not assumed — agent spend does reach the eval log.** Task 2's review left an open
 question: `SpendMeter.reconcile` reads `log.stats.model_usage`, but the discovery agent's own
@@ -1156,6 +1175,18 @@ reports the larger of the two figures rather than either alone.
   weakening the docstring: the exception path now returns the log *directory*, matching the fallback
   `run_gate` already used. The re-review then walked every return and raise path to confirm no path
   after an eval may have been entered yields an empty `log_path`.
+- **Tasks 8b, 9, 11:** all three passed review with **zero Critical/Important findings** (8b left 3
+  latent-edge minors; 9 zero; 11 one minor). The review's real work here was verification, not
+  catching regressions: the 8b reviewer independently re-derived the widened C1 sanitizer regex and
+  confirmed the `atomic_write_artifact` extraction left all three artifact filenames and the write
+  atomicity byte-identical; the 9 reviewer confirmed `family_warnings` was extracted from inline
+  `build_task` logic with byte-identical gate/compare behaviour; the 11 reviewer verified at the
+  committed-blob level that `ci/baseline-example.json` and `target.yaml invariants:` were untouched and
+  the planted triggers are disjoint from all five static probe turns.
+- **Maintainer decision (R11-8, 2026-08-05):** `TOY_DISCOVERY_WEAKNESSES` defaults **ON** per spec §10
+  (the implementer had shipped OFF per the brief). Rationale: the demo/e2e path works with no env var
+  to remember; CI still sets `=0` explicitly; the flip added a test proving a flag-ON gate run *still*
+  matches the baseline (locking R11-2 disjointness executably, both directions now pinned).
 
 ### Open items — Plan #3 deferred findings register
 
@@ -1181,8 +1212,10 @@ Triage these at Plan #3's final whole-branch review.
   warn-skips the whole file and an adopted file fails `load_pack`. Lone surrogates crash staging
   earlier still (`Path.write_text` raises `UnicodeEncodeError`). Latent until Task 8 wires
   agent-influenced text into provenance. Fix: widen the sweep to the complement of PyYAML's
-  printable set.
-- **T7→T8 (spend accounting):** replaying a staged **tier-3** probe invokes the real rubric judge —
+  printable set. — **CLOSED in Task 8b (`5d17127`, R8-4):** `emit._NON_PRINTABLE` is now PyYAML's
+  printable complement (`[^\t -~\x85\xa0-퟿-�\U00010000-\U0010ffff]`), applied
+  per-segment after the break split; pinned with a C1 char and a lone surrogate in a provenance value.
+- ~~**T7→T8 (spend accounting):**~~ **CLOSED in Task 8b (`5d17127`):** replaying a staged **tier-3** probe invokes the real rubric judge —
   money spent outside `SpendMeter`'s live charging, which only sees the discovery agent's own calls.
   `run_discovery` must reconcile every replay log into the meter and **skip replay when the meter is
   already exhausted**, recording `replay: skipped (budget)` rather than silently spending past the cap.
@@ -1193,11 +1226,17 @@ Triage these at Plan #3's final whole-branch review.
   it defaults to `mockllm/model` while `rubric_model` defaults to the pack's real judge, and a
   required judge-graded check answered by a mock judge returns `unsure` → `required_pass=False` →
   `pass_k == 0.0` → a **fabricated** `reproduced=True`. Not reachable today (tier-2 is deliberately
-  excluded from `discover`), which is exactly why it would go unnoticed.
-- **T7→T8 (design note):** `ReplayResult` carries no `pass_at_k`/`expected_trials`, so for a
-  `samples: 3` probe (what Task 6 emits for safety-critical objectives) `reproduced=True` covers both
-  "failed 3/3" and "failed 1/3" — the caller cannot tell a solid reproduction from a flaky one, and
-  spec §7 asks it to flag flaky findings.
+  excluded from `discover`), which is exactly why it would go unnoticed. **All CLOSED in Task 8b
+  (`5d17127`):** `run_discovery` reconciles every replay log (via `meter.reconcile`, its first
+  consumer), skips replay when the meter is exhausted (recorded as a distinct `ReplaySkipped`, not a
+  failed replay), gives each replay its own `replay-<probe_id>/` log dir (no cross-replay
+  double-count), and passes `judge_model` explicitly from cfg. Reviewer verified each against a
+  discriminating test (two seeded mutations caught).
+- **T7→T8 (design note, STILL OPEN → Task 12/final):** `ReplayResult` carries no
+  `pass_at_k`/`expected_trials`, so for a `samples: 3` probe (what Task 6 emits for safety-critical
+  objectives) `reproduced=True` covers both "failed 3/3" and "failed 1/3" — the caller cannot tell a
+  solid reproduction from a flaky one, and spec §7 asks it to flag flaky findings. 8b did not add
+  flaky-flagging; carry to Task 12's acceptance / final review.
 - ~~**T5→T6 (must fix, or Task 6's review fails):**~~ **CLOSED in Task 6** — `candidate_probe` is now
   the single definition (`emit.py`), `loop.py` calls it, `_candidate_probe` is deleted, and
   `_assert_outcome_graded` runs *inside* `candidate_probe` so there is no second call site to forget.
@@ -1211,14 +1250,18 @@ Triage these at Plan #3's final whole-branch review.
   exact failure the trust boundary exists to prevent. `_assert_outcome_graded` must also run on the
   confirming probe, not only the emitted one. (Divergence today is latent and changes no verdict:
   `samples=1` vs `3` for safety-critical, different id scheme, no `reference`.)
-- **T2→T8 (controller check owed):** `SpendMeter.reconcile` reads an Inspect eval log's
-  `stats.model_usage`, but the agent's reasoning calls happen inside the discovery solver. **Verify
-  those calls actually land in `log.stats.model_usage`.** If they do not, there is no post-hoc
-  backstop for agent spend and live charging is the only accounting there will ever be.
-- **T5→T8:** `confirm.py` deliberately re-raises `TypeError`/`AttributeError`/`NameError`/`KeyError`
-  so an Evalyn bug fails loudly, but `run_session`'s broad `except Exception` turns that into one
-  session's `stop_reason="error"` plus a `RuntimeWarning` — nearly silent unattended. The run-level
-  summary must surface **`stop_reason == "error"` counts** prominently, not just per-session.
+- ~~**T2→T8 (controller check owed):**~~ **CLOSED — verified (spike) + consumed in Task 8b.** The
+  diagnostic spike confirmed solver-issued `get_model()` calls land in `log.stats.model_usage`; 8b's
+  `run_discovery` is `reconcile`'s first real consumer, reconciling the discovery log for agent spend
+  and each replay log for judge spend, and recording live vs reconciled as separate fields with the
+  **max** used for the banner/cap (never the sum). Both directions pinned by test.
+- ~~**T5→T8:**~~ **CLOSED in Task 8b (R8-2/R8-17):** `run_discovery` counts `stop_reason == "error"`
+  sessions **and** samples that left no store entry (a crash before the solver ran) toward one
+  `error_count` structured field, and `render_discovery_report` surfaces it as a prominent top-level
+  line (with an all-errored callout that Task 10 maps to exit 3). Original: `confirm.py` deliberately
+  re-raises `TypeError`/`AttributeError`/`NameError`/`KeyError` so an Evalyn bug fails loudly, but
+  `run_session`'s broad `except Exception` turned that into one session's `stop_reason="error"` plus a
+  `RuntimeWarning` — nearly silent unattended.
 - **T1→T10:** `--max-usd 0` from the CLI resolves to a literal 0 ceiling ("spend nothing") while a
   pack's `max_usd_per_run: 0` means "no ceiling" — same sentinel, opposite meanings. Task 10 must
   reject `--max-usd 0` or document the asymmetry, and pin it with a test.
@@ -1282,6 +1325,17 @@ Triage these at Plan #3's final whole-branch review.
 - **T5:** the containment guard test has two residual evasions (defence-in-depth only):
   `from os import open as _o` evades both the substring ban and the bare-call regex, and `getattr(`
   is unlisted while `setattr(` is.
+- **T8b (3 minors, latent-edge):** (1) `run.py` `_reconcile_path` union-globs `*.eval` AND `*.json`
+  in the directory fallback — a single replay dir holding both formats for one eval would count it
+  twice; doesn't bite today (Inspect writes one format per `log_dir`), latent if the log-format config
+  changes; prefer `.eval`, fall back to `.json` only when no `.eval`. (2) The replay-skip predicate
+  keys on the **live** meter only (`meter.exhausted()`), so the rare live-under/reconciled-over case
+  still spends one replay — acceptable per R8-3's literal wording, noted so it isn't mistaken for full
+  reconciled-aware gating. (3) `effective_spend_usd` is a derived `@property` but serialized into the
+  artifact (`to_dict` writes, `from_dict` pops) — intentional/harmless redundancy.
+- **T11 (1 minor):** `examples/toy_target.py` `_session_turns` grows unbounded (no eviction) — harmless
+  for a throwaway toy/test server; not fixed in the default-flip round because changing eviction risks
+  the ≥2-turn injection logic and the baseline. Optional cap/clear if the toy is ever long-lived.
 
 **Unverifiable until the first live run**
 
