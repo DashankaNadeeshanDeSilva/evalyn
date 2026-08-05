@@ -66,9 +66,16 @@ _MAX_PROVENANCE_CHARS = 300
 #: (NUL arrives via the C0 sweep below, which runs first.)
 _YAML_BREAKS = re.compile("[\n\r\x85\u2028\u2029]")
 
-#: C0 controls and DEL, minus tab/LF/CR — dropped rather than split on, so a
-#: stray control character cannot terminate a comment either.
-_C0_CONTROLS = re.compile("[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
+#: The COMPLEMENT of PyYAML's printable set — anything the YAML reader rejects.
+#: Wider than C0+DEL (R8-4): it also sweeps the C1 block (U+0080-U+009F), lone
+#: surrogates (U+D800-U+DFFF) and U+FFFE/U+FFFF. Provenance carries
+#: agent-influenced text; a single such character otherwise makes the staged
+#: file unparseable (PyYAML rejects it, `load_prior_discoveries` warn-skips the
+#: whole file, the discovery drops from the dedup corpus) — and a lone surrogate
+#: crashes `stage_probe`'s `Path.write_text` outright with UnicodeEncodeError.
+#: Applied AFTER the break split, so the break chars above split first.
+_NON_PRINTABLE = re.compile(
+    "[^\x09\x20-\x7e\x85\xa0-퟿-�\U00010000-\U0010ffff]")
 
 
 # --------------------------------------------------------------------------
@@ -207,8 +214,8 @@ def _comment_safe_lines(text: str) -> list[str]:
     one of them is enough for agent text to break out of the header and prepend
     an entry to the staged list.
     """
-    cleaned = _C0_CONTROLS.sub(" ", text.replace("\r\n", "\n"))
-    return _YAML_BREAKS.split(cleaned)
+    segments = _YAML_BREAKS.split(text.replace("\r\n", "\n"))
+    return [_NON_PRINTABLE.sub(" ", seg) for seg in segments]
 
 
 def _comment_lines(key: object, value: object) -> list[str]:
