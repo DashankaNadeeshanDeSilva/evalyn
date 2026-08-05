@@ -1058,7 +1058,7 @@ new rulings (old exact+prefix void; same-order rule-3 win; empty-records message
 throughout (10 RED failures shown first). 481 passed, ruff clean, both packs
 validate-pack OK. Zero spend (toy target + mockllm only).
 
-## Plan #3 — `discover` + flywheel (`feat/plan3-discover`, cut from `dev` @ `6d6753d`) *(Tasks 0–6 of 14 complete; execution resumed 2026-08-05)*
+## Plan #3 — `discover` + flywheel (`feat/plan3-discover`, cut from `dev` @ `6d6753d`) *(Tasks 0–7 of 14 complete; execution resumed 2026-08-05)*
 
 Plan doc: [`superpowers/plans/2026-08-04-evalyn-plan3-discover.md`](./superpowers/plans/2026-08-04-evalyn-plan3-discover.md)
 Design spec: [`superpowers/specs/2026-08-04-discover-mode-design.md`](./superpowers/specs/2026-08-04-discover-mode-design.md)
@@ -1078,7 +1078,8 @@ and reviewers.
 | 4 | `Confirmer` — the trust boundary | `b45c73b`, `088cbe2` (fix) | ✅ done, review clean after 1 fix round (5 Important) |
 | 5 | Observe→reason→pursue loop + `personas.py` | `de0f073`, `72d9589` (fix) | ✅ done, review clean after 1 fix round |
 | 6 | Outcome-graded probe emission + deterministic dedup | `7e4851e`, `06844cd` (fix) | ✅ done, review clean after 1 fix round (2 Important) |
-| 7–14 | Replay, orchestrator, family rule, CLI, toy weaknesses, e2e, docs, live run | — | ⏳ in progress from Task 7 |
+| 7 | Replay-once via the gate's own machinery | `4f12a0a`, `3a5481e` (fix) | ✅ done, review clean after 1 fix round (1 Important) |
+| 8–14 | Orchestrator, family rule, CLI, toy weaknesses, e2e, docs, live run | — | ⏳ in progress from Task 8a |
 
 **Controller-verified state at the pause (2026-08-04):** `uv run pytest -q -W error::RuntimeWarning`
 → **595 passed** (481 at branch start); `uv run ruff check src/ tests/` clean; both packs
@@ -1086,6 +1087,23 @@ and reviewers.
 
 **Controller-verified after Task 6 (2026-08-05):** **621 passed** warning-clean; ruff clean; both
 packs `validate-pack` exit 0; tree clean; 12 commits on the branch, still **nothing pushed**.
+
+**Controller-verified after Task 7 (2026-08-05):** **635 passed** warning-clean; ruff clean; tree
+clean; 16 commits on the branch, still **nothing pushed**.
+
+**Measured, not assumed — agent spend does reach the eval log.** Task 2's review left an open
+question: `SpendMeter.reconcile` reads `log.stats.model_usage`, but the discovery agent's own
+`get_model()` calls happen inside the solver, not through Inspect's scorer path — so is the
+post-hoc backstop real? A standalone diagnostic spike (scratchpad only, zero spend, `inspect_ai`
+0.3.249) settled it: solver-issued calls **are** recorded, keyed by their own model name and
+aggregated independently of the task's default model, with correct totals — present, not zeroed.
+The condition is that reconciliation only covers calls made inside *the eval whose log you pass*,
+and `discover` has two different evals (the hunt, carrying agent spend; each replay, carrying judge
+spend), so both must be reconciled. The caveat that must not be lost: mockllm synthesizes usage, so
+this proves the plumbing, not that a given real provider populates `ModelOutput.usage`. If one
+omits it, the log inherits the omission and `reconcile` **under-reports silently** while the live
+meter **over-charges loudly** — which is why the pessimistic fallback stays, and why the run now
+reports the larger of the two figures rather than either alone.
 
 ### What the reviews caught (would have shipped otherwise)
 
@@ -1113,6 +1131,14 @@ packs `validate-pack` exit 0; tree clean; 12 commits on the branch, still **noth
   break set; the re-review swept the C0/C1 ranges, DEL, `U+FEFF`, surrogates and non-characters in
   three shapes each and got zero smuggled entries. The pre-existing test only exercised `\n` and `#`,
   so it passed under the buggy code — the replacement was required to fail RED first.
+- **Task 7 (1 Important):** `replay.py`'s docstring guaranteed `log_path` "is empty exactly when
+  nothing ran and nothing was spent" — but if `inspect_eval` raised *after* samples had already run
+  (a fatal provider error mid-eval), the code returned an empty `log_path` anyway. A tier-3 replay
+  bills a real rubric judge, and Task 8 is instructed to reconcile spend from exactly that field, so
+  the gap meant **money spent and no way to account for it**. Fixed in the code rather than by
+  weakening the docstring: the exception path now returns the log *directory*, matching the fallback
+  `run_gate` already used. The re-review then walked every return and raise path to confirm no path
+  after an eval may have been entered yields an empty `log_path`.
 
 ### Open items — Plan #3 deferred findings register
 
@@ -1132,6 +1158,18 @@ Triage these at Plan #3's final whole-branch review.
   money spent outside `SpendMeter`'s live charging, which only sees the discovery agent's own calls.
   `run_discovery` must reconcile every replay log into the meter and **skip replay when the meter is
   already exhausted**, recording `replay: skipped (budget)` rather than silently spending past the cap.
+  Two traps found while ruling on this: `reconcile(log)` takes a **log object, not a path**, and
+  `ReplayResult.log_path` may be a **directory** (the fail-safe fallback when an eval raised) — so if
+  every replay shares one log dir, scanning it picks up earlier replays' logs and double-counts them.
+  Each replay therefore gets its own log directory. Task 8 must also pass `judge_model` **explicitly**:
+  it defaults to `mockllm/model` while `rubric_model` defaults to the pack's real judge, and a
+  required judge-graded check answered by a mock judge returns `unsure` → `required_pass=False` →
+  `pass_k == 0.0` → a **fabricated** `reproduced=True`. Not reachable today (tier-2 is deliberately
+  excluded from `discover`), which is exactly why it would go unnoticed.
+- **T7→T8 (design note):** `ReplayResult` carries no `pass_at_k`/`expected_trials`, so for a
+  `samples: 3` probe (what Task 6 emits for safety-critical objectives) `reproduced=True` covers both
+  "failed 3/3" and "failed 1/3" — the caller cannot tell a solid reproduction from a flaky one, and
+  spec §7 asks it to flag flaky findings.
 - ~~**T5→T6 (must fix, or Task 6's review fails):**~~ **CLOSED in Task 6** — `candidate_probe` is now
   the single definition (`emit.py`), `loop.py` calls it, `_candidate_probe` is deleted, and
   `_assert_outcome_graded` runs *inside* `candidate_probe` so there is no second call site to forget.
@@ -1176,6 +1214,15 @@ Triage these at Plan #3's final whole-branch review.
 - **T3:** the phone pattern misses parenthesis-grouped international numbers (`+1 (415) 555-2671`).
   Do **not** widen the separator class without re-checking the false-positive families; pin the miss
   in the test so it reads as a decision.
+- **T7:** `replay.py` duplicates `run_gate`'s eval spine nearly line for line (the `.cache` default,
+  `build_task(...)`, `inspect_eval(model="mockllm/model", display="none")`, the `samples is None`
+  re-read). The module's central claim is "exactly the pipeline `run_gate` uses", and a copied spine
+  can quietly stop being exactly that — extract a shared `_run_pack_eval` helper. Also: the
+  "`log_path` empty exactly when nothing ran" docstring is still not an exact biconditional
+  (`build_task` sits inside the same `try`, so its failure returns a directory too — safe direction);
+  no test exercises `samples > 1`; and the `offline_pack` fixture points at the toy target's own port
+  `127.0.0.1:8899` without requesting the fixture, which is safe only because nothing in that group
+  currently reaches the network.
 - **T6:** `_assert_outcome_graded(probe)` called *without* `slot_values` refuses any `not_contains`
   check — fail-closed and right in direction, but it means a Task 7/8 caller re-asserting on a probe
   loaded back from `discoveries/` (where the slots are no longer in hand) gets a spurious
