@@ -142,7 +142,7 @@ def _sample_transcript(sample) -> str:
     return "\n".join(blocks)
 
 
-def _reduce_log_to_probes(log, pack: Pack) -> list[ProbeResult]:
+def reduce_log_to_probes(log, pack: Pack) -> list[ProbeResult]:
     by_id = {p.id: p for p in pack.probes}
     # Group CheckResults per (probe_id, epoch) across ALL scorers present in the
     # log (tier3 lands later — never hardcode a scorer list). The authority is
@@ -218,6 +218,13 @@ def _reduce_log_to_probes(log, pack: Pack) -> list[ProbeResult]:
     return results
 
 
+#: Pre-Plan-#3 private name. The reducer went public when `discover`'s
+#: replay-once began reusing it (spec §7: replay runs the gate's OWN machinery,
+#: it does not re-derive a verdict), and the alias keeps every earlier caller
+#: and test importing the private name working unchanged.
+_reduce_log_to_probes = reduce_log_to_probes
+
+
 def _judge_usd(log) -> float:
     """Judge spend for THIS eval, read from the returned eval log.
 
@@ -256,7 +263,7 @@ def run_gate(pack: Pack, judge_model: str = "mockllm/model",
         raise RuntimeError(f"inspect eval did not succeed: status {log.status!r}")
     if log.samples is None and log.location:
         log = read_eval_log(log.location)
-    probes = _reduce_log_to_probes(log, pack)
+    probes = reduce_log_to_probes(log, pack)
     art = RunArtifact(
         pack_name=pack.spec.name,
         pack_hash=pack_fingerprint(pack),
