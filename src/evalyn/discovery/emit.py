@@ -29,15 +29,18 @@ is a human moving a file, never a side effect of a run. The write is
 temp-then-`os.replace` so a crash mid-write cannot leave a half-probe that a
 later `load_prior_discoveries` would choke on.
 
-The provenance header is comments only, and every provenance value is treated as
-hostile: it is agent-influenced text, and one raw newline in it would otherwise
-emit a non-comment line and corrupt the document.
+The provenance header is comments only, and every provenance key AND value is
+treated as hostile: it is agent-influenced text, and a single character PyYAML
+ends a comment at — LF, CR, NUL, NEL (U+0085), LS (U+2028) or PS (U+2029) —
+would otherwise emit a non-comment line and let agent text prepend an entry to
+the staged list.
 """
 from __future__ import annotations
 
 import hashlib
 import json
 import os
+import re
 import warnings
 from collections.abc import Mapping, Sequence
 from pathlib import Path
@@ -58,6 +61,14 @@ STAGING_DIRNAME = "discoveries"
 #: excerpts and slot values are agent-authored and unbounded; a header is for
 #: humans, and the full structured record rides in the run artifact.
 _MAX_PROVENANCE_CHARS = 300
+
+#: Everything PyYAML treats as the end of a comment: LF, CR, NUL, NEL, LS, PS.
+#: (NUL arrives via the C0 sweep below, which runs first.)
+_YAML_BREAKS = re.compile("[\n\r\x85\u2028\u2029]")
+
+#: C0 controls and DEL, minus tab/LF/CR — dropped rather than split on, so a
+#: stray control character cannot terminate a comment either.
+_C0_CONTROLS = re.compile("[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
 
 
 # --------------------------------------------------------------------------
@@ -188,18 +199,33 @@ def candidate_probe(objective: Objective, slots: Mapping[str, str],
 # YAML + staging
 # --------------------------------------------------------------------------
 
-def _comment_lines(key: str, value: object) -> list[str]:
-    """`# key: value`, safe for a value that contains newlines or `#`.
+def _comment_safe_lines(text: str) -> list[str]:
+    """Split on every character PyYAML ends a comment at, C0 controls dropped.
 
-    Provenance carries agent-influenced text (slot values, turn excerpts). A raw
-    newline would end the comment and emit a line YAML then parses as content.
+    Not just LF: a YAML comment also ends at CR, NUL, NEL (U+0085), LS (U+2028)
+    and PS (U+2029). `splitlines`-shaped sanitizing misses the last three, and
+    one of them is enough for agent text to break out of the header and prepend
+    an entry to the staged list.
+    """
+    cleaned = _C0_CONTROLS.sub(" ", text.replace("\r\n", "\n"))
+    return _YAML_BREAKS.split(cleaned)
+
+
+def _comment_lines(key: object, value: object) -> list[str]:
+    """`# key: value`, safe for text containing line breaks or `#`.
+
+    Provenance carries agent-influenced text (slot values, turn excerpts), so
+    BOTH halves are normalized: the key collapses to one line, the value keeps
+    its line structure with every continuation line re-prefixed `#`.
     """
     text = str(value)
     if len(text) > _MAX_PROVENANCE_CHARS:
         text = text[:_MAX_PROVENANCE_CHARS] + " ..."
-    lines = text.replace("\r\n", "\n").replace("\r", "\n").split("\n")
-    head, *rest = lines
-    return [f"# {key}: {head}"] + [f"#     {ln}" for ln in rest]
+    safe_key = " ".join(p for p in _comment_safe_lines(str(key)) if p.strip())
+    head, *rest = _comment_safe_lines(text)
+    lines = [f"# {safe_key}: {head}"]
+    lines += [f"#     {ln}" for ln in rest if ln.strip()]
+    return [ln.rstrip() for ln in lines]
 
 
 def probe_yaml(probe: Probe, *, provenance: dict) -> str:

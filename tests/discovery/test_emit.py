@@ -356,6 +356,22 @@ async def _run_loop(root, session, confirmer):
 # Step 2 — provenance comments, and an inert staged file
 # --------------------------------------------------------------------------
 
+#: Every character PyYAML ends a comment on. LF is the obvious one; NEL, LS and
+#: PS are line breaks to a YAML parser but not to `str.splitlines`-shaped
+#: sanitizers, and NUL terminates a comment outright — each one is a way for
+#: agent-influenced provenance text to escape the header and prepend an entry
+#: to the staged list.
+YAML_BREAKS = {
+    "LF": "\n",
+    "CR": "\r",
+    "CRLF": "\r\n",
+    "NEL U+0085": "\x85",
+    "LS U+2028": "\u2028",
+    "PS U+2029": "\u2029",
+    "NUL": "\x00",
+}
+
+
 def test_probe_yaml_survives_hostile_provenance_values():
     probe = _injection_probe()
     hostile = {
@@ -381,6 +397,24 @@ def test_probe_yaml_survives_hostile_provenance_values():
     assert "x" * 400 not in text
     # None-valued schema fields are omitted, not written as nulls
     assert "question:" not in text
+
+
+@pytest.mark.parametrize("name,brk", sorted(YAML_BREAKS.items()))
+def test_no_yaml_line_break_lets_provenance_escape_the_header(name, brk):
+    """Every character PyYAML ends a comment on must be neutralised — in the
+    provenance VALUE and in the KEY. `str.splitlines`-shaped sanitizing misses
+    NEL/LS/PS, and one of them turns agent text into a staged probe entry."""
+    probe = _injection_probe()
+    expected = [probe.model_dump(exclude_none=True)]
+    smuggled = f"benign{brk}- id: smuggled"
+
+    for provenance in ({"quote": smuggled},          # hostile value
+                       {smuggled: "benign"},         # hostile key
+                       {"quote": f"{brk}- id: smuggled"}):   # leading break
+        text = probe_yaml(probe, provenance=provenance)
+        loaded = yaml.safe_load(text)
+        assert loaded == expected, f"{name}: escaped via {provenance!r} -> {loaded!r}"
+        assert "smuggled" not in [p.get("id") for p in loaded]
 
 
 def test_stage_probe_writes_inert_yaml(tmp_path):
