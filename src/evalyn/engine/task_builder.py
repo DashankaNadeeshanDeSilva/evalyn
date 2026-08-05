@@ -30,6 +30,72 @@ def _model_family(model: str) -> str:
     return model.split("/", 1)[0].lower()
 
 
+# Stable, machine-detectable sentinel: a `family_warnings` entry that begins with
+# REFUSE_PREFIX is a DISQUALIFYING (refuse-class) collision; every other entry is
+# a warn-class soft caution. Task 10's CLI turns any refuse-class entry into exit
+# code 2 by matching this prefix alone — it must never sniff the prose. Keep the
+# literal stable; import the constant rather than hard-coding the string.
+REFUSE_PREFIX = "REFUSE: "
+
+
+def family_warnings(pack: Pack, *, judge_model: str, rubric_model: str,
+                    discovery_model: str | None = None) -> list[str]:
+    """Family-parity checks across the judge / generator / discovery-agent triad.
+
+    Returns human-readable messages. An entry beginning with ``REFUSE_PREFIX`` is
+    refuse-class (disqualifying); any other entry is warn-class (soft caution).
+    With ``discovery_model=None`` (the default) the output is exactly the two
+    pre-existing judge<->generator warnings, so callers that pass no discovery
+    model see zero behaviour change (R9-2).
+    """
+    generator_family = pack.spec.judge.generator_family
+    gen_fam = generator_family.lower() if generator_family else None
+    msgs: list[str] = []
+
+    # --- pre-existing warn-class entries (verbatim — do not alter) ---
+    if gen_fam and _model_family(rubric_model) == gen_fam:
+        # Global Constraint: judge != generator family by default — a match is
+        # a self-preference-bias WARNING, never an error.
+        msgs.append(
+            f"rubric judge model {rubric_model!r} is the same model family as "
+            f"the target's generator ({generator_family!r}) — self-preference "
+            f"bias risk; prefer a different judge family")
+    if (gen_fam and not judge_model.startswith("mockllm")
+            and _model_family(judge_model) == gen_fam):
+        # Same rule for the TIER-2 classifier judge (gate parity, #2b Task 10).
+        # Only this guard needs the mockllm skip: judge_model DEFAULTS to
+        # "mockllm/model" (offline tests), while rubric_model always resolves
+        # to a real model from the pack spec or an explicit override.
+        msgs.append(
+            f"tier-2 classifier judge model {judge_model!r} is the same model "
+            f"family as the target's generator ({generator_family!r}) — "
+            f"self-preference bias risk; prefer a different judge family")
+
+    # --- discovery-agent entries (Task 9) ---
+    if discovery_model is not None:
+        disc_fam = _model_family(discovery_model)
+        # discovery <-> rubric judge, same family -> REFUSE (disqualifying): the
+        # agent hunting for failures would be graded by its own family. Global
+        # Constraint: refuse on judge<->agent collision.
+        if _model_family(rubric_model) == disc_fam:
+            msgs.append(
+                f"{REFUSE_PREFIX}discovery agent model {discovery_model!r} is "
+                f"the same model family as the rubric judge ({rubric_model!r}) "
+                f"— the agent that hunts for failures would be graded by its "
+                f"own family; this judge/agent self-preference collision is "
+                f"disqualifying")
+        # discovery <-> generator, same family -> WARN (soft caution), mirroring
+        # the judge<->generator warnings above.
+        if gen_fam and disc_fam == gen_fam:
+            msgs.append(
+                f"discovery agent model {discovery_model!r} is the same model "
+                f"family as the target's generator ({generator_family!r}) — "
+                f"self-preference bias risk; prefer a different discovery agent "
+                f"family")
+
+    return msgs
+
+
 def build_task(pack: Pack, judge_model: str = "mockllm/model",
                rubric_judge_model: str | None = None,
                max_samples: int | None = None,
@@ -38,26 +104,11 @@ def build_task(pack: Pack, judge_model: str = "mockllm/model",
     samples = [Sample(input=p.id, target=p.category, metadata=_probe_metadata(p)) for p in probes]
     k = max((p.samples for p in probes), default=1)
     rubric_model = rubric_judge_model or pack.spec.judge.rubric_model
-    generator_family = pack.spec.judge.generator_family
-    if generator_family and _model_family(rubric_model) == generator_family.lower():
-        # Global Constraint: judge != generator family by default — a match is
-        # a self-preference-bias WARNING, never an error.
-        warnings.warn(
-            f"rubric judge model {rubric_model!r} is the same model family as "
-            f"the target's generator ({generator_family!r}) — self-preference "
-            f"bias risk; prefer a different judge family",
-            UserWarning, stacklevel=2)
-    if (generator_family and not judge_model.startswith("mockllm")
-            and _model_family(judge_model) == generator_family.lower()):
-        # Same rule for the TIER-2 classifier judge (gate parity, #2b Task 10).
-        # Only this guard needs the mockllm skip: judge_model DEFAULTS to
-        # "mockllm/model" (offline tests), while rubric_model always resolves
-        # to a real model from the pack spec or an explicit override.
-        warnings.warn(
-            f"tier-2 classifier judge model {judge_model!r} is the same model "
-            f"family as the target's generator ({generator_family!r}) — "
-            f"self-preference bias risk; prefer a different judge family",
-            UserWarning, stacklevel=2)
+    # build_task drives the gate/compare paths, which have no discovery agent —
+    # so discovery_model stays None here and the discovery-family entries never
+    # fire. The discover path (Task 10 CLI) calls family_warnings() directly.
+    for msg in family_warnings(pack, judge_model=judge_model, rubric_model=rubric_model):
+        warnings.warn(msg, UserWarning, stacklevel=2)
     return Task(
         dataset=MemoryDataset(samples),
         solver=session_solver(pack),
