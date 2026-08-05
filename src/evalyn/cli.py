@@ -495,9 +495,14 @@ def discover(
     # never the prose. --allow-family-collision downgrades it to a warning.
     from evalyn.engine.task_builder import REFUSE_PREFIX, family_warnings
 
-    rubric_model = cfg.rubric_judge_model or pack.spec.judge.rubric_model
+    # Match the run: the discovery Confirmer judges ONLY with
+    # cfg.rubric_judge_model, so the discovery<->judge family refusal must be
+    # measured against THAT model, never the pack's default rubric model (which a
+    # discover run never invokes) — else we'd over-refuse against a judge that
+    # will not run. `None` -> "" so the rubric-based entries simply don't fire.
     fam = family_warnings(pack, judge_model=cfg.judge_model,
-                          rubric_model=rubric_model, discovery_model=cfg.agent_model)
+                          rubric_model=cfg.rubric_judge_model or "",
+                          discovery_model=cfg.agent_model)
     refusals = [m for m in fam if m.startswith(REFUSE_PREFIX)]
     for m in fam:
         if not m.startswith(REFUSE_PREFIX):
@@ -511,17 +516,30 @@ def discover(
         typer.echo(f"warning: family collision ALLOWED — {m[len(REFUSE_PREFIX):]}",
                    err=True)
 
-    # R10-2: a selected objective whose confirmation needs a rubric judge, with
-    # no judge configured, can never produce a finding (every rubric candidate
-    # returns unsure). Task 8a warns at build time to protect the API; the CLI
-    # escalates it to a refuse-class preflight. Decide by the objective's own
-    # confirm_checks factory (not declared tier), and never under --dry-run
-    # (which starts no hunt), mirroring how `gate` skips is_stale in dry-run.
+    # Shared predicates for R10-2 (rubric objective, no judge) and R10-5 (tier-3
+    # staleness). Computed once so the real refusal and the --dry-run "would
+    # refuse" note can NEVER drift: R10-2 by the objective's own confirm_checks
+    # factory (not declared tier); R10-5 by `is_stale` + `tier >= 3`, mirroring
+    # `gate` (which also resolves the rubric model as the override-or-pack-default
+    # and skips the check under --dry-run).
     from evalyn.discovery.objectives import get_objective
     from evalyn.discovery.task_builder import _needs_rubric_judge
 
-    if not dry_run and cfg.rubric_judge_model is None:
-        blind = [o for o in cfg.objectives if _needs_rubric_judge(get_objective(o))]
+    blind = ([o for o in cfg.objectives if _needs_rubric_judge(get_objective(o))]
+             if cfg.rubric_judge_model is None else [])
+
+    tier3 = [o for o in cfg.objectives if get_objective(o).tier >= 3]
+    tier3_stale = False
+    stale_why = ""
+    if tier3:
+        from evalyn.engine.calibrate import is_stale
+
+        stale_rubric_model = cfg.rubric_judge_model or pack.spec.judge.rubric_model
+        tier3_stale, stale_why = is_stale(pack, stale_rubric_model)
+
+    if not dry_run:
+        # R10-2 — an operator must not start a hunt structurally incapable of
+        # confirming anything. No auto-override; fix by judge or deselection.
         if blind:
             typer.echo(f"discover: setup error: no rubric judge configured "
                        f"(--rubric-judge-model), so rubric objective(s) "
@@ -529,24 +547,16 @@ def discover(
                        f"candidate returns unsure, which is never a finding; set a "
                        f"rubric judge model or deselect those objectives", err=True)
             raise typer.Exit(2)
-
-    # R10-5: mirror `gate`'s tier-3 calibration-staleness gate. Only fires when a
-    # selected objective is tier-3, and never under --dry-run.
-    if not dry_run:
-        tier3 = [o for o in cfg.objectives if get_objective(o).tier >= 3]
-        if tier3:
-            from evalyn.engine.calibrate import is_stale
-
-            stale, why = is_stale(pack, rubric_model)
-            if stale and not allow_uncalibrated:
-                typer.echo(f"discover: setup error: tier-3 objective(s) "
-                           f"{', '.join(tier3)} require calibration ({why}); run "
-                           f"`evalyn calibrate --target {target}` or pass "
-                           f"--allow-uncalibrated", err=True)
-                raise typer.Exit(2)
-            if stale:
-                typer.echo(f"warning: running UNCALIBRATED tier-3 hunt(s) ({why}) — "
-                           f"rubric confirmations are untrusted", err=True)
+        # R10-5 — tier-3 calibration-staleness gate.
+        if tier3_stale and not allow_uncalibrated:
+            typer.echo(f"discover: setup error: tier-3 objective(s) "
+                       f"{', '.join(tier3)} require calibration ({stale_why}); run "
+                       f"`evalyn calibrate --target {target}` or pass "
+                       f"--allow-uncalibrated", err=True)
+            raise typer.Exit(2)
+        if tier3_stale:
+            typer.echo(f"warning: running UNCALIBRATED tier-3 hunt(s) ({stale_why}) "
+                       f"— rubric confirmations are untrusted", err=True)
 
     # Resolve persona/playbook axes (validates the ids) and plan the hunts.
     try:
@@ -581,6 +591,20 @@ def discover(
                    f"(raise --max-sessions or narrow --objective)", err=True)
 
     if dry_run:
+        # Surface the refusals --dry-run itself suppresses (R10-2/R10-5): the
+        # preview must never green-light a config the real run refuses. These use
+        # the SAME predicates as the refusals above, gated on the SAME override
+        # flags, so a note appears iff a real run would actually exit 2.
+        if blind:
+            typer.echo(f"NOTE: a real run would REFUSE (exit 2): objective(s) "
+                       f"{', '.join(blind)} need a rubric judge but none is "
+                       f"configured — set --rubric-judge-model or deselect them.",
+                       err=True)
+        if tier3_stale and not allow_uncalibrated:
+            typer.echo(f"NOTE: a real run would REFUSE (exit 2): tier-3 "
+                       f"calibration is stale/absent ({stale_why}) — pass "
+                       f"--allow-uncalibrated to proceed, or run `evalyn calibrate "
+                       f"--target {target}`.", err=True)
         staging = cfg.staging_dir or (pack.root / "discoveries")
         typer.echo(
             f"discover (dry-run): pack '{pack.spec.name}', target {base_url}\n"

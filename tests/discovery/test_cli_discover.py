@@ -86,6 +86,43 @@ def test_dry_run_shows_selected_objectives(monkeypatch):
     assert INJ in result.stdout
 
 
+def test_dry_run_surfaces_would_be_refusals(monkeypatch):
+    # The preview must not green-light a config the real run refuses. The default
+    # selection on packs/example includes tier-3 `hallucination` with no rubric
+    # judge on an uncalibrated pack — the real `discover` exits 2 for BOTH R10-2
+    # and R10-5, so --dry-run (still exit 0) must NOTE both would-be refusals,
+    # computed with the same predicates as the real preflight.
+    _no_spend(monkeypatch)
+    result = runner.invoke(app, ["discover", "--target", PACK, "--dry-run"])
+    assert result.exit_code == 0
+    err = result.stderr.lower()
+    assert "would refuse" in err
+    assert HALL in result.stderr          # R10-2: names the rubric objective
+    assert "rubric judge" in err          # R10-2 reason
+    assert "calibrat" in err              # R10-5 reason
+
+
+def test_dry_run_clean_selection_has_no_refusal_notes(monkeypatch):
+    # A deterministic-only selection is fully runnable — no would-be refusal.
+    _no_spend(monkeypatch)
+    result = runner.invoke(app, ["discover", "--target", PACK,
+                                 "--objective", INJ, "--dry-run"])
+    assert result.exit_code == 0
+    assert "would refuse" not in result.stderr.lower()
+
+
+def test_dry_run_allow_uncalibrated_drops_staleness_note(monkeypatch):
+    # --allow-uncalibrated means the real run would NOT refuse on staleness, so
+    # the R10-5 note must disappear; the R10-2 note (no override) stays.
+    _no_spend(monkeypatch)
+    result = runner.invoke(app, ["discover", "--target", PACK,
+                                 "--rubric-judge-model", "anthropic/claude-sonnet-5",
+                                 "--allow-uncalibrated", "--dry-run"])
+    assert result.exit_code == 0
+    # rubric judge IS set here → no R10-2 note; staleness overridden → no R10-5 note
+    assert "would refuse" not in result.stderr.lower()
+
+
 # ------------------------------------------------- R10-1 family collision
 
 def test_family_collision_refuses_exit_2(monkeypatch):
@@ -126,6 +163,21 @@ def test_family_refuse_discriminates(monkeypatch):
                               "--rubric-judge-model", "openai/gpt-4o",
                               "--dry-run"])
     assert bad.exit_code == 2         # same family → refuse
+
+
+def test_no_spurious_family_refuse_when_no_rubric_judge(monkeypatch):
+    # The Confirmer judges ONLY with cfg.rubric_judge_model; when that is None
+    # no rubric judge runs, so the discovery<->judge family refusal must not fire
+    # against the pack's DEFAULT rubric model (which the run never invokes). Here
+    # the agent shares the anthropic family with the pack's default rubric model,
+    # but no --rubric-judge-model is set and the objective is deterministic — a
+    # real run would never call an anthropic judge, so there is no collision.
+    _no_spend(monkeypatch)
+    result = runner.invoke(app, ["discover", "--target", PACK,
+                                 "--agent-model", "anthropic/claude-opus-4",
+                                 "--objective", INJ, "--dry-run"])
+    assert result.exit_code == 0
+    assert "collision" not in result.stderr.lower()
 
 
 # ------------------------------------------- R10-2 rubric objective, no judge
