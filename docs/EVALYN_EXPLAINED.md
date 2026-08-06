@@ -135,8 +135,9 @@ Here's the loop that makes Evalyn more than a static test list:
    *disposes*.)
 3. A confirmed problem is written out as a ready-made test file — but into a **holding folder**
    (`discoveries/` inside the pack) that `gate` deliberately never reads. Nothing you didn't ask for
-   can start failing your build. Evalyn also re-runs the new test once, immediately, to prove the
-   problem really reproduces and isn't a one-off fluke.
+   can start failing your build. If there's budget left, Evalyn also re-runs the new test once,
+   right away, and records whether the problem showed up again — a useful signal when you come to
+   review it, not a guarantee the problem happens every time.
 4. **A human reads it and decides.** If you agree it's a real bug worth guarding forever, you move
    the file out of the holding folder and into the pack's `probes/` folder. *That* is the moment it
    becomes a permanent `gate` test. Evalyn never adopts its own findings.
@@ -148,8 +149,8 @@ accept one, the product **never silently re-breaks that same bug again.** That's
 (§7) fails your build from the very next run while the bug is still there — it has to pass every
 single time and needs nothing to compare against. An adopted *ordinary* test doesn't block the build
 on day one: until you've recorded a "known-good" baseline run that includes it, Evalyn lists the
-failure under "under review" and the build still passes. So adopting a finding always makes the problem visible; whether it *blocks* a
-build straight away depends on which kind it is.
+failure under "under review" and the build still passes. So adopting a finding always makes the
+problem visible; whether it *blocks* a build straight away depends on which kind it is.
 
 ## 9. The guardrails (safety and cost)
 

@@ -54,8 +54,8 @@ These were decided explicitly by the user and are **settled** unless the user re
 
 **Evalyn's novel core (its IP), on top of Inspect:** (a) **target packs** — a contract that drives a
 black-box product over live HTTP/SSE; (b) the **adaptive discovery agent**; (c) the **findings →
-regression flywheel** (confirmed discoveries auto-emit reproducible probes). Nothing in the eval
-landscape provides these three as a unified whole.
+regression flywheel** (confirmed discoveries auto-emit reproducible probes, staged for human
+adoption). Nothing in the eval landscape provides these three as a unified whole.
 
 ## 4. Prior-art decisions (from surveying Awesome-AI-Evaluations-Tools)
 
@@ -98,7 +98,7 @@ Full table is §9 of the design doc. Summary:
 - **§4 Discovery agent.** Goal-directed loop (observe → reason → pursue thread). **objective ×
   strategy** grid. **Trust boundary: the agent PROPOSES, the scoring layer DISPOSES** (a finding is
   real only when §3 confirms it against the transcript — kills false positives). Every confirmed
-  finding auto-emits a minimal deterministic probe → the flywheel.
+  finding auto-emits a minimal deterministic probe → **staged for human adoption** → the flywheel.
 - **§5 Orchestration/cost/safety/CI.** Hard USD ceiling per run (meters target + judge + discovery
   spend), `--dry-run` estimate, caching, model tiers. **Target allowlist** (refuses non-allowlisted
   URLs; prod needs `--i-know-this-is-prod`). Analytics hygiene (tag eval sessions), PII discipline

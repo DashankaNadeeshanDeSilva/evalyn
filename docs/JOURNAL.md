@@ -1095,7 +1095,7 @@ waits, not the review loop.
 | 11 | Toy planted weaknesses + persona/playbook (default ON per §10) | `6290955`, `f822f09` (fix) (merge `61f1478`) | ✅ done, review clean after 1 fix round |
 | 10 | CLI `discover` subcommand (§8 flags, exit 0/2/3, preflight refusals, dry-run notes) | `0bb00e6`, `8869e99` (fix) | ✅ done, review clean after 1 fix round (1 Important — dry-run preview) |
 | 12 | End-to-end flywheel acceptance, zero-spend (`tests/discovery/test_e2e_discover.py`) | `a0ef763`, `6bf53a4` (fix) | ✅ done, review clean after 1 fix round (1 Important — untested Step 1↔Step 2 probe identity) |
-| 13 | Docs (EXPLAINED flywheel truth + gate-reds caveat, CI_ADOPTION human-triage note, ROADMAP #3 built, CONTEXT §9/§10), **v0.4.0** + a version-drift guard, register triage (detail below) | this commit | ✅ done |
+| 13 | Docs (EXPLAINED flywheel truth + gate-reds caveat, CI_ADOPTION human-triage note, ROADMAP #3 built, CONTEXT §9/§10), **v0.4.0** + a version-drift guard, register triage (detail below) | `00e4891`, `this commit` (fix) | ✅ done, review clean after 1 fix round (1 Important — the unconditional replay claim) |
 | 14 | USER-GATED live TwinCore pre-run | — | ⛔ gated — fresh consent + cost first |
 
 **Controller-verified state at the pause (2026-08-04):** `uv run pytest -q -W error::RuntimeWarning`
@@ -1242,8 +1242,14 @@ probe"* — the same over-claim just corrected in the explainer (it is emitted t
 `python -c "import evalyn"` → `0.4.0`; `git status --porcelain` empty after the commit.
 `README.md` deliberately untouched (maintainer decision: it stays aspirational for the demo).
 
-**Controller-verified after Task 13 (2026-08-06):** **697 passed** warning-clean (+1 — the version
-guard); ruff clean; both packs `validate-pack` exit 0; tree clean; still **nothing pushed**.
+**Verified after Task 13 (2026-08-06, implementer + task reviewer):** **697 passed** warning-clean
+(+1 — the version guard); ruff clean; both packs `validate-pack` exit 0; tree clean; still
+**nothing pushed**. The review returned Spec ✅ / quality APPROVED with one Important — the
+unconditional *"replayed once to prove it reproduces"* claim in `CI_ADOPTION.md` and
+`EVALYN_EXPLAINED.md`: replay is skipped when disabled or when the meter is exhausted
+(`discovery/run.py:419-421`, staging happens first at `:357-361`), and one `samples: 1` replay
+cannot show a finding "isn't a fluke" — the same class of over-claim this task existed to remove.
+Corrected in the fix round along with six minors.
 
 ### What the reviews caught (would have shipped otherwise)
 
@@ -1335,7 +1341,8 @@ unchanged; this table is the disposition layer over it.
 | 15 | T1→T10 `--max-usd 0` | **closed** | Closed in Task 10 (R10-4, `0bb00e6`). |
 | 16 | T4→T9: `Check` permits `value` and `values` together; tier-1 silently prefers `values` | **re-deferred → final whole-branch review** | **It did not land.** Task 9 became the family-rule task and the exclusivity validator was never written — and `targets/schema.py:22` still tells readers *"static validation of the exclusivity arrives in Task 9"*, which is now a pointer to a task that shipped something else. Needs a `src/` change (a `model_validator`) plus the docstring, both out of scope here. |
 | 17 | T4 sync obligation (commented in source): wiring tier-2 into `discover` must move `classifier` into `_EVALUABLE_TYPES` in the same change | **accepted** | Not a defect — a standing conditional obligation, already pinned where it fires (the source comment). It becomes live only if tier-2 is ever wired into `discover`; nothing to do until then. |
-| 18 | T3 (doc-only, "should fix before merge"): the `no-pii-leak` email branch also matches `support@`, `git@github.com`, `deploy@prod.example.com`, `logo@2x.png` — the source comment must name these classes | **re-deferred → final whole-branch review** | Genuinely still open (checked: `scoring/tier1.py:19-26` explains the *phone* exclusions in detail and says nothing about the email over-match). It is a `src/` comment, forbidden here. Related find while checking: `tier1.py:19-21` says a false positive gets *"auto-emitted as a permanent probe"* — the same over-claim just corrected in the explainer; fix both comments in one pass. |
+| 18 | T3 (doc-only, "should fix before merge"): the `no-pii-leak` email branch also matches `support@`, `git@github.com`, `deploy@prod.example.com`, `logo@2x.png` — the source comment must name these classes | **re-deferred → final whole-branch review** | Genuinely still open (checked: `scoring/tier1.py:19-26` explains the *phone* exclusions in detail and says nothing about the email over-match). It is a `src/` comment, forbidden here. Fix in one pass with row 18b, which lives in the same comment block. |
+| 18b | **NEW (Task 13):** `scoring/tier1.py:19-21` still says a false-positive PII match is *"auto-emitted as a permanent probe"* | **re-deferred → final whole-branch review** | After this task it is the **last surviving "auto-emitted as a permanent probe" claim in the repo** — precisely the over-claim R13-1 existed to kill, one layer down in a source comment. Emission goes to **inert** `discoveries/`, and "permanent" requires human adoption. Not fixed here only because R13-7 forbids any `src/` change beyond the version string. Given its own row so the final review cannot lose it in another item's tail. |
 | 19 | T3: the phone pattern misses `+1 (415) 555-2671` | **re-deferred → final whole-branch review** | Deliberate under-match; the register already says do not widen the separator class without re-checking the false-positive families, and pin the miss as a decision. `src/` + `tests/`. |
 | 20 | T7: `replay.py` duplicates `run_gate`'s eval spine; docstring still not an exact biconditional; no `samples > 1` test; `offline_pack` points at the toy port | **re-deferred → final whole-branch review** | A shared `_run_pack_eval` extraction touches the gate spine — refactor risk that wants its own review, not a docs task. |
 | 21 | T6: `_assert_outcome_graded` docstring trap; `dedup._signature` collapses `values` checks; `stage_probe` filename unvalidated ("should fix before merge"); `_probe_id` 32-bit truncation; `loop.py` containment guard now under-approximates the import graph | **re-deferred → final whole-branch review** | All `src/`. The `stage_probe` `re.fullmatch` guard is the one flagged *before merge* and should be taken first at the review; the rest are latent (unreachable for emitted probes today). |

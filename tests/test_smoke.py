@@ -1,7 +1,11 @@
 import subprocess
 import sys
-import tomllib
 from pathlib import Path
+
+try:                                    # stdlib on 3.11+; the package declares >=3.10
+    import tomllib
+except ModuleNotFoundError:             # pragma: no cover - only on 3.10
+    import tomli as tomllib             # type: ignore[no-redef]
 
 _PYPROJECT = Path(__file__).resolve().parents[1] / "pyproject.toml"
 

@@ -125,8 +125,10 @@ produces trustworthy A/B verdicts; CI catches regressions on PRs automatically.
   trustworthy grading layer *independently confirms* it against the transcript (kills false wins).
 - The **flywheel**: every confirmed finding is emitted as a minimal, deterministic probe file into
   the pack's **inert** `discoveries/` staging dir (never `probes/` — `gate` does not load it) and
-  replayed once through the gate's own machinery to prove it reproduces. **Adoption is human-gated:**
-  a person reviews the staged file and moves it into `probes/`; only then does it gate.
+  then — budget permitting — replayed once through the gate's own machinery to record whether it
+  still reproduces (skipped and marked partial when replay is off or the meter is exhausted).
+  **Adoption is human-gated:** a person reviews the staged file and moves it into `probes/`; only
+  then does it gate.
 - Runs **nightly / on-demand — never** as a blocking CI gate (it's non-deterministic and slower).
 
 **Deliverable (met):** `evalyn discover` autonomously finds at least one *confirmed* problem
