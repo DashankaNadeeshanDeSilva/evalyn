@@ -4,9 +4,12 @@
 single Inspect eval, reads each hunt's `SessionResult` back out of the sample
 store, and for every CONFIRMED session turns the finding into a staged `gate`
 probe, dedup-flags it, and replays it once to check it still reds the gate. The
-run record — a `DiscoveryArtifact` — is written to disk BEFORE anything can
-raise (R8-5), so a budget stop leaves a complete, readable, *partial* artifact
-rather than a traceback (spec §12).
+run record — a `DiscoveryArtifact` — is written to disk BEFORE `run_discovery`
+can raise (R8-5): the per-finding loop is wrapped, and any exception out of it
+writes the record built from whatever accumulated so far and only THEN
+propagates. So neither a budget stop nor an unwritable pack dir, a re-raised
+programmer error from replay, or store shape drift can leave a run that spent
+money with no artifact, no report and no spend record (spec §12).
 
 Spend accounting is the subtle part, and two facts from the meter design shape
 it:
@@ -18,6 +21,10 @@ it:
   the eval whose log it is handed. The discovery log therefore carries agent
   spend (because the hunt runs inside the sample); each replay is a *separate*
   eval with its own log carrying judge/replay spend. Both must be reconciled.
+  Each replay's reconciled cost is ALSO charged back into the live meter, so
+  `--max-usd` is a real ceiling on the replay phase: every metered call
+  finishes inside the eval before the first replay, and a meter that never
+  moves again makes the replay-skip guard a constant.
 
 * **`max`, never `sum` (R8-14).** The artifact keeps the live figure and the
   summed reconciled figure as SEPARATE fields; the reported spend and any
@@ -324,84 +331,121 @@ async def run_discovery(pack: Pack, cfg: DiscoveryConfig) -> DiscoveryArtifact:
     staging_dir = Path(cfg.staging_dir) if cfg.staging_dir is not None \
         else pack.root / "discoveries"
 
-    for sample in getattr(log, "samples", None) or []:
-        sessions_total += 1
-        stored = (getattr(sample, "store", None) or {}).get(
-            solver.DISCOVERY_STORE_KEY)
-        session = solver.session_from_store(stored)
-        if session is None:
-            # A sample that errored OUTSIDE the solver left no store entry
-            # (R8-17): a failed hunt, never "no data".
-            error_count += 1
-            continue
-        if session.stop_reason == "error":
-            error_count += 1
-        if session.stop_reason == "budget":
-            budget_stops = True
-        if not (session.confirmed and session.confirmed.confirmed):
-            continue
+    def _build_artifact(*, aborted: bool = False) -> DiscoveryArtifact:
+        """The run record built from whatever has accumulated SO FAR.
 
-        confirmed_count += 1
-        objective = get_objective(session.objective_id)
-        slots = session.probe_slots or {}
-        turns = _answered_turns(session)
-        probe = candidate_probe(objective, slots, turns)
+        A closure over the loop's accumulators, so the record written on the
+        happy path and the one written from a half-finished loop are built by
+        the same code and cannot drift. The cap decision uses the LARGER of the
+        two spend sources (R8-14): the live meter trips at the cap, and an
+        authoritative reconciled figure at or over the cap counts too —
+        reconciliation must never LOWER a breach.
+        """
+        cap = cfg.limits.max_usd
+        exhausted = meter.exhausted() or (cap > 0 and reconciled >= cap)
+        partial = aborted or exhausted or budget_stops or any(
+            isinstance(f.replay, ReplaySkipped) for f in findings)
+        return DiscoveryArtifact(
+            pack_name=pack.spec.name,
+            pack_hash=pack_fingerprint(pack),
+            agent_model=cfg.agent_model,
+            judge_model=cfg.judge_model,
+            rubric_judge_model=cfg.rubric_judge_model,
+            created_at=datetime.now(timezone.utc).isoformat(),
+            findings=list(findings),
+            error_count=error_count,
+            sessions_total=sessions_total,
+            confirmed_count=confirmed_count,
+            live_spend_usd=meter.spent_usd,
+            reconciled_spend_usd=reconciled,
+            budget_exhausted=exhausted,
+            partial=partial,
+            objectives=list(cfg.objectives),
+            log_path=log_location,
+        )
 
-        # Dedup BEFORE staging this probe, so the candidate does not match its
-        # own just-written file; earlier findings from this same run (already
-        # staged) DO count as priors.
-        priors = load_prior_discoveries(staging_dir)
-        dup = scan_duplicates(probe, priors)
+    # R8-5 made real. This loop CAN raise — `stage_probe` on an unwritable pack
+    # dir or a full disk, `replay_staged_probe` re-raising a programmer error,
+    # `session_from_store` on shape drift — and by then the money is already
+    # spent. Every accumulator lives in THIS scope, so a raise mid-loop still
+    # leaves a complete record of the findings made and the dollars burned.
+    try:
+        for sample in getattr(log, "samples", None) or []:
+            sessions_total += 1
+            stored = (getattr(sample, "store", None) or {}).get(
+                solver.DISCOVERY_STORE_KEY)
+            session = solver.session_from_store(stored)
+            if session is None:
+                # A sample that errored OUTSIDE the solver left no store entry
+                # (R8-17): a failed hunt, never "no data".
+                error_count += 1
+                continue
+            if session.stop_reason == "error":
+                error_count += 1
+            if session.stop_reason == "budget":
+                budget_stops = True
+            if not (session.confirmed and session.confirmed.confirmed):
+                continue
 
-        yaml_text = probe_yaml(probe, provenance=_provenance(session, cfg))
-        staged = stage_probe(pack, probe, yaml_text,
-                             staging_dir=cfg.staging_dir)
+            confirmed_count += 1
+            objective = get_objective(session.objective_id)
+            slots = session.probe_slots or {}
+            turns = _answered_turns(session)
+            probe = candidate_probe(objective, slots, turns)
 
-        replay = await _replay_finding(pack, cfg, meter, probe.id, staged,
-                                       log_root)
-        if isinstance(replay, ReplayResult) and replay.log_path:
-            reconciled += _reconcile_path(replay.log_path)
+            # Dedup BEFORE staging this probe, so the candidate does not match
+            # its own just-written file; earlier findings from this same run
+            # (already staged) DO count as priors.
+            priors = load_prior_discoveries(staging_dir)
+            dup = scan_duplicates(probe, priors)
 
-        findings.append(Finding(
-            objective_id=session.objective_id,
-            confirmed=True,
-            probe_path=str(staged),
-            replay=replay,
-            duplicate_of=dup.probe_id if dup else None,
-            duplicate_reason=dup.reason if dup else None,
-            persona_id=session.persona_id,
-            playbook_id=session.playbook_id,
-        ))
+            yaml_text = probe_yaml(probe, provenance=_provenance(session, cfg))
+            staged = stage_probe(pack, probe, yaml_text,
+                                 staging_dir=cfg.staging_dir)
 
-    # The cap decision uses the LARGER of the two spend sources (R8-14): the
-    # live meter trips at the cap, and an authoritative reconciled figure at or
-    # over the cap counts too — reconciliation must never LOWER a breach.
-    cap = cfg.limits.max_usd
-    exhausted = meter.exhausted() or (cap > 0 and reconciled >= cap)
-    partial = exhausted or budget_stops or any(
-        isinstance(f.replay, ReplaySkipped) for f in findings)
+            replay = await _replay_finding(pack, cfg, meter, probe.id, staged,
+                                           log_root)
+            if isinstance(replay, ReplayResult) and replay.log_path:
+                replay_usd = _reconcile_path(replay.log_path)
+                reconciled += replay_usd
+                # ...and charge it back into the LIVE meter, or `--max-usd` is
+                # not the run ceiling it is documented to be: every agent and
+                # confirmation call completes inside the eval BEFORE the first
+                # replay, so without this the meter is frozen for the whole
+                # replay phase and `_replay_finding`'s `exhausted()` guard
+                # evaluates identically every time (at `--max-sessions 50`, 50
+                # replays the cap could not stop). Both spend series gain the
+                # same term, so `max(live, reconciled)` still never sums.
+                meter.charge_estimate(replay_usd)
 
-    artifact = DiscoveryArtifact(
-        pack_name=pack.spec.name,
-        pack_hash=pack_fingerprint(pack),
-        agent_model=cfg.agent_model,
-        judge_model=cfg.judge_model,
-        rubric_judge_model=cfg.rubric_judge_model,
-        created_at=datetime.now(timezone.utc).isoformat(),
-        findings=findings,
-        error_count=error_count,
-        sessions_total=sessions_total,
-        confirmed_count=confirmed_count,
-        live_spend_usd=meter.spent_usd,
-        reconciled_spend_usd=reconciled,
-        budget_exhausted=exhausted,
-        partial=partial,
-        objectives=list(cfg.objectives),
-        log_path=log_location,
-    )
+            findings.append(Finding(
+                objective_id=session.objective_id,
+                confirmed=True,
+                probe_path=str(staged),
+                replay=replay,
+                duplicate_of=dup.probe_id if dup else None,
+                duplicate_reason=dup.reason if dup else None,
+                persona_id=session.persona_id,
+                playbook_id=session.playbook_id,
+            ))
+    except BaseException:
+        # Write what we have, THEN let the original failure propagate. A write
+        # failure here must never mask the real error.
+        try:
+            write_discovery_artifact(_build_artifact(aborted=True),
+                                     out_dir=str(cfg.out_dir))
+        except Exception as e:  # noqa: BLE001 — nothing may mask the real error
+            warnings.warn(
+                f"discovery run failed AND its partial artifact could not be "
+                f"written ({type(e).__name__}: {e}) — the spend record for this "
+                f"run is lost", RuntimeWarning, stacklevel=2)
+        raise
 
-    # Write BEFORE returning (and before any conceivable raise) so a budget stop
-    # leaves a complete, readable artifact — spec §12 / R8-5.
+    artifact = _build_artifact()
+
+    # Write BEFORE returning — and, on the failing path above, before the raise
+    # — so neither a budget stop nor a mid-loop exception leaves a run that
+    # spent money with no record (spec §12 / R8-5).
     write_discovery_artifact(artifact, out_dir=str(cfg.out_dir))
     return artifact
 
@@ -444,8 +488,19 @@ def _replay_line(replay: ReplayResult | ReplaySkipped) -> str:
     if isinstance(replay, ReplaySkipped):
         return f"replay SKIPPED — {replay.reason}"
     if replay.reproduced:
-        return (f"replay REPRODUCED (pass^k {replay.pass_k} over "
+        line = (f"replay REPRODUCED (pass^k {replay.pass_k} over "
                 f"{replay.trials} trial(s))")
+        # `reproduced` only says SOME trial failed. A human deciding whether to
+        # adopt needs the two weaker cases named, not hidden behind the verdict.
+        caveats = []
+        if replay.pass_at_k > 0.0:
+            caveats.append(f"FLAKY: some trial PASSED (pass@k {replay.pass_at_k})")
+        if replay.expected_trials and replay.trials < replay.expected_trials:
+            caveats.append(f"PARTIAL: only {replay.trials} of "
+                           f"{replay.expected_trials} expected trial(s) scored")
+        if caveats:
+            line += " — " + "; ".join(caveats)
+        return line
     return f"replay did NOT reproduce — {replay.reason or 'see log'}"
 
 

@@ -16,3 +16,12 @@ temp.md
 
 # rubric grading-steps cache (per-pack, regenerated)
 packs/*/.cache/
+
+# STAGED `discover` findings — may embed LIVE DATA captured from the target: a
+# leaked email/phone/internal path rides in verbatim as a `not_contains` check
+# value (it has to, or the probe stops being outcome-graded). This repo is
+# public, so staged probes must never be committed by accident. Adoption is a
+# deliberate `git mv` into `probes/`, where the file is tracked on purpose and
+# the operator has read the CAUTION line in its header.
+packs/*/discoveries/*.yaml
+!packs/*/discoveries/.gitkeep

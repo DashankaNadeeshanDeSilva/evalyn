@@ -135,9 +135,9 @@ Here's the loop that makes Evalyn more than a static test list:
    *disposes*.)
 3. A confirmed problem is written out as a ready-made test file — but into a **holding folder**
    (`discoveries/` inside the pack) that `gate` deliberately never reads. Nothing you didn't ask for
-   can start failing your build. If there's budget left, Evalyn also re-runs the new test once,
-   right away, and records whether the problem showed up again — a useful signal when you come to
-   review it, not a guarantee the problem happens every time.
+   can start failing your build. Unless you pass `--no-replay` (or the budget has run out), Evalyn
+   also re-runs the new test once, right away, and records whether the problem showed up again — a
+   useful signal when you come to review it, not a guarantee the problem happens every time.
 4. **A human reads it and decides.** If you agree it's a real bug worth guarding forever, you move
    the file out of the holding folder and into the pack's `probes/` folder. *That* is the moment it
    becomes a permanent `gate` test. Evalyn never adopts its own findings.

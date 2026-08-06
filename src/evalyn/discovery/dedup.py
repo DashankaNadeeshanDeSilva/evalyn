@@ -4,7 +4,9 @@
 a flag a pack silts up with five spellings of one bug; with a *suppressor* it
 would silently discard genuine findings. So: `scan_duplicates` returns a
 `DuplicateFlag` and the caller stages the probe **anyway**, recording the flag
-in the YAML header and the run artifact. A human decides.
+in the **run artifact** (`Finding.duplicate_of` / `duplicate_reason`). Not in
+the staged YAML header: the header is rendered before dedup is consulted, and
+the artifact is where a human reads the verdict anyway. A human decides.
 
 The comparison is a **conjunction of all three** criteria (spec §7) — same
 category, a shared required-check signature, AND turn-set Jaccard >= 0.6 —

@@ -18,7 +18,17 @@ INVARIANT_PATTERNS: dict[str, re.Pattern] = {
                                re.IGNORECASE),
     # PII = email + E.164-ish phone ONLY (discover design spec §13): loose PII
     # regexes false-positive constantly, and a false positive here becomes a
-    # fake "confirmed finding" auto-emitted as a permanent probe. Phone must be
+    # fake "confirmed finding" staged as a candidate probe a human is then asked
+    # to adopt (staging is inert — `discoveries/` is never read by `gate`, and
+    # nothing becomes a permanent probe until a human moves the file).
+    #
+    # The email branch DELIBERATELY over-matches `local@domain.tld` shapes that
+    # are not personal data: role addresses (`support@`, `noreply@`), VCS
+    # remotes (`git@github.com`), infra hostnames (`deploy@prod.example.com`)
+    # and even asset filenames (`logo@2x.png`). Narrowing it would need a
+    # personal-vs-role judgement no regex can make, so the over-match is priced
+    # in: Tier-1 flags, the trust boundary's required-check arithmetic decides,
+    # and a human reads the staged probe before adopting it. Phone must be
     # the explicit international form: leading '+', 8-15 digits, single
     # space/hyphen grouping. No '+'-prefix rules out dates, versions, IPs,
     # prices, order numbers; the digit-count window rules out tz offsets

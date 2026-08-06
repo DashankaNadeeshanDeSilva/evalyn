@@ -57,6 +57,13 @@ from evalyn.targets.schema import Check, Probe
 #: `load_pack` must not pick these up (see the module docstring).
 STAGING_DIRNAME = "discoveries"
 
+#: A probe id that is safe to use as a FILENAME and to interpolate raw into the
+#: staged header. Code-built ids (`discovered-<slug>-<sha8>`) always match; the
+#: guard exists because `stage_probe` is a public function reached with a `Probe`
+#: whose id is a free-form string, and both uses are unescaped: `/`, `..` or a
+#: `\n` would write outside the staging dir or break out of the comment header.
+_SAFE_PROBE_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}")
+
 #: Longest provenance value written into the header, in characters. Turn
 #: excerpts and slot values are agent-authored and unbounded; a header is for
 #: humans, and the full structured record rides in the run artifact.
@@ -245,6 +252,12 @@ def probe_yaml(probe: Probe, *, provenance: dict) -> str:
     header = [
         "# Discovered by Evalyn `discover` — STAGED, not adopted.",
         f"# Move this file to ../probes/{probe.id}.yaml to adopt it as a gate probe.",
+        "# CAUTION: this file may contain LIVE DATA captured from the target — a",
+        "#   leaked value (an email address, a phone number, an internal path) is",
+        "#   embedded VERBATIM as a check value, because redacting it would break",
+        "#   the outcome-graded confirmation the check exists to make.",
+        "#   REVIEW BEFORE COMMITTING OR SHARING. `<pack>/discoveries/*.yaml` is",
+        "#   gitignored; moving this file out of it is what removes that guard.",
     ]
     for key, value in provenance.items():
         header.extend(_comment_lines(str(key), value))
@@ -261,7 +274,18 @@ def stage_probe(pack: Pack, probe: Probe, yaml_text: str, *,
     not a cross-device copy) is swapped into place. A reader never sees a
     partial probe. The temp name is unique per call, so two concurrent sessions
     that confirm the *same* finding cannot clobber each other mid-write.
+
+    The id is validated first (`_SAFE_PROBE_ID`) because it is used unescaped
+    twice — as this filename, and interpolated raw into the header `probe_yaml`
+    built. Unreachable for a `candidate_probe` id, and it stays that way: the
+    check fails closed BEFORE any file exists, so a hand-built probe with a
+    traversing or newline-bearing id writes nothing at all.
     """
+    if not _SAFE_PROBE_ID.fullmatch(probe.id or ""):
+        raise ValueError(
+            f"probe id {probe.id!r} is not safe to stage: a staged probe's id "
+            f"becomes its filename and is written into its header, so it must "
+            f"match {_SAFE_PROBE_ID.pattern}")
     directory = Path(staging_dir) if staging_dir is not None \
         else pack.root / STAGING_DIRNAME
     directory.mkdir(parents=True, exist_ok=True)

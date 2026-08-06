@@ -31,7 +31,8 @@ matter. A run where every session errored has `pass_k == 0.0` too, and calling
 that "reproduced" would launder a dead target into a confirmed finding. A
 confirmed-but-not-reproduced finding is still a real finding — it happened
 once — so this function only reports the verdict; flagging it flaky is the
-caller's decision.
+caller's decision, and `pass_at_k`/`expected_trials` are forwarded from the
+`ProbeResult` so the caller can actually make it (see `ReplayResult`).
 
 **Spend.** Replaying a probe that carries a `rubric` check invokes the real
 tier-3 judge — that is money, and it is outside `SpendMeter`'s live charging,
@@ -83,6 +84,17 @@ class ReplayResult:
     the eval started. It is the log *directory* rather than a single log file
     when the eval raised and no location was returned. `reason` explains any
     verdict that is not `reproduced`.
+
+    `pass_at_k` and `expected_trials` are carried so a human can tell a SOLID
+    reproduction from a flaky or partial one. `reproduced` is
+    `trials >= 1 and pass_k == 0.0`, and `pass_k == 0.0` means *at least one*
+    trial failed — so a `samples: 3` probe that fails 1 of 3 reports
+    `reproduced=True` exactly like one that fails 3 of 3. `pass_at_k > 0.0`
+    separates them (some trial passed = flaky). `expected_trials` separates the
+    other case: two epochs erroring on a `samples: 3` probe leaves
+    `trials=1, pass_k=0.0` — "reproduced" for a probe `gate` would fail as
+    INCOMPLETE. Both default, so older artifacts still load (`_replay_from_dict`
+    does `ReplayResult(**d)`); `0.0`/`0` mean "not recorded".
     """
     reproduced: bool
     trials: int
@@ -90,6 +102,8 @@ class ReplayResult:
     checks: list[dict] = field(default_factory=list)
     log_path: str = ""
     reason: str = ""
+    pass_at_k: float = 0.0
+    expected_trials: int = 0
 
 
 def _load_staged_probe(staged: Path) -> Probe:
@@ -185,4 +199,6 @@ async def replay_staged_probe(pack: Pack, staged: Path, *,
         reason = (f"the probe passed the gate on replay "
                   f"(pass^k {result.pass_k} over {result.trials} trial(s))")
     return ReplayResult(reproduced, result.trials, result.pass_k,
-                        result.checks, log_path, reason)
+                        result.checks, log_path, reason,
+                        pass_at_k=result.pass_at_k,
+                        expected_trials=result.expected_trials)

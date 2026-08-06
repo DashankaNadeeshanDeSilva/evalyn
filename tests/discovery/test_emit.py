@@ -417,6 +417,24 @@ def test_no_yaml_line_break_lets_provenance_escape_the_header(name, brk):
         assert "smuggled" not in [p.get("id") for p in loaded]
 
 
+def test_staged_header_warns_that_the_file_may_carry_live_target_data():
+    """A confirmed `pii-leak`/`no-internal-leak` finding embeds the leaked value
+    VERBATIM as a check value — redacting it would break the outcome-graded
+    confirmation. `<pack>/discoveries/*.yaml` is gitignored, but the header
+    warning is the half that SURVIVES the file being moved into `probes/`,
+    which is exactly what the header's own next line tells the operator to do.
+    """
+    probe = _injection_probe()
+    text = probe_yaml(probe, provenance={"objective": INJECTION.id})
+    header = [ln for ln in text.splitlines() if ln.startswith("#")]
+
+    assert any("CAUTION" in ln for ln in header), header
+    assert any("LIVE DATA" in ln for ln in header), header
+    assert any("REVIEW" in ln and "COMMITTING" in ln for ln in header), header
+    # comments only: the caution must not disturb the one-entry list
+    assert yaml.safe_load(text) == [probe.model_dump(exclude_none=True)]
+
+
 def test_stage_probe_writes_inert_yaml(tmp_path):
     root = tmp_path / "pack"
     shutil.copytree(MINIPACK, root)
@@ -440,6 +458,31 @@ def test_stage_probe_writes_inert_yaml(tmp_path):
     # restaging the same finding overwrites in place (same content-addressed id)
     assert stage_probe(_pack(root), probe, text) == path
     assert [p.name for p in path.parent.iterdir()] == [path.name]
+
+
+@pytest.mark.parametrize("bad_id", [
+    "../../../etc/evalyn-owned",   # path traversal out of the staging dir
+    "nested/discovered-x",         # a subdirectory that does not exist
+    "discovered-x\ninjected: 1",   # breaks out of the header comment
+    "",                            # writes ".yaml"
+    ".hidden",                     # collides with the temp-file namespace
+])
+def test_stage_probe_refuses_an_id_that_is_not_a_safe_filename(tmp_path, bad_id):
+    """`probe.id` is used UNESCAPED twice — as the staged filename, and
+    interpolated raw into the header `probe_yaml` builds. Code-built ids can
+    never be unsafe, but `stage_probe` is a public function taking a `Probe`
+    whose id is a free-form string. It must fail closed, and fail BEFORE
+    anything is written."""
+    probe = _injection_probe().model_copy(update={"id": bad_id})
+    staging = tmp_path / "staging"
+
+    with pytest.raises(ValueError, match="not safe to stage"):
+        stage_probe(_pack(tmp_path), probe, "irrelevant", staging_dir=staging)
+
+    # nothing written, anywhere — not in the staging dir, not outside it
+    assert not staging.exists()
+    assert not (tmp_path / "etc").exists()
+    assert list(tmp_path.iterdir()) == []
 
 
 def test_stage_probe_honours_an_explicit_staging_dir(tmp_path):

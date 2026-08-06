@@ -1558,3 +1558,88 @@ unchanged; this table is the disposition layer over it.
   then ends the session. Suggested cheap de-risk that costs no live spend: accept a fenced reply on
   the **retry** only. Treat the first live `discover` run as a prompt shakedown and expect a high
   early rejection/retry rate.
+
+### Final whole-branch review (2026-08-06) — verdict: **merge-ready**; live run gated on one fix wave
+
+The whole-branch review of `feat/plan3-discover` (Tasks 0–13, 697 tests green) verified all seven
+governing invariants **by execution** and passed the branch for merge into `dev`. It **blocked the
+user-gated live run** on two findings and named eight more worth taking first. All eleven were fixed
+in one wave (commit below) — 708 tests green, warning-clean, ruff clean, both packs `validate-pack`
+exit 0.
+
+**The two live-run blockers (both were compositions, not single-file defects):**
+
+1. **CRITICAL — real PII from a live target landed in a committable file.** Three individually-correct
+   decisions composed: `objectives.py:70-77` embeds the **verbatim** leaked value as a `not_contains`
+   check (it has to — an outcome-graded check needs it); `run.py`'s `_provenance["confirmation"]`
+   carries the tier-1 evidence, which for `no-pii-leak` is the matched email/phone itself; and
+   `emit.py` writes both to `<pack>/discoveries/<id>.yaml`, which `git check-ignore` confirmed was
+   **NOT IGNORED** in this MIT-licensed **public** repo — in a file whose own header tells the operator
+   to move and commit it. Fixed as **containment + warning, never sanitisation** (redacting the value
+   would break the confirmation the check exists to make): `.gitignore` now carries
+   `packs/*/discoveries/*.yaml` with a `!packs/*/discoveries/.gitkeep` negation (the placeholder stays
+   tracked so a pack's `discoveries/` dir keeps existing), and the staged header gained a CAUTION block
+   — the half that **survives the file being moved** out of the ignored directory.
+2. **IMPORTANT — the durability guarantee was not real.** `run.py`'s docstring claimed the artifact is
+   written *"BEFORE anything can raise (R8-5)"*. The budget half was true; the general claim was false —
+   `write_discovery_artifact` sat *after* the whole per-finding loop, so an `OSError` from `stage_probe`,
+   a re-raised programmer error from replay, or store shape drift destroyed the entire record and exited
+   2 with the money already spent. The loop is now wrapped: any exception writes the record built from
+   whatever accumulated so far (`partial=True`), and only then propagates; a failure to write warns
+   rather than masking the original error. Fixing the docstring alone was explicitly rejected.
+   **This largely subsumes the R7-7 "unreconcilable mid-eval spend" item** — spend recorded up to the
+   raise now always reaches disk.
+
+**Also taken in the same wave:**
+
+- **`--max-usd` is now a real run ceiling.** Replay cost only ever reached the local `reconciled`
+  float, never the meter — and since every agent/confirmation call completes inside the eval *before*
+  the first replay, the meter was frozen and `_replay_finding`'s `exhausted()` guard was a constant.
+  Each replay's reconciled cost is now charged back into the meter. `max(live, reconciled)` is
+  untouched: both series gain the same term, so the reported spend is still never a sum.
+- **Flaky flag (T7→T8) IMPLEMENTED** — see the register correction below.
+- `scoring/tier1.py`: the last surviving *"auto-emitted as a permanent probe"* over-claim in the repo
+  is gone, and the same comment block now documents the email branch's deliberate over-match
+  (`support@`, `git@github.com`, `deploy@prod.example.com`, `logo@2x.png`). Closes rows 18 + 18b.
+- `targets/schema.py`: the dangling *"exclusivity arrives in Task 9"* pointer now says the validator is
+  unimplemented and points at register row 16 / Plan #4. The validator itself is **not** written here.
+- `discovery/dedup.py`: stale claim that the duplicate flag is recorded "in the YAML header" — it is in
+  the run artifact only (the header renders before dedup is consulted). Doc fixed, behaviour unchanged.
+- `emit.stage_probe`: a `re.fullmatch` guard on `probe.id`, which is used unescaped as the filename and
+  interpolated raw into the header. Fails closed **before** anything is written. Closes rows 21c + 31.
+- `pyproject.toml`: `tomli; python_version < '3.11'` added to the dev group — `requires-python` allows
+  3.10, where the smoke test's `tomllib` fallback had nothing to fall back to.
+- `docs/EVALYN_EXPLAINED.md`: the skipped-replay sentence conditioned on budget alone and omitted the
+  real `--no-replay` flag.
+
+**Register corrections made by this wave (the old wording was wrong, not merely incomplete):**
+
+- **Row 6 / the T7→T8 flaky-flag obligation — the deferral reasoning AND the stated consequence were
+  both wrong.** (a) It was re-deferred by ruling R12-8 as "production-schema creep"; `_replay_from_dict`
+  does `ReplayResult(**d)`, so two fields **with defaults** are additive and round-trip-safe in both
+  directions — old artifacts still load, new ones gain two keys. The controller accepts the reviewer's
+  correction. (b) The register said a 1-of-3 flake returns `reproduced=False` with a misleading reason.
+  **Inverted, and the truth is worse:** `engine/run.py` sets `pass_k = 1.0` iff *every* trial's required
+  checks passed, so `pass_k == 0.0` means *at least one* trial failed and `replay.py` returns
+  **`reproduced=True` for a 1-of-3 flake**. The system **over**-claims reproduction. Sharper second gap:
+  `expected_trials` was dropped, so two epochs erroring on a `samples: 3` probe gives
+  `trials=1, pass_k=0.0` → "replay REPRODUCED" for a probe `gate` would fail as INCOMPLETE. **Now
+  implemented:** `ReplayResult` forwards `pass_at_k` and `expected_trials`, and `_replay_line` names the
+  two weak cases (`FLAKY:` / `PARTIAL:`). Also for the record: `ReplayResult` always **did** carry
+  `pass_k` and `trials`; and for non-safety findings `samples: 1` makes `pass_k` uninformative anyway.
+  Row 6 and the corresponding *Binding obligations* entry are **CLOSED**.
+- **Row 26 sub-item (2) — "the replay-skip predicate keys on the live meter only … the rare
+  live-under/reconciled-over case" understates it.** It was not a rare edge; it was the **normal** case
+  for every replay in every run, because the meter cannot move during the replay phase. Bounded in
+  practice (findings ≤ `max_sessions`, default 4) and post-hoc honesty held via `max(live, reconciled)`,
+  but at `--max-sessions 50` an operator got 50 replays the cap could not stop. **CLOSED** by charging
+  replay spend into the meter. Sub-items 26.1 and 26.3 remain deferred to Plan #4 as written.
+
+**Rows closed by this wave:** 6, 16 (pointer only — the validator stays deferred), 18, 18b, 21c, 26.2,
+31, 33 (subsumed by blocker 2). Everything else in the register keeps its existing disposition; the
+Plan #4 deferrals and the Task 14 items are **not** touched. Row 30 remains Task 14's.
+
+**Live-run readiness (reviewer's finding, unchanged by this wave):** the allowlist is safe in three
+independent layers — `packs/twincore`'s allowlist is `localhost:8000`/`127.0.0.1:8000` only, so a real
+endpoint requires a deliberate pack edit, and the agent never handles a URL at all. Expect `partial`
+long before real money is spent: a tier-3 confirmation charges ~$0.108/call.

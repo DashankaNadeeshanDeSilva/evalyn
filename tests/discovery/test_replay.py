@@ -24,13 +24,16 @@ Zero spend: the target is the bundled toy server and every model is
 from __future__ import annotations
 
 import shutil
+from dataclasses import asdict
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 
+from evalyn.discovery import replay as replay_mod
 from evalyn.discovery.emit import probe_yaml, stage_probe
 from evalyn.discovery.replay import replay_staged_probe
+from evalyn.engine.run import ProbeResult
 from evalyn.targets.loader import load_pack
 from evalyn.targets.schema import Probe
 
@@ -153,6 +156,54 @@ async def test_replay_zero_trial_run_is_not_reproduced(tmp_path, replay):
     assert result.reproduced is False, "a run with no scored trial reproduces nothing"
     assert result.log_path, "the log must still be reported for reconciliation"
     assert "trial" in result.reason.lower(), result.reason
+
+
+async def test_flaky_and_partial_reproductions_are_distinguishable_from_a_solid_one(
+        live_pack, replay, monkeypatch):
+    """`reproduced=True` only says at least ONE trial failed.
+
+    `pass_k == 1.0` iff every trial's required checks passed, so `pass_k == 0.0`
+    on a `samples: 3` probe covers "failed 3 of 3" AND "failed 1 of 3" — the
+    system OVER-claims reproduction. Replay-once exists to inform a human's
+    adopt/reject decision, so those two must not be the same record. Same for a
+    replay whose epochs errored: `trials=1, pass_k=0.0` reads as REPRODUCED for
+    a probe `gate` would fail as INCOMPLETE.
+
+    The gate's own reducer is the seam: it already computes `pass_at_k` and
+    `expected_trials` and hands both to `replay_staged_probe`, which used to
+    drop them on the floor.
+    """
+    staged = _stage(live_pack, _probe("discovered-flaky", samples=3))
+
+    def _reducer(*, pass_at_k: float, trials: int = 3):
+        def _reduce(log, pack):
+            return [ProbeResult(
+                id="discovered-flaky", category="grounding", kind="regression",
+                safety_critical=True, samples=3, trials=trials,
+                expected_trials=3, pass_at_k=pass_at_k, pass_k=0.0)]
+        return _reduce
+
+    async def _run(**kw):
+        monkeypatch.setattr(replay_mod, "reduce_log_to_probes", _reducer(**kw))
+        return await replay(live_pack, staged)
+
+    solid = await _run(pass_at_k=0.0)               # failed 3 of 3
+    flaky = await _run(pass_at_k=1.0)               # failed 1 of 3
+    partial = await _run(pass_at_k=0.0, trials=1)   # 2 epochs errored
+
+    assert solid.reproduced and flaky.reproduced and partial.reproduced
+
+    def verdict(r):
+        # log_path is per-eval and always differs; everything else is the
+        # record a human reads out of the artifact.
+        return {k: v for k, v in asdict(r).items() if k != "log_path"}
+
+    assert verdict(flaky) != verdict(solid), (
+        "a 1-of-3 flake is indistinguishable from a 3-of-3 reproduction")
+    assert verdict(partial) != verdict(solid), (
+        "a replay with 2 errored epochs is indistinguishable from a full one")
+    assert (flaky.pass_at_k, solid.pass_at_k) == (1.0, 0.0)
+    assert partial.trials < partial.expected_trials == 3
 
 
 # --- the bytes on disk ------------------------------------------------------

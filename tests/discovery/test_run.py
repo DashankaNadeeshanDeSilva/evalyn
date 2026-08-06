@@ -292,6 +292,102 @@ async def test_each_replay_log_reconciled_exactly_once(copied_pack, tmp_path,
 
 
 # --------------------------------------------------------------------------
+# R8-5 (durability): a raise INSIDE the finding loop still leaves a record
+# --------------------------------------------------------------------------
+
+async def test_a_raise_in_the_finding_loop_still_writes_the_artifact(
+        copied_pack, tmp_path, monkeypatch):
+    """The money is spent inside the eval, BEFORE the finding loop runs. So an
+    unwritable pack dir (`stage_probe` -> OSError), a replay re-raising a
+    programmer error, or store shape drift must not destroy the record of what
+    was found and what it cost — that is an expensive failure with nothing to
+    show for it. The artifact is written, THEN the failure propagates."""
+    _patch_eval(monkeypatch, _fake_log([_confirmed_session()]))
+    monkeypatch.setattr(run_mod, "reconcile", lambda log: 4.25)
+
+    def _no_space(*a, **k):
+        raise OSError(28, "No space left on device")
+    monkeypatch.setattr(run_mod, "stage_probe", _no_space)
+
+    with pytest.raises(OSError):
+        await run_discovery(copied_pack, _cfg(tmp_path))
+
+    written = list((tmp_path / "runs").glob("*-discover.json"))
+    assert len(written) == 1, "the run raised and left NO artifact behind"
+    art = DiscoveryArtifact.from_dict(json.loads(written[0].read_text()))
+    assert art.reconciled_spend_usd == pytest.approx(4.25), "spend record lost"
+    assert (art.sessions_total, art.confirmed_count) == (1, 1)
+    assert art.partial is True, "an aborted run is never complete"
+
+
+# --------------------------------------------------------------------------
+# the cap is a RUN ceiling: replay spend goes back into the meter
+# --------------------------------------------------------------------------
+
+async def test_replay_spend_is_charged_to_the_meter_so_the_cap_can_stop_it(
+        copied_pack, tmp_path, monkeypatch):
+    """Every agent and confirmation call completes inside the eval, before the
+    first replay. If replay cost only lands in the local reconciled float the
+    meter never moves again, `_replay_finding`'s `exhausted()` guard evaluates
+    identically every time, and `--max-usd` cannot stop replay N of N."""
+    s1 = _confirmed_session(ask="first ask about the system prompt")
+    s2 = _confirmed_session(ask="a different second ask entirely here")
+    _patch_eval(monkeypatch, _fake_log([s1, s2]))
+    monkeypatch.setattr(run_mod, "reconcile", lambda log: 0.0)
+    monkeypatch.setattr(run_mod, "_reconcile_path", lambda p: 1.0)  # $1 a replay
+
+    calls: list[str] = []
+
+    async def _replay(pack, staged, *, judge_model, rubric_model, log_dir, **kw):
+        calls.append(log_dir)
+        return ReplayResult(True, 3, 0.0, log_path=log_dir)
+    monkeypatch.setattr(run_mod, "replay_staged_probe", _replay)
+
+    # cap $1.00: the FIRST replay spends the whole budget, the second must skip
+    art = await run_discovery(copied_pack,
+                              _cfg(tmp_path, limits=_limits(max_usd=1.0)))
+
+    assert len(calls) == 1, f"the cap did not stop the second replay: {calls}"
+    assert isinstance(art.findings[1].replay, ReplaySkipped)
+    assert "budget" in art.findings[1].replay.reason.lower()
+    assert art.budget_exhausted is True
+    # R8-14 holds: both series gained the same $1 term, so max != sum
+    assert art.live_spend_usd == pytest.approx(1.0)
+    assert art.reconciled_spend_usd == pytest.approx(1.0)
+    assert art.effective_spend_usd == pytest.approx(1.0), "replay spend summed"
+
+
+# --------------------------------------------------------------------------
+# flaky / partial replays are visible in the report and survive the artifact
+# --------------------------------------------------------------------------
+
+def test_flaky_and_partial_replays_are_named_in_the_report_and_round_trip():
+    solid = ReplayResult(True, 3, 0.0, [], "", "", pass_at_k=0.0, expected_trials=3)
+    flaky = ReplayResult(True, 3, 0.0, [], "", "", pass_at_k=1.0, expected_trials=3)
+    partial = ReplayResult(True, 1, 0.0, [], "", "", pass_at_k=0.0, expected_trials=3)
+
+    assert "FLAKY" not in run_mod._replay_line(solid)
+    assert "PARTIAL" not in run_mod._replay_line(solid)
+    assert "FLAKY" in run_mod._replay_line(flaky)
+    assert "PARTIAL" in run_mod._replay_line(partial)
+
+    f = run_mod.Finding(objective_id=INJECTION, confirmed=True,
+                        probe_path="p.yaml", replay=flaky)
+    back = run_mod.Finding.from_dict(json.loads(json.dumps(f.to_dict())))
+    assert back.replay.pass_at_k == 1.0
+    assert back.replay.expected_trials == 3
+
+
+def test_a_pre_flaky_flag_artifact_still_loads():
+    """The two fields are additive: an artifact written before they existed has
+    neither key, and `_replay_from_dict` does `ReplayResult(**d)`."""
+    old = {"skipped": False, "reproduced": True, "trials": 3, "pass_k": 0.0,
+           "checks": [], "log_path": "", "reason": ""}
+    r = run_mod._replay_from_dict(old)
+    assert (r.pass_at_k, r.expected_trials) == (0.0, 0), "not recorded == 0"
+
+
+# --------------------------------------------------------------------------
 # R8-17: a sample with no store entry counts toward the error total
 # --------------------------------------------------------------------------
 

@@ -51,7 +51,14 @@ build-backend = "hatchling.build"
 packages = ["src/evalyn"]
 
 [dependency-groups]
-dev = ["pytest>=8", "pytest-asyncio>=0.23", "ruff>=0.5"]
+dev = [
+    "pytest>=8",
+    "pytest-asyncio>=0.23",
+    "ruff>=0.5",
+    # the smoke test reads this file with `tomllib`, which only exists from
+    # 3.11 — without this the 3.10 leg of `requires-python` cannot run the suite
+    "tomli; python_version < '3.11'",
+]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
