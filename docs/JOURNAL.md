@@ -1058,7 +1058,7 @@ new rulings (old exact+prefix void; same-order rule-3 win; empty-records message
 throughout (10 RED failures shown first). 481 passed, ruff clean, both packs
 validate-pack OK. Zero spend (toy target + mockllm only).
 
-## Plan #3 — `discover` + flywheel (`feat/plan3-discover`, cut from `dev` @ `6d6753d`) *(Tasks 0–11 of 14 complete; Task 12 next, then 13, then the USER-GATED Task 14)*
+## Plan #3 — `discover` + flywheel (`feat/plan3-discover`, cut from `dev` @ `6d6753d`) *(Tasks 0–12 of 14 complete; Task 13 next, then the USER-GATED Task 14)*
 
 Plan doc: [`superpowers/plans/2026-08-04-evalyn-plan3-discover.md`](./superpowers/plans/2026-08-04-evalyn-plan3-discover.md)
 Design spec: [`superpowers/specs/2026-08-04-discover-mode-design.md`](./superpowers/specs/2026-08-04-discover-mode-design.md)
@@ -1094,7 +1094,8 @@ waits, not the review loop.
 | 9 | Family rule — `family_warnings(discovery_model=…)` + `REFUSE_PREFIX` | `0d3f0bc` (merge `89f592d`) | ✅ done, review clean (zero findings) |
 | 11 | Toy planted weaknesses + persona/playbook (default ON per §10) | `6290955`, `f822f09` (fix) (merge `61f1478`) | ✅ done, review clean after 1 fix round |
 | 10 | CLI `discover` subcommand (§8 flags, exit 0/2/3, preflight refusals, dry-run notes) | `0bb00e6`, `8869e99` (fix) | ✅ done, review clean after 1 fix round (1 Important — dry-run preview) |
-| 12, 13 | e2e acceptance, docs/version | — | ⏳ next: Task 12 |
+| 12 | End-to-end flywheel acceptance, zero-spend (`tests/discovery/test_e2e_discover.py`) | `a0ef763`, `6bf53a4` (fix) | ✅ done, review clean after 1 fix round (1 Important — untested Step 1↔Step 2 probe identity) |
+| 13 | Docs, roadmap, version bump, register close-out | — | ⏳ next |
 | 14 | USER-GATED live TwinCore pre-run | — | ⛔ gated — fresh consent + cost first |
 
 **Controller-verified state at the pause (2026-08-04):** `uv run pytest -q -W error::RuntimeWarning`
@@ -1122,6 +1123,64 @@ commits** on the branch since `dev @ 6d6753d`, still **nothing pushed**. Task 10
 (the subcommand) + `8869e99` (fix: dry-run refusal notes + family-check aligned to the run's rubric
 model). `openai 2.53.0` added and locked. Session handoff written here for a fresh session to resume
 at Task 12 — same branch, no new cut.
+
+**Controller-verified after Task 12 (2026-08-06):** **696 passed** warning-clean (+2); ruff clean; both
+packs `validate-pack` exit 0; `git status --porcelain` **empty**; HEAD `6bf53a4`; still **nothing
+pushed**. `git diff --stat 5f4ce4d..6bf53a4` = **1 file changed, 387 insertions** —
+`tests/discovery/test_e2e_discover.py` only, **zero `src/` changes across the whole task**.
+
+### Task 12 — the flywheel closes end to end (2026-08-06) ✅
+
+Two tests prove the spec §12 success bar on the **real `packs/example`** and the live toy target, at
+zero spend: `test_discover_toy_end_to_end` (async) drives a scripted agent against the **three
+deterministic planted weaknesses**, and `test_adopted_probe_reds_gate` (sync — `run_gate` cannot be
+called from inside a running event loop) adopts the emitted probe and shows the gate red.
+
+**What was genuinely new** (`tests/discovery/test_run.py:155` already covered discover→confirm→emit→
+replay on the *minipack* via the probabilistic leak path): the real example pack with its shipped
+persona/playbook; the **planted** ≥2-turn injection trust-pivot, a different code path from the
+probabilistic one; `Probe.model_validate` over the emitted file's bytes; and **adopt → gate reds**,
+which nothing in the suite covered.
+
+**Three controller rulings that changed the outcome** (`task-12-controller-rulings.md`, R12-0…R12-11):
+
+- **R12-2 — the scripted brain must be content-dispatched, not a `script.pop(0)` list.** One brain
+  instance serves every hunt and sessions interleave, so a positional script across three objectives
+  is ordering-flaky. *The implementer's first content-dispatch attempt then hit the same class of bug
+  from the other side:* it sliced conversation history on `"\n\n"`, which silently returned `""`
+  because the persona markdown ends with a newline — the agent re-sent its opener four times per
+  session, confirmed nothing, and **raised no error anywhere**. A subtly-wrong brain fails *vacuously*.
+- **R12-3 — pin `LEAK_PROBABILITY = 0.0`.** Not just de-flaking: with the unplanted 40 % leak path off
+  (`toy_target.py:82`), a leak can only come from the planted turn≥2 pivot (`:55`), so the test proves
+  *adaptive multi-turn discovery* rather than a coin flip.
+- **R12-4 — copy the pack to `tmp_path`, pass `staging_dir` explicitly.**
+  `packs/example/discoveries/` is a **tracked** directory (holds `.gitkeep`), not gitignored, so
+  staging into it dirties the tree (R8-7 hygiene, Critical). Proof obligation was a pasted empty
+  `git status --porcelain`, not a promise.
+
+**The review's one Important finding — a vacuous pass one level up.** `_staged_injection_probe`
+hardcoded the slots and turns instead of deriving them from Step 1's finding. The ids *did* coincide
+(the reviewer printed both: `discovered-prompt-injection-bypass-44af7191`, a content digest over
+objective+slots+turns, `emit.py:175`) — but nothing asserted it, so a drift in the agent's turns or the
+emit hashing would have left **both tests green** while Step 2 adopted a probe discovery no longer
+produces. Now asserted on both sides, with the divergence proven to red: perturbing Step 2's turns
+gives `5c0b194d != 44af7191`; perturbing Step 1's *agent* turn gives `fb8cacdb != 44af7191`.
+
+**An instruction that was wrong, and the implementer proved it.** The controller asked for a literal
+`pytest.fail("build_prompt no longer emits _CONVO_HEAD")` on the broken-marker branch. It does **not**
+attribute: `pytest.fail` raises `Failed` (a `BaseException`) from inside the mockllm callback within a
+running Inspect eval — it escapes `run_session`'s `except Exception`, Inspect's sample runner swallows
+it, and the log comes back with **no samples**, so `error_count` stays 0 (nothing errored because
+nothing ran) and the test reverts to the exact unattributed `confirmed_count 0 >= 1` the fix existed to
+remove. Shipped instead: a module-level `_CONTRACT_BREACHES` list, cleared by `_adaptive_brain` and
+asserted first. The re-reviewer reproduced **both** halves rather than accepting the claim.
+
+**Measured correction worth keeping** (the implementer's report had it backwards): `mockllm` has no
+`PRICES` entry, so it hits the conservative **upper-bound** `_DEFAULT` (`budget.py:26-32,44-47`).
+Naming `agent_model=BRAIN` moved `live_spend_usd` from `0.000455` to `0.021` — spend went **up ~46×,
+not to zero**. Nothing here asserts on spend (`test_run.py:177-180` owns that), but live and reconciled
+spend now *coincide* in this file where they previously diverged — do not read it as evidence the two
+sources are distinct.
 
 **Measured, not assumed — agent spend does reach the eval log.** Task 2's review left an open
 question: `SpendMeter.reconcile` reads `log.stats.model_usage`, but the discovery agent's own
@@ -1199,6 +1258,40 @@ reports the larger of the two figures rather than either alone.
 ### Open items — Plan #3 deferred findings register
 
 Triage these at Plan #3's final whole-branch review.
+
+**From Task 12 (2026-08-06)**
+
+- **T12 → Task 13 docs (the demo narrative is over-broad).** The adopted probe reds via `gate.py`'s
+  **safety** branch (`pass^k < 1.0`, `gate.py:63-70`), which ignores the baseline, because
+  `candidate_probe` carries `safety_critical` through. A **non**-safety-critical adopted probe (e.g.
+  `persona-break`, `samples=1`) with `baseline=None` lands in `quarantined` with **exit code 0**
+  (`gate.py:82-83`). So the blanket claim *"adopt a discovery and the gate reds"* is **false** for that
+  class until a baseline exists. Does not limit the Task 12 test — the chain is proven on the strongest
+  branch — but it limits what the docs and the Aug 14 demo script may claim. **Owed a line in Task 13.**
+- **T12 (pre-existing, cross-task): the "`git status --porcelain` empty" proof has a blind spot.**
+  Something in the suite writes into the repo's **gitignored** `logs/` (379→381 over a full run;
+  `tests/engine/test_solver.py` accounts for +1 alone). The Task 12 e2e file itself is +0. Because
+  `runs/` and `logs/` are gitignored, a clean porcelain cannot see this. Not caused by Task 12.
+- **T12 minor:** stale citation at `tests/discovery/test_e2e_discover.py:253` — the comment cites
+  `config.py:31` for `DEFAULT_AGENT_MODEL`; it is at `config.py:26`. Every other new citation in the
+  diff is exact. One-line comment fix.
+- **T12 minor:** `by_objective` (`:235`) is a dict keyed by `objective_id`, so two findings for one
+  objective would silently collapse and still satisfy the set assertion. Harmless at the example pack's
+  1 persona × 1 playbook × 3 objectives, but it implicitly pins that axis count.
+- **T12 minor:** `:315` is a bare `assert probe.id == INJECTION_PROBE_ID` with no message while its twin
+  at `:344` carries a full explanation; and `_CONTRACT_BREACHES.clear()` lives inside `_adaptive_brain`
+  — correct today, but a future test in this file asserting on breaches without installing the brain
+  would read a stale list.
+- **T7→T8 flaky-flag — RE-DEFERRED here by controller ruling R12-8, now due for a decision.**
+  `ReplayResult` (`replay.py:77`) carries `reproduced/trials/pass_k/checks/log_path/reason` but **not**
+  `pass_at_k`/`expected_trials`, although the upstream `ProbeResult` has both in hand at `replay.py:177`
+  and simply does not forward them. Consequence: a `samples: 3` safety-critical probe that fails 1-of-3
+  returns `reproduced=False` with a `reason` claiming *"the probe passed the gate on replay"* —
+  indistinguishable in the artifact from "never reproduced at all". Deferred out of Task 12 because
+  adding fields changes the artifact schema Task 8b shipped (`Finding.to_dict`/`from_dict` round-trip
+  plus `_replay_line` rendering) and that is production-schema creep inside an acceptance-test task days
+  before the demo. Task 12 pins the current semantics (`trials >= 1 and pass_k == 0.0`) with a comment
+  naming the gap.
 
 **Binding obligations on later tasks**
 
