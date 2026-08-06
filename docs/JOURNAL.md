@@ -1095,7 +1095,7 @@ waits, not the review loop.
 | 11 | Toy planted weaknesses + persona/playbook (default ON per §10) | `6290955`, `f822f09` (fix) (merge `61f1478`) | ✅ done, review clean after 1 fix round |
 | 10 | CLI `discover` subcommand (§8 flags, exit 0/2/3, preflight refusals, dry-run notes) | `0bb00e6`, `8869e99` (fix) | ✅ done, review clean after 1 fix round (1 Important — dry-run preview) |
 | 12 | End-to-end flywheel acceptance, zero-spend (`tests/discovery/test_e2e_discover.py`) | `a0ef763`, `6bf53a4` (fix) | ✅ done, review clean after 1 fix round (1 Important — untested Step 1↔Step 2 probe identity) |
-| 13 | Docs (EXPLAINED flywheel truth + gate-reds caveat, CI_ADOPTION human-triage note, ROADMAP #3 built, CONTEXT §9/§10), **v0.4.0** + a version-drift guard, register triage (detail below) | `00e4891`, `this commit` (fix) | ✅ done, review clean after 1 fix round (1 Important — the unconditional replay claim) |
+| 13 | Docs (EXPLAINED flywheel truth + gate-reds caveat, CI_ADOPTION human-triage note, ROADMAP #3 built, CONTEXT §9/§10), **v0.4.0** + a version-drift guard, register triage (detail below) | `00e4891`, `4c8bc75` (fix) | ✅ done, review clean after 1 fix round (1 Important — the unconditional replay claim) |
 | 14 | USER-GATED live TwinCore pre-run | — | ⛔ gated — fresh consent + cost first |
 
 **Controller-verified state at the pause (2026-08-04):** `uv run pytest -q -W error::RuntimeWarning`
@@ -1241,6 +1241,12 @@ probe"* — the same over-claim just corrected in the explainer (it is emitted t
 `All checks passed!`; `validate-pack` exit 0 on `packs/example` and `packs/twincore`;
 `python -c "import evalyn"` → `0.4.0`; `git status --porcelain` empty after the commit.
 `README.md` deliberately untouched (maintainer decision: it stays aspirational for the demo).
+
+**Controller-verified after Task 13 (2026-08-06):** **697 passed** warning-clean; ruff clean; both
+packs `validate-pack` exit 0; `pyproject.toml` **and** `src/evalyn/__init__.py` both at **0.4.0** (the
+drift is closed); `git status --porcelain` **empty**; HEAD `4c8bc75`;
+`git ls-remote --heads origin feat/plan3-discover` returns **0 lines — nothing pushed**. All build
+tasks (0–13) are done; only the USER-GATED Task 14 and the final whole-branch review remain.
 
 **Verified after Task 13 (2026-08-06, implementer + task reviewer):** **697 passed** warning-clean
 (+1 — the version guard); ruff clean; both packs `validate-pack` exit 0; tree clean; still
