@@ -4,9 +4,12 @@
 a flag a pack silts up with five spellings of one bug; with a *suppressor* it
 would silently discard genuine findings. So: `scan_duplicates` returns a
 `DuplicateFlag` and the caller stages the probe **anyway**, recording the flag
-in the **run artifact** (`Finding.duplicate_of` / `duplicate_reason`). Not in
-the staged YAML header: the header is rendered before dedup is consulted, and
-the artifact is where a human reads the verdict anyway. A human decides.
+in the **run artifact** (`Finding.duplicate_of` / `duplicate_reason`) — and
+NOT in the staged YAML header. That is a choice, not an ordering constraint:
+dedup runs *before* the header is rendered (`run.py`: `scan_duplicates` then
+`probe_yaml`), so the flag could ride along; `_provenance` simply carries no
+duplicate key. The artifact is where a human reads the verdict, and a staged
+probe's header describes the probe, not this run's bookkeeping. A human decides.
 
 The comparison is a **conjunction of all three** criteria (spec §7) — same
 category, a shared required-check signature, AND turn-set Jaccard >= 0.6 —

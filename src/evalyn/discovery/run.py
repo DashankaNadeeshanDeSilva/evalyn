@@ -4,12 +4,17 @@
 single Inspect eval, reads each hunt's `SessionResult` back out of the sample
 store, and for every CONFIRMED session turns the finding into a staged `gate`
 probe, dedup-flags it, and replays it once to check it still reds the gate. The
-run record — a `DiscoveryArtifact` — is written to disk BEFORE `run_discovery`
-can raise (R8-5): the per-finding loop is wrapped, and any exception out of it
-writes the record built from whatever accumulated so far and only THEN
-propagates. So neither a budget stop nor an unwritable pack dir, a re-raised
-programmer error from replay, or store shape drift can leave a run that spent
-money with no artifact, no report and no spend record (spec §12).
+run record — a `DiscoveryArtifact` — is written to disk BEFORE the per-finding
+loop can raise (R8-5): that loop is wrapped, and any exception out of it writes
+the record built from whatever accumulated so far and only THEN propagates. So
+neither a budget stop nor an unwritable pack dir, a re-raised programmer error
+from replay, or store shape drift can leave a run that spent money with no
+artifact, no report and no spend record (spec §12). The guarantee stops at the
+loop, deliberately: `build_discovery_task` and `_run_discovery_eval` run
+OUTSIDE the wrap, so a raise out of `inspect_eval`/`read_eval_log` — after the
+eval has already spent — still leaves no record. Widening the wrap to cover the
+eval is a real behaviour change, logged for Plan #4, not smuggled in here.
+(`reconcile` cannot raise; it is fail-open.)
 
 Spend accounting is the subtle part, and two facts from the meter design shape
 it:
@@ -429,12 +434,17 @@ async def run_discovery(pack: Pack, cfg: DiscoveryConfig) -> DiscoveryArtifact:
                 playbook_id=session.playbook_id,
             ))
     except BaseException:
-        # Write what we have, THEN let the original failure propagate. A write
-        # failure here must never mask the real error.
+        # Write what we have, THEN let the original failure propagate. The
+        # original is never LOST: a double failure (loop raises AND the fallback
+        # write fails) still re-raises it, warning about the write. One caveat,
+        # so nobody reads this as absolute — under `-W error::RuntimeWarning`
+        # the warning becomes the surfaced exception and the original is demoted
+        # to its `__context__`. Benign under default filters, and the chain
+        # always carries both.
         try:
             write_discovery_artifact(_build_artifact(aborted=True),
                                      out_dir=str(cfg.out_dir))
-        except Exception as e:  # noqa: BLE001 — nothing may mask the real error
+        except Exception as e:  # noqa: BLE001 — report it, never swallow it
             warnings.warn(
                 f"discovery run failed AND its partial artifact could not be "
                 f"written ({type(e).__name__}: {e}) — the spend record for this "
