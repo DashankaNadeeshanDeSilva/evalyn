@@ -1058,7 +1058,7 @@ new rulings (old exact+prefix void; same-order rule-3 win; empty-records message
 throughout (10 RED failures shown first). 481 passed, ruff clean, both packs
 validate-pack OK. Zero spend (toy target + mockllm only).
 
-## Plan #3 — `discover` + flywheel (`feat/plan3-discover`, cut from `dev` @ `6d6753d`) *(Tasks 0–12 of 14 complete; Task 13 next, then the USER-GATED Task 14)*
+## Plan #3 — `discover` + flywheel (`feat/plan3-discover`, cut from `dev` @ `6d6753d`) *(Tasks 0–13 of 14 complete; only the USER-GATED Task 14 remains, then the final whole-branch review)*
 
 Plan doc: [`superpowers/plans/2026-08-04-evalyn-plan3-discover.md`](./superpowers/plans/2026-08-04-evalyn-plan3-discover.md)
 Design spec: [`superpowers/specs/2026-08-04-discover-mode-design.md`](./superpowers/specs/2026-08-04-discover-mode-design.md)
@@ -1095,7 +1095,7 @@ waits, not the review loop.
 | 11 | Toy planted weaknesses + persona/playbook (default ON per §10) | `6290955`, `f822f09` (fix) (merge `61f1478`) | ✅ done, review clean after 1 fix round |
 | 10 | CLI `discover` subcommand (§8 flags, exit 0/2/3, preflight refusals, dry-run notes) | `0bb00e6`, `8869e99` (fix) | ✅ done, review clean after 1 fix round (1 Important — dry-run preview) |
 | 12 | End-to-end flywheel acceptance, zero-spend (`tests/discovery/test_e2e_discover.py`) | `a0ef763`, `6bf53a4` (fix) | ✅ done, review clean after 1 fix round (1 Important — untested Step 1↔Step 2 probe identity) |
-| 13 | Docs, roadmap, version bump, register close-out | — | ⏳ next |
+| 13 | Docs (EXPLAINED flywheel truth + gate-reds caveat, CI_ADOPTION human-triage note, ROADMAP #3 built, CONTEXT §9/§10), **v0.4.0** + a version-drift guard, register triage (detail below) | this commit | ✅ done |
 | 14 | USER-GATED live TwinCore pre-run | — | ⛔ gated — fresh consent + cost first |
 
 **Controller-verified state at the pause (2026-08-04):** `uv run pytest -q -W error::RuntimeWarning`
@@ -1196,6 +1196,55 @@ omits it, the log inherits the omission and `reconcile` **under-reports silently
 meter **over-charges loudly** — which is why the pessimistic fallback stays, and why the run now
 reports the larger of the two figures rather than either alone.
 
+### Task 13 — docs, roadmap, v0.4.0, register triage (2026-08-06) ✅
+
+**The correction the spec owed (§14), and it was a real over-claim.** `EVALYN_EXPLAINED.md:134` read
+*"A confirmed problem is automatically turned into a new, permanent `gate` test."* Nothing in the
+code does that: `load_pack` globs `probes/*.yaml|*.yml` only (`targets/loader.py:64-66`), so
+`<pack>/discoveries/` is inert — it changes no verdict and no `pack_fingerprint`. §8 now walks the
+real four steps (hunt → real-scorer confirmation → **staged** file + replay-once → **a human moves
+it into `probes/`**), and the four other `discover` mentions plus the glossary line
+*"Discovered problems auto-become permanent tests"* were corrected the same way. The plain-English
+doc is the one a non-engineer reads; this was the most damaging place to over-claim.
+
+**The gate-reds caveat is now written down, in three places.** Re-verified against the branch, not
+taken on trust: a safety-critical adopted probe fails on `pass^k < 1.0` **ignoring the baseline**
+(`engine/gate.py:63-70`); a non-safety-critical one with no baseline entry falls to
+`engine/gate.py:82-83`, lands in *Quarantined (review, not blocking)* and leaves **exit 0**; and
+`candidate_probe` sets `safety_critical` (`emit.py:193`) and `samples: 3` (`:198`) only for the
+safety-critical objectives. So *"adopt a discovery and the gate reds"* is true for one class of
+finding and false for the rest until a baseline exists. Stated in `EVALYN_EXPLAINED.md` §8 (plain
+English), `CI_ADOPTION.md` (with line citations) and the ROADMAP's as-built note — the Aug 14 demo
+narrative has to be built from these, so the honest version had to be the one on paper.
+
+**A real version drift, found and fixed.** `pyproject.toml` said `0.3.0` while
+`src/evalyn/__init__.py` still said **`0.2.0`** — Plan #2b's bump moved one and missed the other,
+and nothing caught it because `tests/test_smoke.py` only asserted `evalyn.__version__` was *truthy*.
+Both are now `0.4.0`, and `test_version_matches_pyproject` reads the repo's own `pyproject.toml`
+with `tomllib` and asserts equality. Deliberately **not** `importlib.metadata.version("evalyn")`:
+that reads installed dist-info, which goes stale between a bump and the next `uv sync` and would
+make the guard spuriously red. Proven to discriminate both ways — with `__init__.py` set to `0.9.9`
+the test fails with `evalyn.__version__ = '0.9.9' but pyproject.toml declares '0.4.0'`; restored, it
+passes. (Caveat for a future `requires-python` widening: `tomllib` is 3.11+; the project venv and CI
+are both 3.12.)
+
+**Two stale things the rulings did not anticipate**, both inside `src/` and therefore **not** fixed
+here (Task 13 is doc-only by ruling R13-7) — logged in the register instead:
+`targets/schema.py:22` still promises *"static validation of the exclusivity arrives in Task 9"*,
+but Task 9 became the family-rule task and the `value`/`values` exclusivity validator was never
+written, so the docstring now points at a task that shipped something else; and
+`scoring/tier1.py:19-21` describes a false-positive PII match as *"auto-emitted as a permanent
+probe"* — the same over-claim just corrected in the explainer (it is emitted to inert staging).
+
+**Verification (all real output, zero spend):** `uv run pytest -q -W error::RuntimeWarning` →
+**697 passed** (696 + the new version guard), warning-clean; `uv run ruff check src/ tests/` →
+`All checks passed!`; `validate-pack` exit 0 on `packs/example` and `packs/twincore`;
+`python -c "import evalyn"` → `0.4.0`; `git status --porcelain` empty after the commit.
+`README.md` deliberately untouched (maintainer decision: it stays aspirational for the demo).
+
+**Controller-verified after Task 13 (2026-08-06):** **697 passed** warning-clean (+1 — the version
+guard); ruff clean; both packs `validate-pack` exit 0; tree clean; still **nothing pushed**.
+
 ### What the reviews caught (would have shipped otherwise)
 
 - **Task 0:** the refactor emptied `state.messages` on a mid-send exception — Inspect records sample
@@ -1258,6 +1307,47 @@ reports the larger of the two figures rather than either alone.
 ### Open items — Plan #3 deferred findings register
 
 Triage these at Plan #3's final whole-branch review.
+
+#### Task 13 triage (2026-08-06) — every open item dispositioned
+
+Task 13 is **doc-only** (ruling R13-7: no `src/` change beyond the version string, no `tests/`
+change beyond the version guard), so only the doc-class items could be *fixed* here. Everything else
+is explicitly re-deferred **with a reason and a destination**, or accepted. The item text below is
+unchanged; this table is the disposition layer over it.
+
+| # | Item | Disposition | Reason / where |
+|---|------|-------------|----------------|
+| 1 | T12 → Task 13 docs: "adopt a discovery and the gate reds" is over-broad | **fixed** | Written into `EVALYN_EXPLAINED.md` §8 (plain English), `CI_ADOPTION.md` (`gate.py:63-70` vs `:82-83`, `emit.py:193,198`) and the ROADMAP as-built note. Re-verified against the branch first. |
+| — | (spec §14) `EVALYN_EXPLAINED.md` "automatically turned into a permanent gate test" | **fixed** | §8 rewritten to staging + human adoption; the other 4 `discover` mentions and the glossary line corrected too. |
+| 2 | T12: the suite writes into the gitignored `logs/` (379→381), so a clean `git status --porcelain` cannot see it | **re-deferred → final whole-branch review** | Cross-task and pre-existing; fixing it means changing test log-dir handling in files Task 13 may not touch. It also weakens a proof obligation used all plan long, so it deserves a deliberate ruling, not a drive-by. |
+| 3 | T12 minor: stale citation `test_e2e_discover.py:253` (`config.py:31` → `:26`) | **re-deferred → final whole-branch review** | One-line comment fix in `tests/`, forbidden here by R13-7. Trivially bundled with the other test-file minors below. |
+| 4 | T12 minor: `by_objective` (`:235`) is keyed by `objective_id`, so two findings for one objective collapse silently | **re-deferred → final whole-branch review** | Same file, same reason. Harmless at the example pack's 1×1×3 axis count, but it implicitly pins that count. |
+| 5 | T12 minor: bare `assert` at `:315`; `_CONTRACT_BREACHES.clear()` lives inside `_adaptive_brain` | **re-deferred → final whole-branch review** | Same file, same reason. Both are latent-only (correct today). |
+| 6 | T7→T8 flaky-flag: `ReplayResult` carries no `pass_at_k`/`expected_trials`, so 1-of-3 and 0-of-3 are indistinguishable (also listed again under *Binding obligations*) | **re-deferred → final whole-branch review, as a decision** | Already re-deferred once by R12-8. Adding fields changes the artifact schema 8b shipped (`Finding.to_dict`/`from_dict` + `_replay_line`) — production-schema creep, and Task 13 may not touch `src/` at all. It is now the register's oldest live item and should be *decided* (implement or accept) at the review, not carried again. |
+| 7 | T8a→T10 refuse-class preflight | **closed** | Closed in Task 10 (`0bb00e6`, R10-2); struck through inline above. |
+| 8 | T8a→T10 the cap drops hunts silently | **closed** | Closed in Task 10 (R10-3). |
+| 9 | T8a→T8b/T12 unproven end-to-end | **closed by Task 12** | The remaining half (`discover`→confirm→emit→replay→adopt→gate-reds on the real `packs/example`) is `tests/discovery/test_e2e_discover.py`. Nothing left owing. |
+| 10 | T6→T8 provenance sanitizer vs the C1 block / surrogates / non-characters | **closed** | Closed in Task 8b (`5d17127`, R8-4). |
+| 11 | T7→T8 spend accounting across replays | **closed** | Closed in Task 8b (`5d17127`). |
+| 12 | T5→T6 single `candidate_probe` definition | **closed** | Closed in Task 6. |
+| 13 | T2→T8 does solver spend reach the eval log | **closed** | Verified by spike, consumed in Task 8b. |
+| 14 | T5→T8 silent `stop_reason="error"` sessions | **closed** | Closed in Task 8b (R8-2/R8-17). |
+| 15 | T1→T10 `--max-usd 0` | **closed** | Closed in Task 10 (R10-4, `0bb00e6`). |
+| 16 | T4→T9: `Check` permits `value` and `values` together; tier-1 silently prefers `values` | **re-deferred → final whole-branch review** | **It did not land.** Task 9 became the family-rule task and the exclusivity validator was never written — and `targets/schema.py:22` still tells readers *"static validation of the exclusivity arrives in Task 9"*, which is now a pointer to a task that shipped something else. Needs a `src/` change (a `model_validator`) plus the docstring, both out of scope here. |
+| 17 | T4 sync obligation (commented in source): wiring tier-2 into `discover` must move `classifier` into `_EVALUABLE_TYPES` in the same change | **accepted** | Not a defect — a standing conditional obligation, already pinned where it fires (the source comment). It becomes live only if tier-2 is ever wired into `discover`; nothing to do until then. |
+| 18 | T3 (doc-only, "should fix before merge"): the `no-pii-leak` email branch also matches `support@`, `git@github.com`, `deploy@prod.example.com`, `logo@2x.png` — the source comment must name these classes | **re-deferred → final whole-branch review** | Genuinely still open (checked: `scoring/tier1.py:19-26` explains the *phone* exclusions in detail and says nothing about the email over-match). It is a `src/` comment, forbidden here. Related find while checking: `tier1.py:19-21` says a false positive gets *"auto-emitted as a permanent probe"* — the same over-claim just corrected in the explainer; fix both comments in one pass. |
+| 19 | T3: the phone pattern misses `+1 (415) 555-2671` | **re-deferred → final whole-branch review** | Deliberate under-match; the register already says do not widen the separator class without re-checking the false-positive families, and pin the miss as a decision. `src/` + `tests/`. |
+| 20 | T7: `replay.py` duplicates `run_gate`'s eval spine; docstring still not an exact biconditional; no `samples > 1` test; `offline_pack` points at the toy port | **re-deferred → final whole-branch review** | A shared `_run_pack_eval` extraction touches the gate spine — refactor risk that wants its own review, not a docs task. |
+| 21 | T6: `_assert_outcome_graded` docstring trap; `dedup._signature` collapses `values` checks; `stage_probe` filename unvalidated ("should fix before merge"); `_probe_id` 32-bit truncation; `loop.py` containment guard now under-approximates the import graph | **re-deferred → final whole-branch review** | All `src/`. The `stage_probe` `re.fullmatch` guard is the one flagged *before merge* and should be taken first at the review; the rest are latent (unreachable for emitted probes today). |
+| 22 | T1: `_REGISTRY` mutable behind `MappingProxyType`; negative pack `max_usd_per_run` permissive in discovery; `max_turns_per_session: 0` can never send | **re-deferred → final whole-branch review** | `src/` hardening of pack-config edges; no user has hit one. |
+| 23 | T2: `reconcile` re-states `_judge_usd`; `_PESSIMISTIC_USAGE` is a single token ceiling | **re-deferred → final whole-branch review** | `src/`. The duplication is policed by the agreement test today, so it is a maintainability item, not a correctness one. |
+| 24 | T4: the unjudged-rubric guard is count-based rather than matching `rubric:` labels | **re-deferred → final whole-branch review** | `src/`. Charges before tier-3 raises on a missing rubric file — cost-only, fail-loud. |
+| 25 | T5: two residual containment-guard evasions (`from os import open as _o`, `getattr(`) | **re-deferred → final whole-branch review** | Defence-in-depth only; the real mechanism is the closed `ACTIONS` frozenset. `tests/`. |
+| 26 | T8b (3 latent-edge minors): `_reconcile_path` union-globs `*.eval`+`*.json`; replay-skip keys on the live meter only; `effective_spend_usd` serialized despite being derived | **re-deferred → final whole-branch review** | `src/`. (2) is explicitly within R8-3's wording, (3) is intentional; only (1) would need code, and it cannot bite while Inspect writes one format per `log_dir`. |
+| 27 | T11: `examples/toy_target.py` `_session_turns` grows unbounded | **accepted** | Deliberate: a throwaway test server, and eviction interacts with the ≥2-turn injection logic and the CI baseline. Revisit only if the toy is ever long-lived. |
+| 28 | T10: a mid-run `run_discovery` exception maps to **Exit 2**, whose contract is "refuse before any spend" | **re-deferred → final whole-branch review** | Named by R13-6 as un-fixable here (`src/`). Low-risk (mirrors `gate`), but the 0/2/3 contract deserves a deliberate ruling. |
+| 29 | T10→T9 note for the family owner: keep the "check the model that will actually judge" call-site semantics | **accepted** | Not a defect — a constraint recorded for whoever next touches `family_warnings`. |
+| 30 | Unverifiable until the first live run: `build_prompt` wording untested against a real model; `parse_action` does no code-fence stripping | **re-deferred → Task 14 (user-gated live run)** | Unfixable by construction under the zero-spend constraint — Task 14 *is* the experiment. Treat that run as a prompt shakedown and expect early retries; the cheap de-risk (accept a fenced reply on the retry only) is a candidate fix once there is evidence. |
 
 **From Task 12 (2026-08-06)**
 

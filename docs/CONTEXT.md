@@ -185,29 +185,37 @@ building the pack):
   - **Only commit automatically; ask for explicit approval before every push and before opening/
     updating any PR.**
 
-## 9. Repo state right now (2026-08-03)
+## 9. Repo state right now (2026-08-06)
 
-- **Plans #1, #2a, and #2b are built** (v0.3.0). Working `evalyn gate` / `compare` / `calibrate` /
-  `validate-pack` CLI on the Inspect AI spine; full three-tier scoring; per-rubric fail-closed
-  calibration (fresh TwinCore record: 93% overall, every rubric ≥85% over 11 anchors each, under
-  frozen human-reviewed grading steps); blind pairwise `compare` over gate artifacts (advisory);
-  reusable CI gate workflow + self-test with a committed baseline.
+- **Plans #1, #2a, #2b and #3 are built** (v0.4.0). Working `evalyn gate` / `compare` / `discover` /
+  `calibrate` / `validate-pack` CLI on the Inspect AI spine; full three-tier scoring; per-rubric
+  fail-closed calibration (fresh TwinCore record: 93% overall, every rubric ≥85% over 11 anchors
+  each, under frozen human-reviewed grading steps); blind pairwise `compare` over gate artifacts
+  (advisory); reusable CI gate workflow + self-test with a committed baseline.
+- **`discover` (Plan #3)** — adaptive hunting agent bounded by step/turn/USD budgets, the
+  `Confirmer` trust boundary (the **real scorers** decide, not the agent), outcome-graded probe
+  emission + dedup, replay-once, and **inert** `<pack>/discoveries/` staging. **Adoption is
+  human-gated:** `gate` loads `probes/` only, so a staged finding gates only after a person moves
+  it. Terminal-only — there is no UI. Tasks 0–13 of 14 are done on `feat/plan3-discover`; **Task 14
+  (the first live TwinCore run) is user-gated and not yet run**, so `discover`'s agent prompt has
+  never faced a real model.
 - Packs: `packs/example` (practice) and `packs/twincore` (real product: 31-case injection suite,
   grounding/persona/scope/pii probes, 4 rubrics + fact sheet + frozen steps, calibration record).
 - Progress journal + deferred-findings register: `docs/JOURNAL.md`. Roadmap: `docs/ROADMAP.md`.
-- `discover` (Plan #3) is not built — its plan is not yet written.
 
 ## 10. Next step
 
-Plan #2b is complete on `feat/plan2b-compare-ci`. Immediate next actions, in order:
+Plan #2b merged to `dev` (PR #6). Plan #3 is built through Task 13 on `feat/plan3-discover`
+(nothing pushed). Immediate next actions, in order:
 
-1. **Finish the #2b branch:** final whole-branch review, PR to `dev` (CI's two jobs green on the
-   PR + the sticky gate comment rendering are the workflow's real-world proof).
-2. **Post-merge, user-gated:** bless the first TwinCore baseline (`--update-baseline` on a
+1. **Task 14 — USER-GATED:** the first live `discover` run against TwinCore. Needs fresh consent and
+   a cost decision before anything spends. Treat it as a prompt shakedown (`build_prompt` has never
+   met a real model; expect retries).
+2. **Finish the #3 branch:** final whole-branch review — triaging the Plan #3 register in
+   `JOURNAL.md` is part of it — then PR to `dev`.
+3. **Still user-gated from #2b:** bless the first TwinCore baseline (`--update-baseline` on a
    consented live run), and run the first real A/B compare (two live gate runs + one
    `evalyn compare`).
-3. **Plan #3 (`discover`):** write its plan with **`superpowers:writing-plans`** against the
-   design doc. Do not start coding before the plan exists and the user approves it.
 
 Phase-0 sanity checks — status:
 1. **[done 2026-07-26 (#2a Task 10)]** TwinCore visitor chat endpoints, session-open flow, and SSE

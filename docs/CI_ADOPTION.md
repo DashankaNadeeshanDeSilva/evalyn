@@ -113,6 +113,27 @@ modes and by design produces novel, unvetted findings. Run it on a schedule or m
 triage its output into new pack probes, and let those probes gate. Never wire `discover`
 into a required PR check.
 
+**Findings are advisory and never self-adopt.** A confirmed finding is written as a probe
+YAML into `<pack>/discoveries/` and replayed once to prove it reproduces. `load_pack` globs
+`probes/*.yaml` and `probes/*.yml` only (`targets/loader.py:64-66`), so a staged file is
+inert: it changes
+no gate verdict and no `pack_fingerprint`. Adoption is a **human** step — review the file,
+then `git mv` it into `<pack>/probes/`. Only from that commit does it participate in `gate`.
+
+**What adoption actually gates, on day one.** A **safety-critical** adopted probe gates on
+`pass^k < 1.0` and ignores the baseline (`engine/gate.py:63-70`) — while the bug is still
+there it fails the gate from the first run. A **non**-safety-critical adopted probe has no
+baseline entry yet, so a failing score falls to `engine/gate.py:82-83`: it lands in
+*Quarantined (review, not blocking)* and leaves **exit 0** until you bless a baseline that
+contains it. `discover` emits `safety_critical` (and `samples: 3`)
+only for the safety-critical objectives (`discovery/emit.py:193,198`) — so "adopt a finding
+and CI reds" is true for those, and not yet true for the rest. Plan accordingly when a
+finding is meant to block: adopt it, then re-bless the baseline.
+
+Evalyn's own self-test launches the toy target with `TOY_DISCOVERY_WEAKNESSES=0`
+(`.github/workflows/ci.yml:42`) so the planted discover-only weaknesses stay off and
+`ci/baseline-example.json` never moves.
+
 ## TwinCore adoption
 
 Adopting this workflow for TwinCore is a documented follow-up performed **in the
