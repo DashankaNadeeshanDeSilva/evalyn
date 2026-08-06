@@ -4,12 +4,12 @@ import json
 from pathlib import Path
 
 import pytest
-from typer.testing import CliRunner
 
 from evalyn.cli import app
 from evalyn.engine.baseline import save_baseline
 from evalyn.engine.gate import evaluate_gate
 from evalyn.engine.run import ProbeResult, RunArtifact
+from tests.cli_runner import CliRunner
 
 runner = CliRunner()
 

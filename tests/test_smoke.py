@@ -7,6 +7,8 @@ try:                                    # stdlib on 3.11+; the package declares 
 except ModuleNotFoundError:             # pragma: no cover - only on 3.10
     import tomli as tomllib             # type: ignore[no-redef]
 
+from tests.cli_runner import strip_ansi
+
 _PYPROJECT = Path(__file__).resolve().parents[1] / "pyproject.toml"
 
 def test_version_importable():
@@ -31,4 +33,6 @@ def test_cli_help_runs():
     out = subprocess.run([sys.executable, "-m", "evalyn.cli", "--help"],
                          capture_output=True, text=True)
     assert out.returncode == 0
-    assert "gate" in out.stdout
+    # Rich colours the help panel whenever FORCE_COLOR/GITHUB_ACTIONS is set, even
+    # into a pipe — strip escapes so the assertion sees the text a user reads.
+    assert "gate" in strip_ansi(out.stdout)

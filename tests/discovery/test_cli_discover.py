@@ -13,10 +13,9 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from typer.testing import CliRunner
-
 from evalyn.cli import app
 from evalyn.discovery.run import DiscoveryArtifact
+from tests.cli_runner import CliRunner
 
 runner = CliRunner()
 
