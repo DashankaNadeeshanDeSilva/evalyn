@@ -18,9 +18,11 @@ Zero spend: no model, no network — emission is deterministic and stdlib-only.
 """
 from __future__ import annotations
 
+import contextlib
 import json
 import re
 import shutil
+import subprocess
 import warnings
 from contextlib import asynccontextmanager
 from dataclasses import replace
@@ -72,6 +74,15 @@ def _pack(root: Path) -> Pack:
 
 def _injection_probe() -> Probe:
     return candidate_probe(INJECTION, LEAK_SLOTS, TURNS)
+
+
+@contextlib.contextmanager
+def caught_warnings():
+    """Record warnings rather than letting them escape (mirrors test_confirm):
+    the VERDICT is asserted first, the warning second."""
+    with warnings.catch_warnings(record=True) as rec:
+        warnings.simplefilter("always")
+        yield rec
 
 
 # -- a minimal `run_session` harness (mirrors tests/discovery/test_loop.py) --
@@ -435,6 +446,75 @@ def test_staged_header_warns_that_the_file_may_carry_live_target_data():
     assert yaml.safe_load(text) == [probe.model_dump(exclude_none=True)]
 
 
+def test_staged_header_does_not_over_claim_the_gitignore_guard():
+    """PR#7-5: the header used to assert flatly that the staged file IS
+    gitignored. `--staging-dir` can put it anywhere — including a TRACKED
+    directory — so the claim must be scoped to where the guard actually holds,
+    and must point the operator at the command that settles it."""
+    probe = _injection_probe()
+    header = [ln for ln in probe_yaml(probe, provenance={}).splitlines()
+              if ln.startswith("#")]
+    blob = "\n".join(header)
+
+    assert "check-ignore" in blob, "the header must name how to VERIFY the guard"
+    assert "--staging-dir" in blob, "the header must name the escape hatch"
+
+
+def _git_repo(tmp_path: Path, ignore: str) -> Path:
+    """A throwaway git work tree with `ignore` as its `.gitignore`."""
+    root = tmp_path / "repo"
+    root.mkdir()
+    subprocess.run(["git", "init", "-q"], cwd=root, check=True)
+    (root / ".gitignore").write_text(ignore, encoding="utf-8")
+    return root
+
+
+@pytest.mark.parametrize("relative", ["packs/example/discoveries",
+                                      "packs/team/twincore/discoveries"])
+def test_staging_into_a_gitignored_dir_is_silent(tmp_path, relative):
+    """The protected path — including a NESTED pack, which a single `*` in the
+    ignore pattern would not cover."""
+    root = _git_repo(tmp_path, "**/discoveries/*.yaml\n!**/discoveries/.gitkeep\n")
+    probe = _injection_probe()
+    text = probe_yaml(probe, provenance={})
+
+    with caught_warnings() as rec:
+        path = stage_probe(_pack(root), probe, text, staging_dir=root / relative)
+
+    assert path.exists()
+    assert not [r for r in rec if "gitignore" in str(r.message)], \
+        [str(r.message) for r in rec]
+
+
+def test_staging_into_a_tracked_dir_warns_loudly(tmp_path):
+    """PR#7-5: `--staging-dir packs/example/probes` writes verbatim PII into a
+    TRACKED directory. The repo is public; the operator must be told."""
+    root = _git_repo(tmp_path, "**/discoveries/*.yaml\n")
+    probe = _injection_probe()
+    text = probe_yaml(probe, provenance={})
+
+    with caught_warnings() as rec:
+        path = stage_probe(_pack(root), probe, text,
+                           staging_dir=root / "packs" / "example" / "probes")
+
+    assert path.exists(), "the warning must not replace the staging"
+    messages = [str(r.message) for r in rec
+                if issubclass(r.category, RuntimeWarning)]
+    assert any("NOT gitignored" in m for m in messages), messages
+    assert any(str(path) in m for m in messages), messages
+    assert any("LIVE DATA" in m for m in messages), messages
+
+
+def test_staging_outside_any_git_work_tree_does_not_warn(tmp_path):
+    """No repo, no accidental-commit risk — and no warning noise. (This is what
+    keeps every tmp_path-staging test in the suite quiet.)"""
+    probe = _injection_probe()
+    text = probe_yaml(probe, provenance={})
+    with caught_warnings() as rec:
+        stage_probe(_pack(tmp_path), probe, text, staging_dir=tmp_path / "out")
+    assert not [r for r in rec if "gitignore" in str(r.message)]
+
+
 def test_stage_probe_writes_inert_yaml(tmp_path):
     root = tmp_path / "pack"
     shutil.copytree(MINIPACK, root)
@@ -507,8 +587,17 @@ def test_load_prior_discoveries_warns_and_skips_unparseable(tmp_path):
         probes = load_prior_discoveries(staging)
 
     assert [p.id for p in probes] == [good.id]
-    assert len(rec) == 2, [str(w.message) for w in rec]
-    assert all("broken" in str(w.message) or "not-a-probe" in str(w.message)
-               for w in rec)
+    # Only OUR warnings. `catch_warnings(record=True)` records everything the
+    # process emits while it is installed, including warnings the garbage
+    # collector raises from unrelated libraries at an arbitrary moment (anyio's
+    # `ResourceWarning: Unclosed <MemoryObjectReceiveStream ...>` was observed
+    # landing here, ~1 run in 7). Counting those made this test flaky without
+    # making it stronger: the subject is `load_prior_discoveries`, so filter to
+    # its own RuntimeWarnings and keep every assertion about them exact.
+    mine = [w for w in rec if issubclass(w.category, RuntimeWarning)
+            and "skipping unreadable staged discovery" in str(w.message)]
+    assert len(mine) == 2, [str(w.message) for w in rec]
+    assert {"broken" in str(w.message) or "not-a-probe" in str(w.message)
+            for w in mine} == {True}
     # a missing staging dir is not an error — the first run has no priors
     assert load_prior_discoveries(tmp_path / "nope") == []

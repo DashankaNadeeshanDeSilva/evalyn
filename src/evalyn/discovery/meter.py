@@ -19,10 +19,28 @@ Two charging paths, deliberately different:
 
 The ceiling is a safety boundary: when in doubt, charge MORE, not less. A
 meter that under-reports is a runaway spend.
+
+**One cap, per-session attribution.** The cap is deliberately shared by every
+hunt (R8-11) — a run ceiling that each session could spend in full would not be
+a run ceiling. But *reporting* is a different question from *bounding*: a
+session's own cost is written into its staged probe's provenance header and
+therefore persists into any probe a human adopts. Deriving it as a delta on the
+shared meter (`spent - start`) makes each concurrent hunt look like it cost
+roughly the whole run, and hunts ARE concurrent by default. So every charge is
+also attributed to the session that made it, via `attribute_to_session` — a
+`ContextVar` set inside `run_session`. Attribution follows the asyncio *task*,
+which is exactly the unit a hunt runs in: sibling hunts are sibling tasks with
+their own copied contexts, and everything a hunt awaits (including the shared
+`Confirmer`'s hidden-usage tier-3 charge, which holds the shared meter directly
+and never sees a per-session object) runs inside it. Unattributed charges — the
+replay phase, which runs after the eval — simply do not land in any session.
 """
 from __future__ import annotations
 
 import warnings
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
+from contextvars import ContextVar
 
 from inspect_ai.model import ModelOutput, ModelUsage
 
@@ -43,6 +61,32 @@ _PESSIMISTIC_USAGE = ModelUsage(
 class BudgetStop(Exception):
     """The meter tripped mid-step. Caught inside the session runner — a budget
     stop always yields a partial result, never an exception out of the loop."""
+
+
+#: The open session's spend accumulator, or None outside any session. A
+#: one-element list rather than a float so a charge made in a CHILD task (whose
+#: context is a copy) still lands in the parent session's tally — the copy
+#: carries the same list object.
+_session_spend: ContextVar[list[float] | None] = ContextVar(
+    "evalyn_discovery_session_spend", default=None)
+
+
+@contextmanager
+def attribute_to_session() -> Iterator[Callable[[], float]]:
+    """Attribute every charge made in this task to one session.
+
+    Yields a callable returning the USD charged since the block was entered.
+    Nested blocks are legal (the inner one shadows and is restored by token) and
+    a concurrent hunt in a sibling task has its own accumulator, so neither can
+    read the other's spend. Charges made outside any block are billed to the cap
+    and to nobody — which is the honest answer for the post-eval replay phase.
+    """
+    box = [0.0]
+    token = _session_spend.set(box)
+    try:
+        yield lambda: box[0]
+    finally:
+        _session_spend.reset(token)
 
 
 class SpendMeter:
@@ -66,6 +110,16 @@ class SpendMeter:
     def exhausted(self) -> bool:
         return self._spent >= self.cap_usd
 
+    def _charge(self, usd: float) -> None:
+        """The ONE place spend is recorded. Both public charge paths route
+        through it, so the cap and the per-session attribution can never see
+        different totals (a second `self._spent +=` elsewhere would silently
+        un-attribute that call)."""
+        self._spent += usd
+        box = _session_spend.get()
+        if box is not None:
+            box[0] += usd
+
     def charge_output(self, model: str, out: ModelOutput) -> None:
         """Charge an agent reasoning call exactly, from its returned usage."""
         usage = getattr(out, "usage", None)
@@ -81,7 +135,7 @@ class SpendMeter:
             usage = _PESSIMISTIC_USAGE
         # estimate_cost, not hand-rolled token->USD arithmetic: one accounting
         # shared with `reconcile` and `engine/run.py`, no drift surface.
-        self._spent += estimate_cost({model: usage})
+        self._charge(estimate_cost({model: usage}))
 
     def charge_estimate(self, usd: float) -> None:
         """Charge a conservative estimate for a call whose usage is hidden
@@ -89,7 +143,7 @@ class SpendMeter:
         if usd < 0:
             # A negative "estimate" is a refund — a raise of the effective cap.
             raise ValueError(f"estimate must be >= 0, got {usd}")
-        self._spent += usd
+        self._charge(usd)
 
 
 def reconcile(log) -> float:

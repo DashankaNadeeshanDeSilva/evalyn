@@ -19,6 +19,7 @@ Zero spend: every model is a scripted stub, every session a fake.
 """
 from __future__ import annotations
 
+import asyncio
 import contextlib
 import json
 import re
@@ -708,3 +709,91 @@ def test_a_bare_string_transcript_is_never_evidence():
     assert verify_slots({"leak_marker": "/data/kb"},
                         [*typed, "I read /data/kb daily."]) is False
     assert verify_slots({"leak_marker": "/data/other"}, typed) is True
+
+
+# --------------------------------------------------------------------------
+# PR#7-4: per-session spend is the SESSION's, not a shared-meter delta
+# --------------------------------------------------------------------------
+
+async def test_per_session_usd_excludes_a_concurrent_hunts_spend(monkeypatch,
+                                                                 tmp_path):
+    """`usd_estimated` used to be `meter.spent_usd - start_usd` over the ONE
+    meter every hunt shares. `discovery_solver` gates on `pack.spec.concurrency`
+    (default 4) and `DEFAULT_MAX_SESSIONS` is 4, so by default all four hunts
+    overlap and each delta measured roughly the whole run — a number that is
+    written verbatim into every staged probe's provenance header and therefore
+    PERSISTS into adopted probes.
+
+    Here session A parks mid-reasoning while session B runs to completion on the
+    same meter. A made 2 reasoning calls and must be billed for exactly 2.
+    """
+    step = estimate_cost({AGENT_MODEL: _STEP_USAGE})
+    meter = SpendMeter(10.0)
+    b_done = asyncio.Event()
+
+    class _Agent:
+        """A's first call parks until B has finished and paid; B has none."""
+
+        def __init__(self, outputs, park: bool) -> None:
+            self.outputs = list(outputs)
+            self.park = park
+            self.calls = 0
+
+        async def generate(self, prompt, **kwargs):
+            self.calls += 1
+            if self.park and self.calls == 1:
+                await b_done.wait()
+            text = self.outputs.pop(0) if self.outputs else _stop()
+            out = ModelOutput.from_content(AGENT_MODEL, text)
+            out.usage = _STEP_USAGE
+            return out
+
+    agents = {"A": _Agent([_send("probe"), _stop()], park=True),
+              "B": _Agent([_stop()], park=False)}
+    monkeypatch.setattr(
+        loop_mod, "get_model",
+        lambda m: agents[asyncio.current_task().get_name()])
+    _stub_session(monkeypatch, ["ok", "ok", "ok"])
+
+    pack = _pack(tmp_path)
+    task_a = asyncio.create_task(
+        _run(pack, meter=meter, confirmer=_SpyConfirmer()), name="A")
+    task_b = asyncio.create_task(
+        _run(pack, meter=meter, confirmer=_SpyConfirmer()), name="B")
+    res_b = await task_b            # B finishes (and pays) inside A's window
+    b_done.set()
+    res_a = await task_a
+
+    assert agents["A"].calls == 2 and agents["B"].calls == 1
+    # the cap stays SHARED — this is attribution, not a second meter (R8-11)
+    assert meter.spent_usd == pytest.approx(3 * step)
+    assert res_a.usd_estimated == pytest.approx(2 * step), \
+        "session A was billed for a concurrent hunt's spend"
+    assert res_b.usd_estimated == pytest.approx(1 * step)
+    # …and the two attributions sum to the run total, no double-count
+    assert res_a.usd_estimated + res_b.usd_estimated == pytest.approx(
+        meter.spent_usd)
+
+
+async def test_session_attribution_includes_hidden_usage_confirmation_spend(
+        monkeypatch, tmp_path):
+    """The tier-3 `Confirmer` is built ONCE and holds the shared meter directly,
+    so it never sees a per-session sub-meter. Attribution must still catch its
+    `charge_estimate` — otherwise the fix would trade one wrong number for a
+    different wrong number."""
+    step = estimate_cost({AGENT_MODEL: _STEP_USAGE})
+    meter = SpendMeter(10.0)
+
+    class _ChargingConfirmer(_SpyConfirmer):
+        async def confirm(self, probe, messages):
+            meter.charge_estimate(0.25)      # a hidden-usage tier-3 call
+            return await super().confirm(probe, messages)
+
+    _stub_agent(monkeypatch, [_send("probe"), _propose({"leak_marker": "/data/kb"})])
+    _stub_session(monkeypatch, [LEAK_REPLY])
+
+    result = await _run(_pack(tmp_path), meter=meter,
+                        confirmer=_ChargingConfirmer())
+
+    assert result.confirmed is not None and result.confirmed.confirmed
+    assert result.usd_estimated == pytest.approx(2 * step + 0.25)

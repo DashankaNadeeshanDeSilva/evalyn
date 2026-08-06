@@ -90,13 +90,20 @@ from evalyn.targets.loader import Pack
 @dataclass
 class ReplaySkipped:
     """Replay was not run — distinct from a replay that ran and did not
-    reproduce (R8-3). Skipping happens when the meter is exhausted (never spend
-    past the cap) or when replay is disabled in config."""
+    reproduce (R8-3). Skipping happens for two UNRELATED reasons and `budget`
+    is which: the meter was exhausted (a truncation we did not choose — the run
+    is `partial`), or replay was disabled in config (`--no-replay`, which
+    skipped nothing involuntarily and must not raise the budget banner).
+
+    A flag, not a substring of `reason`: prose is for humans, and `partial` is
+    read by machines.
+    """
 
     reason: str
+    budget: bool = True
 
     def to_dict(self) -> dict:
-        return {"skipped": True, "reason": self.reason}
+        return {"skipped": True, "reason": self.reason, "budget": self.budget}
 
 
 def _replay_to_dict(replay: ReplayResult | ReplaySkipped) -> dict:
@@ -108,7 +115,12 @@ def _replay_to_dict(replay: ReplayResult | ReplaySkipped) -> dict:
 def _replay_from_dict(d: dict) -> ReplayResult | ReplaySkipped:
     d = dict(d)
     if d.pop("skipped", False):
-        return ReplaySkipped(reason=d.get("reason", ""))
+        # Artifacts written before the flag existed cannot say which kind of
+        # skip they recorded; read them as budget skips, the conservative side
+        # (it keeps a legacy run flagged partial rather than silently promoting
+        # it to complete).
+        return ReplaySkipped(reason=d.get("reason", ""),
+                             budget=bool(d.get("budget", True)))
     return ReplayResult(**d)
 
 
@@ -165,6 +177,12 @@ class DiscoveryArtifact:
     `fail_on_error=False` run would otherwise lose silently. `live_spend_usd`
     and `reconciled_spend_usd` are kept SEPARATE (R8-14); `effective_spend_usd`
     is `max` of the two.
+
+    `eval_status` is the Inspect eval's own status. It is here because every
+    per-session counter goes to ZERO when the eval itself fails: an `"error"`
+    or `"cancelled"` log carries no samples, so a run that never looked is
+    otherwise byte-identical to a run that looked and found nothing. Additive
+    with a default, so an artifact written before the field still loads.
     """
 
     pack_name: str
@@ -183,6 +201,13 @@ class DiscoveryArtifact:
     partial: bool
     objectives: list[str]
     log_path: str
+    eval_status: str = "success"
+
+    @property
+    def eval_ok(self) -> bool:
+        """Did the discovery eval itself complete? False makes the run INVALID
+        — its zeroes mean "no data", never "nothing found"."""
+        return self.eval_status == "success"
 
     @property
     def effective_spend_usd(self) -> float:
@@ -209,6 +234,7 @@ class DiscoveryArtifact:
             "partial": self.partial,
             "objectives": list(self.objectives),
             "log_path": self.log_path,
+            "eval_status": self.eval_status,
         }
 
     @classmethod
@@ -321,6 +347,15 @@ async def run_discovery(pack: Pack, cfg: DiscoveryConfig) -> DiscoveryArtifact:
 
     log = await _run_discovery_eval(task, disc_log_dir)
 
+    # The eval's own verdict on itself. `"error"`/`"cancelled"` (an unwritable
+    # log_dir, a provider outage, Ctrl-C) leaves `log.samples` empty, so every
+    # counter below reads zero and the record is indistinguishable from a clean
+    # run that found nothing. `engine/run.py` and `replay.py` both RAISE here;
+    # this path deliberately does not — it sits OUTSIDE the R8-5 durability
+    # wrap, so raising would leave a run that already spent with no artifact at
+    # all. Record it instead; the CLI turns it into exit 3 (run-invalid).
+    eval_status = str(getattr(log, "status", "") or "success")
+
     # Log-authoritative spend, accumulated across the discovery log and every
     # replay log. `reconcile` returns usd and does NOT mutate the meter — the
     # live figure stays independent (R8-14).
@@ -348,8 +383,15 @@ async def run_discovery(pack: Pack, cfg: DiscoveryConfig) -> DiscoveryArtifact:
         """
         cap = cfg.limits.max_usd
         exhausted = meter.exhausted() or (cap > 0 and reconciled >= cap)
-        partial = aborted or exhausted or budget_stops or any(
-            isinstance(f.replay, ReplaySkipped) for f in findings)
+        # `partial` = this run did not do all the work it set out to do, so
+        # absence is not evidence of absence. A replay skipped because the
+        # OPERATOR disabled it was not work we failed to do — only a
+        # budget-forced skip counts (`ReplaySkipped.budget`); folding both in
+        # made `--no-replay` on a $0.01 run print the BUDGET banner.
+        partial = aborted or exhausted or budget_stops or (
+            eval_status != "success") or any(
+            isinstance(f.replay, ReplaySkipped) and f.replay.budget
+            for f in findings)
         return DiscoveryArtifact(
             pack_name=pack.spec.name,
             pack_hash=pack_fingerprint(pack),
@@ -367,6 +409,7 @@ async def run_discovery(pack: Pack, cfg: DiscoveryConfig) -> DiscoveryArtifact:
             partial=partial,
             objectives=list(cfg.objectives),
             log_path=log_location,
+            eval_status=eval_status,
         )
 
     # R8-5 made real. This loop CAN raise — `stage_probe` on an unwritable pack
@@ -471,9 +514,10 @@ async def _replay_finding(pack: Pack, cfg: DiscoveryConfig, meter: SpendMeter,
     `judge_model` is passed EXPLICITLY — the default `mockllm/model` would make a
     required judge-graded check fabricate `reproduced=True`."""
     if not cfg.replay:
-        return ReplaySkipped("skipped (replay disabled in config)")
+        return ReplaySkipped("skipped (replay disabled in config)", budget=False)
     if meter.exhausted():
-        return ReplaySkipped("skipped (budget) — meter exhausted before replay")
+        return ReplaySkipped("skipped (budget) — meter exhausted before replay",
+                             budget=True)
     # Each replay gets its OWN log dir so the directory fallback cannot capture
     # another replay's log and double-charge it (R8-15).
     replay_dir = str(log_root / f"replay-{probe_id}")
@@ -525,6 +569,15 @@ def render_discovery_report(artifact: DiscoveryArtifact) -> str:
     lines.append(f"**{a.confirmed_count} finding(s)** from {a.sessions_total} "
                  f"hunt(s).")
 
+    # Before anything else: if the eval itself did not complete, every number
+    # above it is "no data", not "nothing found". Loudest line in the report.
+    if not a.eval_ok:
+        lines.append(
+            f"**RUN INVALID — the discovery eval ended `{a.eval_status}`.** No "
+            f"samples were produced, so the counts above are the absence of "
+            f"data, NOT the absence of weaknesses. Check the eval log "
+            f"(`{a.log_path}`) and re-run; do not read this as a clean pass.")
+
     # R8-2: the error count is a TOP-LEVEL line, not a per-session detail. A run
     # where every hunt errored is the worst case (looks like a clean empty run).
     if a.error_count:
@@ -533,12 +586,23 @@ def render_discovery_report(artifact: DiscoveryArtifact) -> str:
         lines.append(f"{prefix}{a.error_count} session(s) errored** — failed "
                      f"hunts (crashed or left no result), not clean empties.")
 
-    if a.partial:
+    spend = (f"spend ${a.effective_spend_usd:.4f} (live ${a.live_spend_usd:.4f} "
+             f"/ reconciled ${a.reconciled_spend_usd:.4f})")
+    if a.partial and a.budget_exhausted:
+        # Only when the CAP is what truncated the run. Every budget-caused
+        # partial implies an exhausted meter (a budget stop or a budget-skipped
+        # replay can only happen once `exhausted()` is true, and the meter never
+        # goes down), so this banner cannot miss one — and, since a
+        # config-disabled replay no longer sets `partial`, it can no longer
+        # appear on a run that skipped nothing involuntarily.
         lines.append(
-            f"**BUDGET: partial run** — spend ${a.effective_spend_usd:.4f} "
-            f"(live ${a.live_spend_usd:.4f} / reconciled "
-            f"${a.reconciled_spend_usd:.4f}); some work was skipped to stay "
+            f"**BUDGET: partial run** — {spend}; some work was skipped to stay "
             f"under the cap. Findings below are real; absence is not evidence.")
+    elif a.partial:
+        lines.append(
+            f"**PARTIAL run** — {spend}; the run did not finish everything it "
+            f"planned (the cap was not what stopped it — see above). Findings "
+            f"below are real; absence is not evidence.")
     else:
         lines.append(
             f"Spend ${a.effective_spend_usd:.4f} "

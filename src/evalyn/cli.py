@@ -622,10 +622,27 @@ def discover(
     except Exception as e:
         if debug:
             raise
-        typer.echo(f"discover: run error: {e}", err=True)
-        raise typer.Exit(2)
+        # Exit 3, not 2. Everything above this point is preflight and exits 2
+        # ("setup refusal — nothing was billed"); by HERE the eval has run and
+        # the money is spent, and R8-5 has already written a partial artifact.
+        # Reporting that as a setup refusal tells a CI consumer to fix its
+        # config and retry, when the truth is the opposite: the run is invalid
+        # and it was charged for. Name the record so the operator can find what
+        # their spend bought.
+        typer.echo(f"discover: run error: {e}\n"
+                   f"  the run is INVALID (exit 3) — it may have SPENT before "
+                   f"failing. A partial run record (spend + any findings made "
+                   f"before the failure) was written under {cfg.out_dir}/ as "
+                   f"the newest `*-discover.json`.", err=True)
+        raise typer.Exit(3)
 
     typer.echo(discovery_run.render_discovery_report(art))
+    # Run-invalid (3), in the two shapes it takes. The eval-status case is the
+    # sneakier one: a failed/cancelled eval yields NO samples, so `sessions_total`
+    # and `error_count` are both 0 and the all-errored guard below is false —
+    # the run would otherwise report `0 finding(s) from 0 hunt(s)` and exit 0.
+    if not art.eval_ok:
+        raise typer.Exit(3)
     if art.sessions_total > 0 and art.error_count >= art.sessions_total:
         raise typer.Exit(3)
     raise typer.Exit(0)

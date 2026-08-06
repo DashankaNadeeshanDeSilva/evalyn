@@ -41,8 +41,10 @@ import hashlib
 import json
 import os
 import re
+import subprocess
 import warnings
 from collections.abc import Mapping, Sequence
+from functools import lru_cache
 from pathlib import Path
 from uuid import uuid4
 
@@ -256,14 +258,53 @@ def probe_yaml(probe: Probe, *, provenance: dict) -> str:
         "#   leaked value (an email address, a phone number, an internal path) is",
         "#   embedded VERBATIM as a check value, because redacting it would break",
         "#   the outcome-graded confirmation the check exists to make.",
-        "#   REVIEW BEFORE COMMITTING OR SHARING. `<pack>/discoveries/*.yaml` is",
-        "#   gitignored; moving this file out of it is what removes that guard.",
+        # Scoped, not absolute. The old wording asserted flatly that this file
+        # IS gitignored — a claim `--staging-dir` can falsify by pointing at a
+        # tracked directory, and one a single `*` in the ignore pattern already
+        # failed for nested packs. Claim only what the repo delivers, and name
+        # the command that settles it.
+        "#   REVIEW BEFORE COMMITTING OR SHARING. A `discoveries/` staging dir in",
+        "#   Evalyn's own repo is gitignored (`**/discoveries/*.yaml`); a",
+        "#   --staging-dir elsewhere, another repo, or moving this file out of",
+        "#   staging is NOT covered. Settle it with `git check-ignore -v <file>`.",
     ]
     for key, value in provenance.items():
         header.extend(_comment_lines(str(key), value))
     body = yaml.safe_dump([probe.model_dump(exclude_none=True)], sort_keys=False,
                           allow_unicode=True, default_flow_style=False)
     return "\n".join(header) + "\n" + body
+
+
+@lru_cache(maxsize=64)
+def _git_exposed(directory: str) -> bool:
+    """True when `directory` is inside a git work tree AND not gitignored.
+
+    That conjunction is the whole point. The risk this guards is *accidentally
+    committing live target data*, so a directory git does not track at all
+    (`/tmp`, an operator's scratch dir) carries no risk and must stay silent —
+    warning there would be noise on the common path. Any uncertainty (no git on
+    PATH, a slow or erroring invocation) resolves to False for the same reason:
+    an unprovable exposure is not an exposure, and this must never be able to
+    fail a staging write that already succeeded.
+
+    Cached per directory: one hunt stages many probes into the same dir, and
+    `git check-ignore` is a subprocess.
+    """
+    try:
+        inside = subprocess.run(
+            ["git", "-C", directory, "rev-parse", "--is-inside-work-tree"],
+            capture_output=True, text=True, timeout=5, check=False)
+        if inside.returncode != 0 or inside.stdout.strip() != "true":
+            return False
+        # A directory, not a file: `check-ignore` matches `**/discoveries/*.yaml`
+        # against a concrete path, so ask about a representative staged file.
+        probe_path = str(Path(directory) / "probe.yaml")
+        ignored = subprocess.run(
+            ["git", "-C", directory, "check-ignore", "-q", probe_path],
+            capture_output=True, timeout=5, check=False)
+        return ignored.returncode != 0
+    except (OSError, subprocess.SubprocessError):
+        return False
 
 
 def stage_probe(pack: Pack, probe: Probe, yaml_text: str, *,
@@ -297,6 +338,19 @@ def stage_probe(pack: Pack, probe: Probe, yaml_text: str, *,
     except BaseException:
         tmp.unlink(missing_ok=True)
         raise
+    # AFTER the write, never instead of it: the file exists either way, and the
+    # operator's problem is that it exists somewhere committable. `--staging-dir`
+    # is a first-class flag and `--staging-dir <pack>/probes` stages verbatim
+    # leaked PII into a TRACKED directory — the header's caution is no guard if
+    # nobody reads it before `git add`.
+    if _git_exposed(str(directory.resolve())):
+        warnings.warn(
+            f"staged discovery {path} is NOT gitignored and sits inside a git "
+            f"work tree — this file embeds LIVE DATA captured from the target "
+            f"(a leaked path, email or phone number, verbatim, as a check "
+            f"value). Do not `git add` it: stage into a `discoveries/` "
+            f"directory, or add this path to .gitignore",
+            RuntimeWarning, stacklevel=2)
     return path
 
 

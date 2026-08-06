@@ -463,6 +463,96 @@ async def test_provenance_with_c1_and_lone_surrogate_still_round_trips(
 
 
 # --------------------------------------------------------------------------
+# PR#7-1: a failed/cancelled eval is NOT a clean empty run
+# --------------------------------------------------------------------------
+
+async def test_failed_eval_status_is_recorded_and_reported(copied_pack, tmp_path,
+                                                           monkeypatch):
+    """An eval that ends `error`/`cancelled` yields no samples, so every counter
+    reads like a clean run that found nothing. The status must ride on the
+    artifact and be loud in the report, or "never looked" is indistinguishable
+    from "looked and found nothing"."""
+    log = _fake_log([])
+    log.status = "error"
+    _patch_eval(monkeypatch, log)
+    monkeypatch.setattr(run_mod, "reconcile", lambda log: 0.0)
+
+    art = await run_discovery(copied_pack, _cfg(tmp_path))
+
+    assert art.eval_status == "error"
+    # the counters that made it look clean are still zero — the status is the
+    # ONLY thing that distinguishes this run, which is why it must exist
+    assert (art.sessions_total, art.error_count, art.confirmed_count) == (0, 0, 0)
+    report = render_discovery_report(art)
+    assert "RUN INVALID" in report and "error" in report
+    # and it survives the artifact round-trip
+    assert DiscoveryArtifact.from_dict(art.to_dict()).eval_status == "error"
+
+
+async def test_successful_eval_status_is_success_and_report_is_clean(
+        copied_pack, tmp_path, monkeypatch):
+    """The discriminating other half: a real success must NOT print the banner."""
+    _patch_eval(monkeypatch, _fake_log([]))
+    monkeypatch.setattr(run_mod, "reconcile", lambda log: 0.0)
+
+    art = await run_discovery(copied_pack, _cfg(tmp_path))
+
+    assert art.eval_status == "success"
+    assert "RUN INVALID" not in render_discovery_report(art)
+
+
+def test_pre_eval_status_artifact_still_loads():
+    """Additive field, round-trip-safe: an artifact written before the field
+    existed still loads, defaulting to the optimistic-but-harmless "success"."""
+    d = _artifact(live=0.0, reconciled=0.0).to_dict()
+    d.pop("eval_status")
+    assert DiscoveryArtifact.from_dict(d).eval_status == "success"
+
+
+# --------------------------------------------------------------------------
+# PR#7-3: `--no-replay` is not a budget truncation
+# --------------------------------------------------------------------------
+
+async def test_replay_disabled_is_not_a_partial_run(copied_pack, tmp_path,
+                                                    monkeypatch):
+    """`ReplaySkipped` carries two unrelated meanings. A run that skipped replay
+    because the operator asked it to skipped nothing involuntarily: `partial`
+    must stay False and the BUDGET banner must not print."""
+    _patch_eval(monkeypatch, _fake_log([_confirmed_session()]))
+    monkeypatch.setattr(run_mod, "reconcile", lambda log: 0.0)
+
+    async def _must_not_replay(*a, **k):  # pragma: no cover
+        raise AssertionError("replay ran despite replay=False")
+    monkeypatch.setattr(run_mod, "replay_staged_probe", _must_not_replay)
+
+    art = await run_discovery(copied_pack, _cfg(tmp_path, replay=False))
+
+    skipped = art.findings[0].replay
+    assert isinstance(skipped, ReplaySkipped)
+    assert skipped.budget is False, "a config-disabled skip is not a budget skip"
+    assert art.partial is False, "--no-replay mislabelled the run as truncated"
+    report = render_discovery_report(art)
+    assert "BUDGET" not in report
+    assert "SKIPPED" in report          # still visible, just not as truncation
+    # and the distinction round-trips
+    back = DiscoveryArtifact.from_dict(art.to_dict())
+    assert back.findings[0].replay.budget is False
+
+
+async def test_budget_skipped_replay_still_marks_the_run_partial(
+        copied_pack, tmp_path, monkeypatch):
+    """The other side of the same discrimination: a skip we did NOT choose is
+    still a truncation. (Guards over-correcting finding 3 into silence.)"""
+    _patch_eval(monkeypatch, _fake_log([_confirmed_session()]))
+    monkeypatch.setattr(run_mod, "reconcile", lambda log: 0.0)
+    art = await run_discovery(copied_pack, _cfg(tmp_path, limits=_limits(max_usd=0.0)))
+
+    assert art.findings[0].replay.budget is True
+    assert art.partial is True
+    assert "BUDGET" in render_discovery_report(art)
+
+
+# --------------------------------------------------------------------------
 # writer: atomic name + round-trip
 # --------------------------------------------------------------------------
 

@@ -1362,6 +1362,40 @@ unchanged; this table is the disposition layer over it.
 | 29 | T10→T9 note for the family owner: keep the "check the model that will actually judge" call-site semantics | **accepted** | Not a defect — a constraint recorded for whoever next touches `family_warnings`. |
 | 30 | Unverifiable until the first live run: `build_prompt` wording untested against a real model; `parse_action` does no code-fence stripping | **re-deferred → Task 14 (user-gated live run)** | Unfixable by construction under the zero-spend constraint — Task 14 *is* the experiment. Treat that run as a prompt shakedown and expect early retries; the cheap de-risk (accept a fenced reply on the retry only) is a candidate fix once there is evidence. |
 
+#### PR #7 review wave (2026-08-07) — six findings fixed on `feat/plan3-discover`
+
+Maintainer review of PR #7. All six verified against the code before fixing; each got a
+discriminating test (red before, green after). Suite **708 → 726**, warning-clean in both colour
+modes. Register item **28 is CLOSED** by finding 6 below.
+
+| # | Finding | Fix |
+|---|---------|-----|
+| 1 | *Important.* `_run_discovery_eval` never checked `log.status`. On `error`/`cancelled` the log carries no samples, so `sessions_total=error_count=confirmed_count=0`, the CLI's all-errored guard is false, and a run that **never looked** exits 0 as a clean empty run. | `DiscoveryArtifact.eval_status` (additive, defaulted, round-trip-safe) + an `eval_ok` property; a **RUN INVALID** banner in the report; CLI exits **3**. Deliberately *not* `engine/run.py`'s bare `raise` — `_run_discovery_eval` sits OUTSIDE the R8-5 wrap, so raising there would leave a run that already spent with **no artifact at all**. |
+| 2 | *Important.* `_injection_checks` returned the agent's `leak_marker` as `not_contains(required=True)`. `loop.verify_slots` *requires* every slot to be a verbatim substring of an assistant turn, and tier-1 evaluates `not_contains` over exactly those turns — so the needle is guaranteed present, the check **cannot pass**, and since `Confirmer` confirms when any required check fails, `invariant:no-internal-leak` could never veto. Any innocuous quoted sentence confirmed and staged a `safety_critical: true` probe. | Made it **weight-only** (`weight=1.0`), matching `_pii_checks` exactly; `no-internal-leak` is now the sole required check. Probe ids are content-addressed over objective+slots+turns (**not** checks), so `INJECTION_PROBE_ID` is unchanged and adoption stays the same artifact. |
+| 3 | *Medium.* `ReplaySkipped` carried two unrelated meanings, so `--no-replay` on a $0.01 run against a $5 cap recorded `partial=True` and printed the BUDGET banner. | Explicit `ReplaySkipped.budget` flag (not `.reason` string-matching); `partial` counts only budget skips; the BUDGET banner now requires `budget_exhausted`, with a separate neutral **PARTIAL** banner for the non-budget causes. |
+| 4 | *Medium.* `usd_estimated = meter.spent_usd - start_usd` on the **shared** meter. Hunts are concurrent by default (`concurrency` 4, `DEFAULT_MAX_SESSIONS` 4), so each delta measured roughly the whole run — and that number is written into every staged probe's provenance header, so it **persists into adopted probes**. | **Real attribution, not a caveat.** A `ContextVar` accumulator (`meter.attribute_to_session`) set in `run_session`, with both charge paths routed through one private `SpendMeter._charge`. Chosen over a per-session sub-meter because the tier-3 `Confirmer` is built ONCE in `task_builder` and holds the shared meter **directly** — a sub-meter would silently miss its hidden-usage `charge_estimate`. Attribution follows the asyncio task, which is exactly the unit a hunt runs in. The **cap stays shared** (R8-11 untouched): this changes reporting, not bounding. |
+| 5 | *Medium.* `.gitignore` was `packs/*/discoveries/*.yaml` while the staged header asserted flatly that staged probes are gitignored. Two confirmed gaps: `--staging-dir` escapes it entirely (`--staging-dir packs/example/probes` writes verbatim PII into a **tracked** dir in a **public** repo), and a single `*` does not cross `/`, so `packs/team/twincore/` was unmatched. | Widened to `**/discoveries/*.yaml` + `!**/discoveries/.gitkeep`; `stage_probe` now warns loudly (after the write, never instead of it) when the resolved staging dir is inside a git work tree and **not** ignored; and the header no longer over-claims — it scopes the guarantee and names `git check-ignore -v`. Outside any work tree there is no accidental-commit risk, so no warning (that is what keeps the tmp_path-staging suite quiet). |
+| 6 | *Low.* `cli.py`'s `except Exception` mapped every runtime failure of `run_discovery` to **exit 2** — the documented "setup refusal, nothing billed" code — including failures after real spend and after R8-5 wrote the partial artifact. Opposite retry instructions for a CI consumer. **(= register item 28.)** | Post-spend failure is run-invalid → **exit 3**; 2 stays for genuine pre-run refusals (all of which are upstream of this `try`). The error now also names where the partial record was written. |
+
+**Bonus, found while proving both colour modes green: a real (pre-existing, latent) flake.**
+`test_load_prior_discoveries_warns_and_skips_unparseable` asserted `len(rec) == 2` over a
+`warnings.catch_warnings(record=True)` — which records *every* warning the process emits while it is
+installed, including ones the **garbage collector** raises from unrelated libraries at an arbitrary
+moment. The intruder was anyio's `ResourceWarning: Unclosed <MemoryObjectReceiveStream ...>`,
+reproduced at ~1 run in 7 and initially mistaken for a colour-mode failure (it is not — it is
+GC-timing). Filtered to the test's own `RuntimeWarning`s; every assertion about them stays exact.
+**24/24 consecutive green runs** afterwards (12 plain + 12 `FORCE_COLOR=1`); 10/10 on the pre-change
+baseline, so the odds shifted rather than the bug being introduced. It is the only exact-count
+warning recorder in the suite (checked).
+
+Invariants re-verified, not assumed: the trust boundary (agent proposes, real scorers dispose;
+*unsure is never a finding*) — finding 2 removes a check that could never pass, so the boundary gets
+**stricter**, and `test_injection_registry_checks_still_confirm_a_real_leak` guards the other
+direction; the closed `send`/`propose`/`stop` enum and `loop.py`'s containment (finding 4 adds one
+name from the already-imported `discovery.meter`); exactly one `emit.candidate_probe`;
+`max(live, reconciled)`, never the sum; and a budget stop still yields a partial report at **exit 0**
+(`test_budget_truncated_run_still_exits_0` pins it against the two new exit-3 paths).
+
 **From Task 12 (2026-08-06)**
 
 - **T12 → Task 13 docs (the demo narrative is over-broad).** The adopted probe reds via `gate.py`'s

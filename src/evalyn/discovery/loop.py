@@ -60,7 +60,7 @@ from inspect_ai.model import (
 from evalyn.discovery.confirm import Confirmation
 from evalyn.discovery.config import Limits
 from evalyn.discovery.emit import answered_user_turns, candidate_probe
-from evalyn.discovery.meter import BudgetStop, SpendMeter
+from evalyn.discovery.meter import BudgetStop, SpendMeter, attribute_to_session
 from evalyn.discovery.objectives import Objective
 from evalyn.discovery.personas import (
     DEFAULT_PERSONA,
@@ -379,7 +379,6 @@ async def run_session(pack: Pack, objective: Objective,
     playbook = playbook or DEFAULT_PLAYBOOK
     result = SessionResult(objective_id=objective.id, persona_id=persona.id,
                            playbook_id=playbook.id)
-    start_usd = meter.spent_usd
 
     # BOUND 0: an already-exhausted meter opens nothing and asks nobody. This
     # is checked before `TargetSession.open`, so a queued session costs zero
@@ -390,29 +389,35 @@ async def run_session(pack: Pack, objective: Objective,
         return result
 
     session = None
-    try:
-        async with TargetSession.open(pack) as opened:
-            session = opened
-            await _drive(session, objective, persona, playbook, result,
-                         agent_model=agent_model, meter=meter, limits=limits,
-                         confirmer=confirmer, seed=seed)
-    except BudgetStop as e:
-        # Never out of the loop: a budget stop must PRESERVE partial evidence.
-        result.stop_reason = "budget"
-        result.error = f"BudgetStop: {e}"
-    except Exception as e:  # noqa: BLE001 — deliberate: see module docstring
-        # A target outage, a malformed reply, a bug: whatever it is, an
-        # exception escaping here makes Inspect drop the sample under
-        # `fail_on_error=False` and throws away everything gathered so far.
-        result.stop_reason = "error"
-        result.error = f"{type(e).__name__}: {e}"
-        warnings.warn(
-            f"discovery session for {objective.id!r} ended on an unexpected "
-            f"error ({result.error}) — partial result kept",
-            RuntimeWarning, stacklevel=2)
+    # THIS session's spend, not a delta on the meter every hunt shares. Hunts
+    # run concurrently by default (`pack.spec.concurrency`, default 4, and
+    # `DEFAULT_MAX_SESSIONS` is 4), so a `spent - start` delta measured roughly
+    # the whole run for every one of them — and that figure is written into the
+    # staged probe's provenance header, where it outlives the run.
+    with attribute_to_session() as session_usd:
+        try:
+            async with TargetSession.open(pack) as opened:
+                session = opened
+                await _drive(session, objective, persona, playbook, result,
+                             agent_model=agent_model, meter=meter, limits=limits,
+                             confirmer=confirmer, seed=seed)
+        except BudgetStop as e:
+            # Never out of the loop: a budget stop must PRESERVE partial evidence.
+            result.stop_reason = "budget"
+            result.error = f"BudgetStop: {e}"
+        except Exception as e:  # noqa: BLE001 — deliberate: see module docstring
+            # A target outage, a malformed reply, a bug: whatever it is, an
+            # exception escaping here makes Inspect drop the sample under
+            # `fail_on_error=False` and throws away everything gathered so far.
+            result.stop_reason = "error"
+            result.error = f"{type(e).__name__}: {e}"
+            warnings.warn(
+                f"discovery session for {objective.id!r} ended on an unexpected "
+                f"error ({result.error}) — partial result kept",
+                RuntimeWarning, stacklevel=2)
 
-    result.turns_used = getattr(session, "turns_used", 0) if session else 0
-    result.usd_estimated = max(meter.spent_usd - start_usd, 0.0)
+        result.turns_used = getattr(session, "turns_used", 0) if session else 0
+        result.usd_estimated = max(session_usd(), 0.0)
     return result
 
 

@@ -28,7 +28,8 @@ HALL = "hallucination"           # tier 3, needs a rubric judge
 
 
 def _artifact(*, sessions_total: int, error_count: int,
-              confirmed: int = 0) -> DiscoveryArtifact:
+              confirmed: int = 0,
+              eval_status: str = "success") -> DiscoveryArtifact:
     """A minimal completed-run record for exit-code / proceed assertions."""
     return DiscoveryArtifact(
         pack_name="example", pack_hash="a" * 64,
@@ -37,7 +38,7 @@ def _artifact(*, sessions_total: int, error_count: int,
         findings=[], error_count=error_count, sessions_total=sessions_total,
         confirmed_count=confirmed, live_spend_usd=0.0, reconciled_spend_usd=0.0,
         budget_exhausted=False, partial=False, objectives=[INJ],
-        log_path="runs/logs")
+        log_path="runs/logs", eval_status=eval_status)
 
 
 def _no_spend(monkeypatch):
@@ -291,6 +292,58 @@ def test_some_but_not_all_sessions_errored_still_exits_0(monkeypatch):
     result = runner.invoke(app, ["discover", "--target", PACK,
                                  "--objective", INJ])
     assert result.exit_code == 0
+
+
+def test_budget_truncated_run_still_exits_0(monkeypatch):
+    """The invariant the new exit-3 paths must not disturb: a budget stop is a
+    COMPLETED run that did less work, so it reports partially and exits 0."""
+    art = _artifact(sessions_total=2, error_count=0, confirmed=1)
+    art.partial = True
+    art.budget_exhausted = True
+    _returns(monkeypatch, art)
+    result = runner.invoke(app, ["discover", "--target", PACK,
+                                 "--objective", INJ])
+    assert result.exit_code == 0
+    assert "BUDGET" in result.output
+
+
+def test_failed_eval_status_exits_3(monkeypatch):
+    """PR#7-1: an eval that ended `error` produced no samples, so every counter
+    reads clean and the all-errored guard is false. Exit 3 (run-invalid) is the
+    only thing that stops CI reading "never looked" as "found nothing"."""
+    _returns(monkeypatch, _artifact(sessions_total=0, error_count=0,
+                                    eval_status="error"))
+    result = runner.invoke(app, ["discover", "--target", PACK,
+                                 "--objective", INJ])
+    assert result.exit_code == 3
+
+
+def test_cancelled_eval_status_exits_3(monkeypatch):
+    _returns(monkeypatch, _artifact(sessions_total=0, error_count=0,
+                                    eval_status="cancelled"))
+    result = runner.invoke(app, ["discover", "--target", PACK,
+                                 "--objective", INJ])
+    assert result.exit_code == 3
+
+
+def test_mid_run_failure_exits_3_and_names_the_partial_artifact(monkeypatch,
+                                                                tmp_path):
+    """PR#7-6: exit 2 means "setup refusal, nothing billed". A crash out of
+    `run_discovery` happens AFTER real spend and after R8-5 wrote the partial
+    record, so it is run-invalid (3) — and the operator gets a pointer to the
+    record their money bought."""
+    async def boom(pack, cfg):
+        raise RuntimeError("target died mid-hunt")
+    monkeypatch.setattr("evalyn.discovery.run.run_discovery", boom)
+
+    result = runner.invoke(app, ["discover", "--target", PACK,
+                                 "--objective", INJ,
+                                 "--out-dir", str(tmp_path / "runs")])
+
+    assert result.exit_code == 3, result.output
+    assert "target died mid-hunt" in result.output
+    assert str(tmp_path / "runs") in result.output, \
+        "the operator has no pointer to the partial artifact R8-5 wrote"
 
 
 # ----------------------------------------------------- setup errors (exit 2)

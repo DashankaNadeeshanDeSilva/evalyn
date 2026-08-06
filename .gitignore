@@ -23,5 +23,10 @@ packs/*/.cache/
 # public, so staged probes must never be committed by accident. Adoption is a
 # deliberate `git mv` into `probes/`, where the file is tracked on purpose and
 # the operator has read the CAUTION line in its header.
-packs/*/discoveries/*.yaml
-!packs/*/discoveries/.gitkeep
+# `**/`, not `packs/*/`: a single `*` does not cross `/`, so a pack nested one
+# level deeper (packs/team/twincore/discoveries/) escaped the guard entirely.
+# NOTE this covers the DEFAULT staging dir only. `discover --staging-dir` can
+# point anywhere, including a tracked directory — `stage_probe` warns loudly
+# when the resolved dir is inside this work tree and not ignored.
+**/discoveries/*.yaml
+!**/discoveries/.gitkeep
