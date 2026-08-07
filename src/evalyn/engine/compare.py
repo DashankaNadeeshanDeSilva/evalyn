@@ -13,20 +13,15 @@ blended with verdicts. Compare is advisory: no combined winner is computed.
 from __future__ import annotations
 
 import asyncio
-import json
 import math
-import os
 import random
-import re
-import tempfile
-import uuid
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace
 
 from evalyn.engine.budget import BudgetExceeded, estimate_cost
-from evalyn.engine.run import RunArtifact, pack_fingerprint
+from evalyn.engine.run import RunArtifact, atomic_write_artifact, pack_fingerprint
 from evalyn.scoring.pairwise import judge_pair
 from evalyn.scoring.rubrics import (
     load_rubric,
@@ -290,18 +285,10 @@ async def run_compare(pack: Pack, art_a: RunArtifact, art_b: RunArtifact,
 
 
 def write_compare_artifact(art: CompareArtifact, out_dir: str = "runs") -> Path:
-    """Atomic temp-then-rename write with a collision-proof name (house
-    pattern, run.py): microseconds + short uuid, slugified pack name."""
-    out_path = Path(out_dir)
-    out_path.mkdir(parents=True, exist_ok=True)
-    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%f")
-    slug = re.sub(r"[^A-Za-z0-9._-]+", "-", art.pack_name).strip("-.") or "pack"
-    final = out_path / f"{stamp}-{uuid.uuid4().hex[:8]}-{slug}-compare.json"
-    fd, tmp = tempfile.mkstemp(dir=out_path, suffix=".tmp")
-    with os.fdopen(fd, "w") as f:
-        f.write(json.dumps(art.to_dict(), indent=2, default=str))
-    os.replace(tmp, final)
-    return final
+    """Atomic temp-then-rename write with a collision-proof name — the shared
+    house writer (R8-13), suffixed `-compare`."""
+    return atomic_write_artifact(art.to_dict(), art.pack_name, out_dir,
+                                 suffix="-compare")
 
 
 def _fmt(val: float | None, suffix: str = "") -> str:

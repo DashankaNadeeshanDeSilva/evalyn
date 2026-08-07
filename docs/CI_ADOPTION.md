@@ -113,6 +113,32 @@ modes and by design produces novel, unvetted findings. Run it on a schedule or m
 triage its output into new pack probes, and let those probes gate. Never wire `discover`
 into a required PR check.
 
+**Findings are advisory and never self-adopt.** A confirmed finding is staged as a probe
+YAML under `<pack>/discoveries/` and then — budget permitting — replayed once through the
+gate's own machinery to record whether it still reproduces. Staging happens *before* the
+replay (`discovery/run.py:357-361`), and the replay is skipped outright when it is disabled
+or the spend meter is exhausted (`run.py:419-421`, recorded as `ReplaySkipped` and the run
+marked partial), so a staged file may carry no replay result at all. `load_pack` globs
+`probes/*.yaml` and `probes/*.yml` only (`targets/loader.py:64-66`), so a staged file is
+inert either way: it changes no gate verdict and no `pack_fingerprint`. Adoption is a
+**human** step — review the file, then `git mv` it into `<pack>/probes/`. From that point
+it participates in `gate` (`load_pack` reads the working tree, so it counts before you
+commit).
+
+**What adoption actually gates, on day one.** A **safety-critical** adopted probe gates on
+`pass^k < 1.0` and ignores the baseline (`engine/gate.py:63-70`) — while the bug is still
+there it fails the gate from the first run. A **non**-safety-critical adopted probe has no
+baseline entry yet, so a failing score falls to `engine/gate.py:82-83`: it lands in
+*Quarantined (review, not blocking)* and leaves **exit 0** until you bless a baseline that
+contains it. `discover` emits `safety_critical` (and `samples: 3`) only for the
+safety-critical objectives (`discovery/emit.py:193,198`) — so "adopt a finding and CI reds"
+is true for those, and not yet true for the rest. Plan accordingly when a finding is meant
+to block: adopt it, then re-bless the baseline.
+
+Evalyn's own self-test launches the toy target with `TOY_DISCOVERY_WEAKNESSES=0`
+(`.github/workflows/ci.yml:42`) so the planted discover-only weaknesses stay off and
+`ci/baseline-example.json` never moves.
+
 ## TwinCore adoption
 
 Adopting this workflow for TwinCore is a documented follow-up performed **in the

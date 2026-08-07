@@ -19,7 +19,10 @@ class Check(BaseModel):
         default=None,
         description="contains only: multi-value OR form — the check passes if ANY "
                     "listed string is present. Mutually exclusive with `value` "
-                    "(static validation of the exclusivity arrives in Task 9). "
+                    "— but that exclusivity is NOT statically validated yet: a "
+                    "check carrying both is accepted and tier-1 silently "
+                    "prefers `values`. Tracked in docs/JOURNAL.md (Plan #3 "
+                    "register row 16), deferred to Plan #4. "
                     "not_contains does not accept `values`.")
     scope: Literal["final", "any_turn", "all_turns"] | None = Field(
         default=None,

@@ -1,6 +1,6 @@
 [project]
 name = "evalyn"
-version = "0.3.0"
+version = "0.4.0"
 description = "Standalone, project-agnostic evaluation agent for LLM-powered products."
 readme = "README.md"
 license = { file = "LICENSE" }
@@ -31,6 +31,9 @@ dependencies = [
     # the default Tier-3 rubric judge is an anthropic/* model via inspect_ai's
     # anthropic provider — without this pin `uv sync` drops the SDK
     "anthropic>=0.120",
+    # the default discover agent model is `openai/gpt-5-mini` via inspect_ai's
+    # openai provider — without this pin `uv sync` drops the SDK
+    "openai>=1.0",
 ]
 
 [project.urls]
@@ -48,7 +51,14 @@ build-backend = "hatchling.build"
 packages = ["src/evalyn"]
 
 [dependency-groups]
-dev = ["pytest>=8", "pytest-asyncio>=0.23", "ruff>=0.5"]
+dev = [
+    "pytest>=8",
+    "pytest-asyncio>=0.23",
+    "ruff>=0.5",
+    # the smoke test reads this file with `tomllib`, which only exists from
+    # 3.11 — without this the 3.10 leg of `requires-python` cannot run the suite
+    "tomli; python_version < '3.11'",
+]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"

@@ -402,6 +402,252 @@ def calibrate(
     raise typer.Exit(1)
 
 
+@app.command()
+def discover(
+    target: str = typer.Option(..., "--target", help="Path to a target pack directory."),
+    objective: list[str] = typer.Option(
+        None, "--objective",
+        help="Objective id to hunt (repeatable; default: all four)."),
+    persona: str = typer.Option(
+        None, "--persona", help="Persona id (default: all the pack ships)."),
+    playbook: str = typer.Option(
+        None, "--playbook", help="Playbook id (default: the pack's, by id)."),
+    agent_model: str = typer.Option(
+        "openai/gpt-5-mini", "--agent-model", help="The discovery agent model."),
+    judge_model: str = typer.Option("mockllm/model", "--judge-model"),
+    rubric_judge_model: str = typer.Option(
+        None, "--rubric-judge-model",
+        help="Tier-3 rubric judge model (required to confirm rubric objectives)."),
+    max_steps: int = typer.Option(8, "--max-steps"),
+    max_sessions: int = typer.Option(4, "--max-sessions"),
+    max_usd: float = typer.Option(
+        None, "--max-usd",
+        help="Per-run USD ceiling (default/upper-bound = the pack's cap)."),
+    allow_uncalibrated: bool = typer.Option(False, "--allow-uncalibrated"),
+    allow_family_collision: bool = typer.Option(False, "--allow-family-collision"),
+    no_replay: bool = typer.Option(False, "--no-replay"),
+    staging_dir: str = typer.Option(
+        None, "--staging-dir", help="Where confirmed probes stage (default: <pack>/discoveries/)."),
+    out_dir: str = typer.Option("runs", "--out-dir"),
+    seed: int = typer.Option(None, "--seed"),
+    dry_run: bool = typer.Option(False, "--dry-run"),
+    debug: bool = typer.Option(False, "--debug"),
+):
+    """Adaptively hunt a target for weaknesses; confirm with the real scorers."""
+    import asyncio
+
+    from evalyn.discovery import run as discovery_run
+    from evalyn.discovery.config import CliLimits, DiscoveryConfig, resolve_limits
+    from evalyn.discovery.objectives import OBJECTIVES
+    from evalyn.discovery.personas import load_personas, load_playbooks
+    from evalyn.discovery.task_builder import plan_hunts
+    from evalyn.engine.validate import validate_pack
+    from evalyn.targets.loader import resolve_base_url
+
+    try:
+        pack = load_pack(target)
+        base_url = resolve_base_url(pack)  # enforces allowlist
+    except (PackError, AllowlistError) as e:
+        if debug:
+            raise
+        typer.echo(f"discover: setup error: {e}", err=True)
+        raise typer.Exit(2)
+
+    report = validate_pack(pack)
+    for w in report.warnings:
+        typer.echo(f"warning: {w}")
+    for err in report.errors:
+        typer.echo(f"error: {err}", err=True)
+    if not report.ok:
+        typer.echo("discover: setup error: pack failed validation "
+                   "(see errors above; `evalyn validate-pack` reproduces them)", err=True)
+        raise typer.Exit(2)
+
+    # R10-4: a CLI `--max-usd 0` resolves to a literal 0 ceiling ("spend
+    # nothing"), while a pack's `max_usd_per_run: 0` means "no ceiling" — the
+    # same value, opposite meanings. Reject 0 on the flag rather than ship that
+    # footgun, and point the operator at the pack field for an uncapped run.
+    if max_usd is not None and max_usd == 0:
+        typer.echo("discover: setup error: --max-usd 0 would refuse all spend "
+                   "and every hunt before it starts. The CLI flag and the pack "
+                   "field disagree at 0: to run UNCAPPED, set the pack's "
+                   "budget.max_usd_per_run: 0 instead (not this flag).", err=True)
+        raise typer.Exit(2)
+
+    try:
+        limits = resolve_limits(pack, CliLimits(
+            max_steps=max_steps, max_sessions=max_sessions, max_usd=max_usd))
+        cfg = DiscoveryConfig(
+            limits=limits,
+            objectives=tuple(objective) if objective else tuple(OBJECTIVES),
+            persona=persona, playbook=playbook, agent_model=agent_model,
+            judge_model=judge_model, rubric_judge_model=rubric_judge_model,
+            staging_dir=Path(staging_dir) if staging_dir else None,
+            out_dir=Path(out_dir), seed=seed, replay=not no_replay)
+    except ValueError as e:
+        if debug:
+            raise
+        typer.echo(f"discover: setup error: {e}", err=True)
+        raise typer.Exit(2)
+
+    # R10-1: consume Task 9's single family check (never a second one). The
+    # discovery<->rubric-judge collision is refuse-class; match REFUSE_PREFIX,
+    # never the prose. --allow-family-collision downgrades it to a warning.
+    from evalyn.engine.task_builder import REFUSE_PREFIX, family_warnings
+
+    # Match the run: the discovery Confirmer judges ONLY with
+    # cfg.rubric_judge_model, so the discovery<->judge family refusal must be
+    # measured against THAT model, never the pack's default rubric model (which a
+    # discover run never invokes) — else we'd over-refuse against a judge that
+    # will not run. `None` -> "" so the rubric-based entries simply don't fire.
+    fam = family_warnings(pack, judge_model=cfg.judge_model,
+                          rubric_model=cfg.rubric_judge_model or "",
+                          discovery_model=cfg.agent_model)
+    refusals = [m for m in fam if m.startswith(REFUSE_PREFIX)]
+    for m in fam:
+        if not m.startswith(REFUSE_PREFIX):
+            typer.echo(f"warning: {m}", err=True)
+    if refusals and not allow_family_collision:
+        for m in refusals:
+            typer.echo(f"discover: setup error: {m[len(REFUSE_PREFIX):]} "
+                       f"(pass --allow-family-collision to override)", err=True)
+        raise typer.Exit(2)
+    for m in refusals:
+        typer.echo(f"warning: family collision ALLOWED — {m[len(REFUSE_PREFIX):]}",
+                   err=True)
+
+    # Shared predicates for R10-2 (rubric objective, no judge) and R10-5 (tier-3
+    # staleness). Computed once so the real refusal and the --dry-run "would
+    # refuse" note can NEVER drift: R10-2 by the objective's own confirm_checks
+    # factory (not declared tier); R10-5 by `is_stale` + `tier >= 3`, mirroring
+    # `gate` (which also resolves the rubric model as the override-or-pack-default
+    # and skips the check under --dry-run).
+    from evalyn.discovery.objectives import get_objective
+    from evalyn.discovery.task_builder import _needs_rubric_judge
+
+    blind = ([o for o in cfg.objectives if _needs_rubric_judge(get_objective(o))]
+             if cfg.rubric_judge_model is None else [])
+
+    tier3 = [o for o in cfg.objectives if get_objective(o).tier >= 3]
+    tier3_stale = False
+    stale_why = ""
+    if tier3:
+        from evalyn.engine.calibrate import is_stale
+
+        stale_rubric_model = cfg.rubric_judge_model or pack.spec.judge.rubric_model
+        tier3_stale, stale_why = is_stale(pack, stale_rubric_model)
+
+    if not dry_run:
+        # R10-2 — an operator must not start a hunt structurally incapable of
+        # confirming anything. No auto-override; fix by judge or deselection.
+        if blind:
+            typer.echo(f"discover: setup error: no rubric judge configured "
+                       f"(--rubric-judge-model), so rubric objective(s) "
+                       f"{', '.join(blind)} can never be confirmed — every rubric "
+                       f"candidate returns unsure, which is never a finding; set a "
+                       f"rubric judge model or deselect those objectives", err=True)
+            raise typer.Exit(2)
+        # R10-5 — tier-3 calibration-staleness gate.
+        if tier3_stale and not allow_uncalibrated:
+            typer.echo(f"discover: setup error: tier-3 objective(s) "
+                       f"{', '.join(tier3)} require calibration ({stale_why}); run "
+                       f"`evalyn calibrate --target {target}` or pass "
+                       f"--allow-uncalibrated", err=True)
+            raise typer.Exit(2)
+        if tier3_stale:
+            typer.echo(f"warning: running UNCALIBRATED tier-3 hunt(s) ({stale_why}) "
+                       f"— rubric confirmations are untrusted", err=True)
+
+    # Resolve persona/playbook axes (validates the ids) and plan the hunts.
+    try:
+        personas = load_personas(pack)
+        playbooks = load_playbooks(pack)
+    except OSError as e:
+        if debug:
+            raise
+        typer.echo(f"discover: setup error: {e}", err=True)
+        raise typer.Exit(2)
+    # Validate the requested persona/playbook ids up front (a typo would
+    # otherwise surface as an opaque error inside the run build).
+    if cfg.persona is not None and cfg.persona not in personas:
+        typer.echo(f"discover: setup error: unknown persona {cfg.persona!r} — "
+                   f"this pack offers: {', '.join(sorted(personas))}", err=True)
+        raise typer.Exit(2)
+    if cfg.playbook is not None and cfg.playbook not in playbooks:
+        typer.echo(f"discover: setup error: unknown playbook {cfg.playbook!r} — "
+                   f"this pack offers: {', '.join(sorted(playbooks))}", err=True)
+        raise typer.Exit(2)
+    persona_ids = sorted(personas) if cfg.persona is None else [cfg.persona]
+    pairs = plan_hunts(list(cfg.objectives), persona_ids, cfg.limits.max_sessions)
+
+    # R10-3: the session cap drops whole objectives SILENTLY (round-robin keeps
+    # the distribution fair but says nothing). Name the dropped ones so a capped
+    # run never reads as "found nothing" when it never looked.
+    scheduled = {o for o, _ in pairs}
+    dropped = [o for o in cfg.objectives if o not in scheduled]
+    if dropped:
+        typer.echo(f"warning: session cap {cfg.limits.max_sessions} dropped "
+                   f"objective(s): {', '.join(dropped)} — not hunted this run "
+                   f"(raise --max-sessions or narrow --objective)", err=True)
+
+    if dry_run:
+        # Surface the refusals --dry-run itself suppresses (R10-2/R10-5): the
+        # preview must never green-light a config the real run refuses. These use
+        # the SAME predicates as the refusals above, gated on the SAME override
+        # flags, so a note appears iff a real run would actually exit 2.
+        if blind:
+            typer.echo(f"NOTE: a real run would REFUSE (exit 2): objective(s) "
+                       f"{', '.join(blind)} need a rubric judge but none is "
+                       f"configured — set --rubric-judge-model or deselect them.",
+                       err=True)
+        if tier3_stale and not allow_uncalibrated:
+            typer.echo(f"NOTE: a real run would REFUSE (exit 2): tier-3 "
+                       f"calibration is stale/absent ({stale_why}) — pass "
+                       f"--allow-uncalibrated to proceed, or run `evalyn calibrate "
+                       f"--target {target}`.", err=True)
+        staging = cfg.staging_dir or (pack.root / "discoveries")
+        typer.echo(
+            f"discover (dry-run): pack '{pack.spec.name}', target {base_url}\n"
+            f"  objectives: {', '.join(cfg.objectives)}\n"
+            f"  personas: {', '.join(persona_ids)}\n"
+            f"  hunts: {', '.join(f'{o}::{p}' for o, p in pairs)}\n"
+            f"  caps: steps {cfg.limits.max_steps}, sessions {cfg.limits.max_sessions}, "
+            f"turns {cfg.limits.max_turns}, max_usd ${cfg.limits.max_usd:.2f}\n"
+            f"  staging dir: {staging}\n"
+            f"  No calls made.")
+        raise typer.Exit(0)
+
+    try:
+        art = asyncio.run(discovery_run.run_discovery(pack, cfg))
+    except Exception as e:
+        if debug:
+            raise
+        # Exit 3, not 2. Everything above this point is preflight and exits 2
+        # ("setup refusal — nothing was billed"); by HERE the eval has run and
+        # the money is spent, and R8-5 has already written a partial artifact.
+        # Reporting that as a setup refusal tells a CI consumer to fix its
+        # config and retry, when the truth is the opposite: the run is invalid
+        # and it was charged for. Name the record so the operator can find what
+        # their spend bought.
+        typer.echo(f"discover: run error: {e}\n"
+                   f"  the run is INVALID (exit 3) — it may have SPENT before "
+                   f"failing. A partial run record (spend + any findings made "
+                   f"before the failure) was written under {cfg.out_dir}/ as "
+                   f"the newest `*-discover.json`.", err=True)
+        raise typer.Exit(3)
+
+    typer.echo(discovery_run.render_discovery_report(art))
+    # Run-invalid (3), in the two shapes it takes. The eval-status case is the
+    # sneakier one: a failed/cancelled eval yields NO samples, so `sessions_total`
+    # and `error_count` are both 0 and the all-errored guard below is false —
+    # the run would otherwise report `0 finding(s) from 0 hunt(s)` and exit 0.
+    if not art.eval_ok:
+        raise typer.Exit(3)
+    if art.sessions_total > 0 and art.error_count >= art.sessions_total:
+        raise typer.Exit(3)
+    raise typer.Exit(0)
+
+
 @app.command("validate-pack")
 def validate_pack_cmd(pack: str = typer.Argument(..., help="Path to a target pack directory.")):
     """Task-health check: schema, solvability, category balance."""

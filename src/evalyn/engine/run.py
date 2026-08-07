@@ -110,6 +110,30 @@ class RunArtifact:
                 f"({e}); this artifact does not match the current schema") from e
 
 
+def atomic_write_artifact(payload: dict, pack_name: str, out_dir: str,
+                          suffix: str) -> Path:
+    """Write `payload` as JSON to `out_dir/<stamp>-<uuid8>-<slug><suffix>.json`.
+
+    The house pattern, factored so `gate`, `compare` and `discover` share ONE
+    writer instead of three copies that drift (R8-13). Atomic temp-then-rename
+    (a crash mid-write never leaves a torn artifact); the name is collision-proof
+    (microseconds + a short uuid so parallel/fast runs never `os.replace`-clobber
+    each other) and filesystem-safe (the pack name is slugified so an odd name
+    cannot escape `out_dir`). `suffix` distinguishes the modes: "" for gate,
+    "-compare", "-discover".
+    """
+    out_path = Path(out_dir)
+    out_path.mkdir(parents=True, exist_ok=True)
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%f")
+    slug = re.sub(r"[^A-Za-z0-9._-]+", "-", pack_name).strip("-.") or "pack"
+    final = out_path / f"{stamp}-{uuid.uuid4().hex[:8]}-{slug}{suffix}.json"
+    fd, tmp = tempfile.mkstemp(dir=out_path, suffix=".tmp")
+    with os.fdopen(fd, "w") as f:
+        f.write(json.dumps(payload, indent=2, default=str))
+    os.replace(tmp, final)
+    return final
+
+
 def pack_fingerprint(pack: Pack) -> str:
     """SHA-256 over the RAW pack file bytes (target.yaml + probes + rubrics).
 
@@ -142,7 +166,7 @@ def _sample_transcript(sample) -> str:
     return "\n".join(blocks)
 
 
-def _reduce_log_to_probes(log, pack: Pack) -> list[ProbeResult]:
+def reduce_log_to_probes(log, pack: Pack) -> list[ProbeResult]:
     by_id = {p.id: p for p in pack.probes}
     # Group CheckResults per (probe_id, epoch) across ALL scorers present in the
     # log (tier3 lands later — never hardcode a scorer list). The authority is
@@ -218,6 +242,13 @@ def _reduce_log_to_probes(log, pack: Pack) -> list[ProbeResult]:
     return results
 
 
+#: Pre-Plan-#3 private name. The reducer went public when `discover`'s
+#: replay-once began reusing it (spec §7: replay runs the gate's OWN machinery,
+#: it does not re-derive a verdict), and the alias keeps every earlier caller
+#: and test importing the private name working unchanged.
+_reduce_log_to_probes = reduce_log_to_probes
+
+
 def _judge_usd(log) -> float:
     """Judge spend for THIS eval, read from the returned eval log.
 
@@ -256,7 +287,7 @@ def run_gate(pack: Pack, judge_model: str = "mockllm/model",
         raise RuntimeError(f"inspect eval did not succeed: status {log.status!r}")
     if log.samples is None and log.location:
         log = read_eval_log(log.location)
-    probes = _reduce_log_to_probes(log, pack)
+    probes = reduce_log_to_probes(log, pack)
     art = RunArtifact(
         pack_name=pack.spec.name,
         pack_hash=pack_fingerprint(pack),
@@ -270,18 +301,8 @@ def run_gate(pack: Pack, judge_model: str = "mockllm/model",
     art.judge_usd = _judge_usd(log)
     # Write the artifact BEFORE any budget check so a partial/complete artifact
     # survives a budget breach for inspection. Atomic temp-then-rename so a
-    # crash mid-write never leaves a torn artifact behind.
-    out_path = Path(out_dir)
-    out_path.mkdir(parents=True, exist_ok=True)
-    # Collision-proof, filesystem-safe name (fix #11): microseconds + a short
-    # uuid so parallel/fast runs never os.replace-clobber each other, and the
-    # pack name is slugified so a hostile/odd name cannot escape out_dir.
-    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%f")
-    slug = re.sub(r"[^A-Za-z0-9._-]+", "-", pack.spec.name).strip("-.") or "pack"
-    fd, tmp = tempfile.mkstemp(dir=out_path, suffix=".tmp")
-    with os.fdopen(fd, "w") as f:
-        f.write(json.dumps(art.to_dict(), indent=2, default=str))
-    os.replace(tmp, out_path / f"{stamp}-{uuid.uuid4().hex[:8]}-{slug}.json")
+    # crash mid-write never leaves a torn artifact behind (shared writer, R8-13).
+    atomic_write_artifact(art.to_dict(), pack.spec.name, out_dir, suffix="")
     # Fully-dead target (round-2 N6): with fail_on_error=False every sample can
     # error individually while log.status stays "success" — if NO probe
     # collected a single scored trial the run is a SETUP failure (CLI exit 2),

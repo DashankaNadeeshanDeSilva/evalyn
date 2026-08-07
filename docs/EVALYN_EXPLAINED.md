@@ -48,7 +48,8 @@ creative ways. It doesn't follow a script; it notices "hmm, it got evasive when 
 salary" and *chases that thread*.
 
 **How they relate:** `gate` guards against known problems, `compare` helps you improve, and
-`discover` finds the unknown problems — which then *become* new `gate` tests (more on that in §8).
+`discover` finds the unknown problems — which can then *become* new `gate` tests, once you've
+looked at them and said yes (more on that in §8).
 
 ## 4. The big idea that makes Evalyn reusable
 
@@ -120,7 +121,8 @@ Not every test should be able to fail your build. Evalyn sorts tests into three 
   moment your product starts passing one reliably, Evalyn suggests "promote this to a real test now."
 
 This means your test suite grows in two directions: goals get promoted up as the product improves,
-and newly-discovered problems drop in from the `discover` mode (next section).
+and newly-discovered problems come in from the `discover` mode — one at a time, each one waved
+through by you (next section).
 
 ## 8. The flywheel (why Evalyn gets smarter over time)
 
@@ -131,10 +133,24 @@ Here's the loop that makes Evalyn more than a static test list:
    claim false wins. A finding only counts once the trustworthy grading layer (§5) independently
    *confirms* the problem against the actual conversation. (The tester *proposes*; the grader
    *disposes*.)
-3. A confirmed problem is automatically turned into a new, permanent `gate` test.
+3. A confirmed problem is written out as a ready-made test file — but into a **holding folder**
+   (`discoveries/` inside the pack) that `gate` deliberately never reads. Nothing you didn't ask for
+   can start failing your build. Unless you pass `--no-replay` (or the budget has run out), Evalyn
+   also re-runs the new test once, right away, and records whether the problem showed up again — a
+   useful signal when you come to review it, not a guarantee the problem happens every time.
+4. **A human reads it and decides.** If you agree it's a real bug worth guarding forever, you move
+   the file out of the holding folder and into the pack's `probes/` folder. *That* is the moment it
+   becomes a permanent `gate` test. Evalyn never adopts its own findings.
 
-So every hunting session that finds something real makes your smoke-alarm suite bigger — and the
-product **never silently re-breaks that same bug again.** That's the flywheel.
+So every hunting session that finds something real *offers* you a new smoke alarm — and once you
+accept one, the product **never silently re-breaks that same bug again.** That's the flywheel.
+
+**One honest caveat about what "permanent test" buys you right away.** An adopted **safety** test
+(§7) fails your build from the very next run while the bug is still there — it has to pass every
+single time and needs nothing to compare against. An adopted *ordinary* test doesn't block the build
+on day one: until you've recorded a "known-good" baseline run that includes it, Evalyn lists the
+failure under "under review" and the build still passes. So adopting a finding always makes the
+problem visible; whether it *blocks* a build straight away depends on which kind it is.
 
 ## 9. The guardrails (safety and cost)
 
@@ -205,7 +221,9 @@ and it confirmed Inspect gives us even more than we assumed (it already computes
 | **Safety test** | A test that must pass *every single time*. |
 | **pass at least once / pass every time** | The lenient vs strict reliability scores. |
 | **Baseline** | A saved "known-good" run to compare new runs against. |
-| **The flywheel** | Discovered problems auto-become permanent tests. |
+| **Holding folder (`discoveries/`)** | Where `discover` parks its findings. `gate` never reads it. |
+| **Adopting a finding** | A human moves a staged finding into `probes/` — the only way it becomes a real test. |
+| **The flywheel** | Discovered problems become permanent tests *once a human adopts them*. |
 | **Inspect AI** | The proven framework we build the plumbing on. |
 | **Spike** | A quick hands-on experiment to de-risk a decision before committing. |
 
