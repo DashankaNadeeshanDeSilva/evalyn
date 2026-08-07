@@ -63,6 +63,7 @@ dev = [
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 pythonpath = ["src", "."]
+markers = ["ui: exercises the evalyn[ui] server (in-process, no network)"]
 
 [tool.ruff]
 line-length = 100
