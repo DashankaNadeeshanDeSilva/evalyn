@@ -447,10 +447,48 @@ def test_control_request_action_is_closed():
 
 
 def test_run_list_page_is_cursor_paginated():
-    """Spec §7 item 9 — cursor by created_at descending."""
-    page = m.RunListPage(items=[_summary()], next_cursor="2026-08-04T08:15:44+00:00")
-    assert page.next_cursor == "2026-08-04T08:15:44+00:00"
+    """Spec §7 item 9 — cursor by `(created_at, run_id)` descending."""
+    cursor = m.make_cursor("2026-08-04T08:15:44+00:00",
+                           "20260804T081544953468-53e4125b-example")
+    page = m.RunListPage(items=[_summary()], next_cursor=cursor)
+    assert page.next_cursor == cursor
     assert m.RunListPage(items=[]).next_cursor is None
+
+
+def test_cursor_is_an_opaque_composite_of_created_at_and_run_id():
+    """I5: keyed on `created_at` alone the cursor is neither unique nor stable."""
+    cursor = m.make_cursor("2026-08-04T08:15:44+00:00",
+                           "20260804T081544953468-53e4125b-example")
+    assert cursor == ("2026-08-04T08:15:44+00:00"
+                      "|20260804T081544953468-53e4125b-example")
+    assert m.parse_cursor(cursor) == ("2026-08-04T08:15:44+00:00",
+                                      "20260804T081544953468-53e4125b-example")
+
+
+def test_cursor_is_tie_safe_when_two_runs_share_a_timestamp():
+    """The bug: two artifacts written in the same second collapse to one cursor,
+    so the next page either repeats a row or drops one. `run_id` breaks the tie
+    and gives `(created_at, run_id)` a total order."""
+    same = "2026-08-04T08:15:44+00:00"
+    lo = m.make_cursor(same, "20260804T081544953468-53e4125b-example")
+    hi = m.make_cursor(same, "20260804T081544953468-aaaaaaaa-example")
+    assert lo != hi, "a tie must still produce two distinct cursors"
+    assert m.parse_cursor(hi) > m.parse_cursor(lo)
+    # descending — newest first, ties broken by run_id descending
+    assert sorted([lo, hi], key=m.parse_cursor, reverse=True) == [hi, lo]
+
+
+def test_a_bare_timestamp_is_rejected_as_a_cursor():
+    """The tie-unsafe form must not be constructible — Task 7 cannot ship it."""
+    with pytest.raises(ValidationError, match="cursor"):
+        m.RunListPage(items=[_summary()], next_cursor="2026-08-04T08:15:44+00:00")
+    with pytest.raises(ValueError, match="cursor"):
+        m.parse_cursor("2026-08-04T08:15:44+00:00")
+
+
+def test_make_cursor_refuses_a_run_id_that_would_break_parsing():
+    with pytest.raises(ValueError, match="run_id"):
+        m.make_cursor("2026-08-04T08:15:44+00:00", "not|a|run|id")
 
 
 # --------------------------------------------------------------------------

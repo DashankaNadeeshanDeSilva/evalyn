@@ -40,6 +40,7 @@ from pydantic import (
     BaseModel,
     ConfigDict,
     StringConstraints,
+    field_validator,
     model_validator,
 )
 
@@ -47,6 +48,7 @@ __all__ = [
     # grammar + constants
     "RUN_ID_PATTERN", "RUN_ID_RE", "RunId", "is_run_id",
     "REDACTION_MARKER_RE", "redaction_marker", "HEARTBEAT_SECONDS",
+    "CURSOR_SEPARATOR", "make_cursor", "parse_cursor",
     # enums
     "RunMode", "RunStatus", "ErrorCode", "VerdictTier", "VerdictHint",
     "ControlAction", "ReplayStatus", "TurnRole", "TrendMetric", "EventName",
@@ -146,6 +148,50 @@ def redaction_marker(kind: str) -> str:
 #: The SSE stream emits a `heartbeat` comment at this cadence so an idle run
 #: does not look like a dead connection to a proxy or to the browser.
 HEARTBEAT_SECONDS = 15.0
+
+
+# --------------------------------------------------------------------------
+# 2b. Pagination cursor — opaque, and tie-safe by construction
+# --------------------------------------------------------------------------
+
+#: Legal in neither half: `run_id`'s character class excludes it, and an
+#: ISO-8601 stamp cannot contain it. So one `split` is unambiguous.
+CURSOR_SEPARATOR = "|"
+
+
+def make_cursor(created_at: str, run_id: str) -> str:
+    """Build the `next_cursor` for a page whose last row is `(created_at, run_id)`.
+
+    Keyed on `created_at` alone the cursor is **not** unique: two artifacts
+    written inside the same second share a timestamp, and `?before=<stamp>`
+    then either repeats the tied row on the next page or drops it, depending on
+    whether the comparison is strict. Appending `run_id` gives
+    `(created_at, run_id)` a total order over the corpus, so exactly one row
+    sits either side of any cursor.
+    """
+    if CURSOR_SEPARATOR in run_id:
+        raise ValueError(f"run_id may not contain {CURSOR_SEPARATOR!r}: {run_id!r}")
+    return f"{created_at}{CURSOR_SEPARATOR}{run_id}"
+
+
+def parse_cursor(cursor: str) -> tuple[str, str]:
+    """Split a cursor back into its `(created_at, run_id)` sort key.
+
+    The returned tuple **is** the ordering key: list rows are sorted by it
+    descending, and `?before=<cursor>` keeps rows whose key is strictly less.
+    Compare the parsed tuples, never the cursor strings — one `created_at` can
+    be a prefix of another (`…:44+00:00` vs `…:44.5+00:00`), and the separator
+    sorts after the characters that would have decided it, so a lexicographic
+    comparison of the joined form can invert the intended order.
+    """
+    head, sep, tail = cursor.partition(CURSOR_SEPARATOR)
+    if not sep:
+        raise ValueError(
+            "cursor must be the opaque composite "
+            f"'<created_at>{CURSOR_SEPARATOR}<run_id>', got {cursor!r} — a bare "
+            "timestamp is not tie-safe"
+        )
+    return head, tail
 
 
 # --------------------------------------------------------------------------
@@ -455,14 +501,24 @@ class DiscoverySummary(_Model):
 
 
 class RunListPage(_Model):
-    """Cursor pagination, `created_at` **descending** (spec §7 item 9).
+    """Cursor pagination, `(created_at, run_id)` **descending** (spec §7 item 9).
 
-    `next_cursor` is the `created_at` of the last item; pass it back as
-    `?before=` for the next page. `None` means the end.
+    `next_cursor` is `make_cursor(created_at, run_id)` of the last item; pass it
+    back as `?before=` for the next page. `None` means the end. It is **opaque**
+    to the SPA: parse it with `parse_cursor`, never compare it as a string, and
+    never construct one by hand — the validator below rejects the bare-timestamp
+    form precisely because it silently loses or duplicates tied rows.
     """
 
     items: list[RunSummary] = []
     next_cursor: str | None = None
+
+    @field_validator("next_cursor")
+    @classmethod
+    def _cursor_is_the_tie_safe_composite(cls, value: str | None) -> str | None:
+        if value is not None:
+            parse_cursor(value)   # raises on the tie-unsafe bare-timestamp form
+        return value
 
 
 class TrialView(_Model):
