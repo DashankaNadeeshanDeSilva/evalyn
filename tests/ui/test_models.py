@@ -363,6 +363,32 @@ def test_run_detail_extends_run_summary():
     assert detail.probes == [] and detail.compare is None and detail.discovery is None
 
 
+def test_check_view_tier_is_typed_with_the_verdict_tier_enum():
+    """I1: `VerdictTier` was exported and asserted but typed on nothing, so
+    Task 9's `VerdictBadge` had no field to read. `tier: int` also let a
+    fourth tier onto the wire silently."""
+    assert m.CheckView.model_fields["tier"].annotation is m.VerdictTier
+
+
+def test_check_view_accepts_the_int_tier_the_artifacts_store():
+    """The artifact check dicts carry `tier` as an int — the mapping layer must
+    not have to stringify it, and `abstained` is not tier 0."""
+    view = m.CheckView(check="grounded", tier=2, required=True, weight=1.0)
+    assert view.tier is m.VerdictTier.tier_2
+    assert m.CheckView(check="x", tier="3", required=False, weight=0.0).tier \
+        is m.VerdictTier.tier_3
+    assert m.CheckView(check="x", tier="abstained", required=False, weight=0.0).tier \
+        is m.VerdictTier.abstained
+    # the wire value is the string the TS union uses, never the int
+    assert json.loads(view.model_dump_json())["tier"] == "2"
+
+
+@pytest.mark.parametrize("tier", [0, 4, "4", "tier_1", "", None, 1.5, True, False])
+def test_check_view_rejects_a_tier_outside_the_closed_set(tier):
+    with pytest.raises(ValidationError):
+        m.CheckView(check="x", tier=tier, required=True, weight=1.0)
+
+
 def test_trial_view_carries_ordered_turns_and_a_redaction_flag():
     view = m.TrialView(
         run_id="20260804T081544953468-53e4125b-example",

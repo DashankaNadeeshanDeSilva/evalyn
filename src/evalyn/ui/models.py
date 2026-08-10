@@ -38,6 +38,7 @@ from typing import Annotated
 from pydantic import (
     AfterValidator,
     BaseModel,
+    BeforeValidator,
     ConfigDict,
     StringConstraints,
     field_validator,
@@ -245,6 +246,20 @@ class VerdictTier(str, Enum):
     abstained = "abstained"
 
 
+#: Artifacts store a check's `tier` as an **int** (`1`/`2`/`3`) while the wire
+#: spells it as the string the TS union uses. Coercing here keeps the mapping
+#: layer from stringifying by hand — and keeps it honest: `0` and `4` become
+#: `"0"`/`"4"`, which are not members, so a fourth tier still fails loudly.
+#: `bool` is excluded deliberately — `True` is an `int` and would become tier 1.
+def _tier_from_artifact(value: object) -> object:
+    if isinstance(value, int) and not isinstance(value, bool):
+        return str(value)
+    return value
+
+
+Tier = Annotated[VerdictTier, BeforeValidator(_tier_from_artifact)]
+
+
 class VerdictHint(str, Enum):
     """An **approximation** carried by list rows.
 
@@ -372,7 +387,9 @@ class CheckView(_Model):
     """One `CheckResult` as scored. Mirrors the artifact's check dicts."""
 
     check: str
-    tier: int
+    #: Which scoring tier decided it. Typed with the enum so Task 9's
+    #: `VerdictBadge` has a closed set to switch on rather than a bare int.
+    tier: Tier
     required: bool
     weight: float
     #: `None` when the check abstained (see `unsure`) — not `False`.
