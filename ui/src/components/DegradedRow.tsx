@@ -32,10 +32,14 @@ export function DegradedRow({ run }: { run: RunSummary }) {
       data-run-id={run.run_id}
       data-degraded="true"
       title={reason}
-      className="engrave-b align-top"
+      // The dead-channel wash: `degraded` at 8%, which is the one place that
+      // 2.43:1 grey is honest — a ground tint that carries no meaning on its
+      // own, under a row that states its condition three other ways.
+      className="engrave-b bg-degraded/[0.08] align-top"
     >
       <td className="py-2 pl-4 pr-3 sm:pl-6">
-        <RunStatusChip status={run.status} />
+        {/* Reported by the salvage read, not verified — see `muted`. */}
+        <RunStatusChip status={run.status} muted />
       </td>
 
       <td className="py-2 pr-3">
@@ -45,8 +49,8 @@ export function DegradedRow({ run }: { run: RunSummary }) {
         >
           {run.run_id}
         </Link>
-        <p className="mt-1 flex items-start gap-1.5 text-legend normal-case tracking-normal text-chassis-600">
-          <IconFlatline className="mt-0.5 h-3.5 w-3.5 shrink-0 text-degraded" />
+        <p className="mt-1 flex items-start gap-2 text-legend normal-case tracking-normal text-chassis-600">
+          <IconFlatline className="mt-1 h-3 w-7 shrink-0 text-chassis-500" />
           <span>
             <span className="uppercase tracking-[0.12em] text-chassis-700">
               Degraded

@@ -90,7 +90,7 @@ export function RunDetailPage() {
     <Shell runId={runId}>
       <dl className="grid grid-cols-1 gap-x-10 sm:grid-cols-2 lg:grid-cols-3">
         <Field label="Status">
-          <RunStatusChip status={run.status} />
+          <RunStatusChip status={run.status} muted={run.degraded} />
         </Field>
         <Field label="Mode">{run.mode}</Field>
         <Field label="Pack">
@@ -124,7 +124,7 @@ export function RunDetailPage() {
 
       {run.degraded ? (
         <p className="engrave-t mt-4 flex items-start gap-2 pt-3 text-readout text-chassis-700">
-          <IconFlatline className="mt-0.5 h-4 w-4 shrink-0 text-degraded" />
+          <IconFlatline className="mt-1 h-3 w-8 shrink-0 text-chassis-500" />
           <span>
             <span className="text-legend uppercase text-chassis-900">
               Degraded

@@ -26,7 +26,10 @@ const COLUMNS = [
   { key: "mode", label: "Mode" },
   { key: "pack", label: "Pack" },
   { key: "created", label: "Created (UTC)" },
-  { key: "verdict", label: "Verdict" },
+  // "hint" is in the header rather than on every cell: the list's verdict is
+  // computed from `probes[]` without calling `evaluate_gate`, and the contract
+  // says never to render it without saying so.
+  { key: "verdict", label: "Verdict (hint)" },
   { key: "spend", label: "Judge USD", numeric: true },
 ] as const;
 
@@ -52,9 +55,6 @@ function VerdictHintCell({ hint }: { hint: VerdictHint | null }) {
       className={`text-legend uppercase tabular-nums ${HINT_INK[hint]}`}
     >
       {hint}
-      <span aria-hidden="true" className="text-chassis-400">
-        {" ~"}
-      </span>
       <span className="sr-only"> (approximate)</span>
     </span>
   );

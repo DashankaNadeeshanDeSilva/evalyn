@@ -35,11 +35,31 @@ const STATUS_INK: Record<RunStatus, string> = {
   unreadable: "text-status-unreadable",
 };
 
-export function RunStatusChip({ status }: { status: RunStatus }) {
+export function RunStatusChip({
+  status,
+  muted = false,
+}: {
+  status: RunStatus;
+  /**
+   * Show the status, but withdraw the colour claim.
+   *
+   * Used on a degraded row, where `status` survived the salvage read but the
+   * artifact behind it did not fully parse. A saturated green `✓ passed`
+   * sitting on a row whose readouts are flat-lined is the single most
+   * misreadable thing this page could show — especially on a projector, where
+   * a green tick is what the room sees first. Muted, the fact is still stated
+   * and still carries glyph and word; only the emphasis is withdrawn.
+   *
+   * `chassis-600` measures 5.98:1, so nothing is traded for the honesty.
+   */
+  muted?: boolean;
+}) {
   return (
     <span
       data-testid="status-chip"
-      className={`inline-flex items-center gap-1.5 whitespace-nowrap text-legend uppercase ${STATUS_INK[status]}`}
+      className={`inline-flex items-center gap-1.5 whitespace-nowrap text-legend uppercase ${
+        muted ? "text-chassis-600" : STATUS_INK[status]
+      }`}
     >
       <StatusIcon status={status} className="h-4 w-4 shrink-0" />
       {status}

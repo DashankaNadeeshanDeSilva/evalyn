@@ -143,13 +143,30 @@ function IconUnreadable(props: IconProps) {
 /**
  * A dead channel: the trace flat-lined between its end stops. This is the mark
  * for a degraded row and for every readout it cannot fill.
+ *
+ * It breaks the 16x16 grid on purpose, and it is the only mark that does. A
+ * flat line inscribed in a square reads as a stray dash at instrument scale —
+ * it did, in the first render — because the trace has to be long enough to
+ * read as a *span* of nothing rather than as a glyph. Stroke weight, caps and
+ * ink are unchanged, so it still belongs to the family.
  */
-export function IconFlatline(props: IconProps) {
+export function IconFlatline({ title, ...rest }: IconProps) {
   return (
-    <Glyph {...props}>
-      <path d="M2.2 8h11.6" />
-      <path d="M2.2 5.4v5.2M13.8 5.4v5.2" />
-    </Glyph>
+    <svg
+      viewBox="0 0 40 16"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth={1.5}
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden={title ? undefined : true}
+      focusable="false"
+      {...rest}
+    >
+      {title ? <title>{title}</title> : null}
+      <path d="M2.5 8h35" />
+      <path d="M2.5 4.4v7.2M37.5 4.4v7.2" />
+    </svg>
   );
 }
 

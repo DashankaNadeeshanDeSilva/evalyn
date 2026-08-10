@@ -1,6 +1,6 @@
 import { useMemo } from "react";
 
-import { ApiFailure, useMeta, useRuns } from "../api/client";
+import { ApiFailure, useRuns } from "../api/client";
 import { RunsTable } from "../components/RunsTable";
 
 /**
@@ -13,7 +13,6 @@ import { RunsTable } from "../components/RunsTable";
  * genuinely does not know the total and must not imply that it does.
  */
 export function RunsPage() {
-  const meta = useMeta();
   const runs = useRuns();
 
   const rows = useMemo(
@@ -48,11 +47,9 @@ export function RunsPage() {
           )}
         </p>
 
-        {meta.data ? (
-          <p className="ml-auto text-legend tracking-normal text-chassis-600">
-            {meta.data.runs_dir}
-          </p>
-        ) : null}
+        {/* The runs directory is deliberately NOT repeated here: the legend
+            strip carries it a few pixels above, and two copies of the same
+            label in one viewport is noise, not reassurance. */}
       </div>
 
       {runs.isError ? (
