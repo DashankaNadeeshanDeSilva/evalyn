@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import re
+from collections.abc import Mapping
 from pathlib import Path
 
 import httpx
@@ -222,6 +223,24 @@ def test_a_marker_is_never_itself_redacted():
 # 5. Degradation, not failure
 # --------------------------------------------------------------------------
 
+class _LyingMapping(Mapping):
+    """A `Mapping` whose `items()` does not yield pairs — walkable in principle,
+    unwalkable in fact. Stands in for any container that raises somewhere the
+    walk does not guard."""
+
+    def __getitem__(self, key):          # pragma: no cover - never reached
+        raise KeyError(key)
+
+    def __iter__(self):
+        return iter(())
+
+    def __len__(self):
+        return 0
+
+    def items(self):
+        return [(f"content {EMAIL}",)]   # one element where two are required
+
+
 def test_scrubbing_an_unexpected_type_returns_it_rather_than_raising():
     sentinel = object()
     assert Redactor().scrub(sentinel) is sentinel
@@ -233,18 +252,50 @@ def test_a_tuple_and_a_set_are_walked_without_raising():
     assert EMAIL not in json.dumps(out, default=list)
 
 
-def test_a_pathologically_deep_structure_does_not_blow_the_stack():
+def test_a_pathologically_deep_structure_is_capped_gracefully():
+    """`MAX_DEPTH` is asserted by its *outcome*, not by the email's absence.
+
+    "The email is gone" is satisfied by total failure: without the cap the walk
+    raises `RecursionError`, `scrub`'s outer net turns the whole body into
+    `«redacted:error»`, and an absence assertion passes on the wreckage. So this
+    demands the graceful outcome — the subtree below the cap replaced by
+    `«redacted:too_deep»`, everything above it walked normally, and no error
+    marker anywhere.
+    """
     deep: object = EMAIL
     for _ in range(5000):
         deep = {"next": deep}
     out = Redactor().scrub(deep)          # must not raise RecursionError
-    assert EMAIL not in json.dumps(out)
+    blob = json.dumps(out, ensure_ascii=False)
+
+    assert EMAIL not in blob
+    assert redaction_marker("too_deep") in blob, "the cap did not fire"
+    assert redaction_marker("error") not in blob, "the walk failed rather than capping"
+    assert isinstance(out, dict) and "next" in out, "the top of the structure survives"
 
 
-def test_a_cycle_terminates():
+def test_a_cycle_terminates_at_the_cap_rather_than_by_failing():
     node: dict = {"content": EMAIL}
     node["self"] = node
-    Redactor().scrub(node)                # must not hang or raise
+    out = Redactor().scrub(node)          # must not hang or raise
+    # `ensure_ascii=False`: the marker's guillemets must survive the dump, or
+    # the assertions below would look for `«` in a body spelling it `\u00ab`.
+    blob = json.dumps(out, ensure_ascii=False)   # capped, therefore finite
+
+    assert EMAIL not in blob
+    assert redaction_marker("too_deep") in blob, "the cap did not fire"
+    assert redaction_marker("error") not in blob, "the walk failed rather than capping"
+
+
+def test_a_container_that_refuses_to_be_walked_collapses_to_the_error_marker():
+    """The outer net in `scrub` is load-bearing, not belt-and-braces.
+
+    A `Mapping` whose `items()` lies about its shape raises where nothing else
+    catches it. The one outcome that may not happen is the original coming back.
+    """
+    out = Redactor().scrub(_LyingMapping())
+    assert out == redaction_marker("error")
+    assert EMAIL not in json.dumps(out)
 
 
 def test_scrub_text_is_available_for_the_sse_tailer():

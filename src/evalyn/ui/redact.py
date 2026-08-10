@@ -258,7 +258,14 @@ class Redactor:
         """
         try:
             return self._walk(obj, 0)[0]
-        except Exception:                        # pragma: no cover - belt and braces
+        except Exception:
+            # The load-bearing net, not belt and braces: this is what a
+            # `RecursionError` or a container that lies about its own shape
+            # actually lands in, and `test_a_container_that_refuses_to_be_walked
+            # _collapses_to_the_error_marker` holds it. Note what it costs — a
+            # failure here is indistinguishable from a body that *contains* the
+            # error marker, which is why the depth cap is asserted by the
+            # `«redacted:too_deep»` marker rather than by an absence.
             return redaction_marker("error")
 
     def scrub_text(self, text: str) -> str:
