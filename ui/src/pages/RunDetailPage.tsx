@@ -4,7 +4,7 @@ import { Link, useParams } from "react-router-dom";
 import { ApiFailure, useRunDetail } from "../api/client";
 import { RunStatusChip } from "../components/RunStatusChip";
 import { Flatline } from "../components/Flatline";
-import { IconFlatline } from "../components/InstrumentIcon";
+import { IconArrowLeft, IconFlatline } from "../components/InstrumentIcon";
 import { formatUsd, formatUtc } from "../format";
 import { isRunId, type Capabilities } from "../api/types";
 
@@ -150,11 +150,16 @@ function Shell({
       <div className="engrave-b px-4 py-3 sm:px-6">
         <Link
           to="/runs"
-          className="text-legend uppercase text-chassis-600 transition-colors duration-detent hover:text-chassis-900"
+          className="inline-flex items-center gap-1.5 text-legend uppercase text-chassis-600 transition-colors duration-state hover:text-chassis-900"
         >
-          ← Runs
+          {/* Drawn, not `←`. The icon family's own comment explains at length
+              why unicode marks are refused; this was the one that slipped. */}
+          <IconArrowLeft className="h-4 w-4 shrink-0" />
+          Runs
         </Link>
-        <h1 className="mt-1 break-all text-panel tracking-normal">{runId}</h1>
+        <h1 className="mt-1.5 break-all text-display tracking-normal">
+          {runId}
+        </h1>
       </div>
       <div className="px-4 py-2 sm:px-6">{children}</div>
     </section>

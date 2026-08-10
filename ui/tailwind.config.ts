@@ -119,11 +119,25 @@ export default {
         legend: ["0.75rem", { lineHeight: "1rem", letterSpacing: "0.12em" }],
         readout: ["0.875rem", { lineHeight: "1.25rem" }],
         panel: ["1rem", { lineHeight: "1.5rem", letterSpacing: "0.14em" }],
+        // The focal step. Four sizes total is still a tight Operate scale, but
+        // without one step above `panel` nothing on the surface is focal — and
+        // the 2026-08-14 projection constrains scale, not only contrast.
+        display: ["1.375rem", { lineHeight: "1.75rem", letterSpacing: "0.06em" }],
       },
       transitionDuration: {
-        // Motion is state change, not decoration: one short, confident
-        // transition, the detent snapping into position.
-        detent: "160ms",
+        /**
+         * Motion is state change, not decoration: one short, confident
+         * transition and nothing else.
+         *
+         * Named `state`, NOT `detent`. "Detent" is the world's signature
+         * interaction — a control snapping to a discrete position — and no
+         * control on this surface has positions yet (the filters `useRuns`
+         * accepts are unbuilt). Spending the word on a hover colour fade would
+         * hand the five inheriting pages a token that means "any 160ms
+         * transition", which is how a signature quietly stops being one.
+         * The name is reserved for the first control that earns it.
+         */
+        state: "160ms",
       },
     },
   },

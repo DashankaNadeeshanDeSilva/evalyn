@@ -140,10 +140,15 @@ describe("RunsTable", () => {
     for (const run of HEALTHY_FIXTURES) {
       const row = rowFor(run.run_id);
       expect(row.dataset["degraded"]).toBeUndefined();
-      const metrics = row.querySelectorAll("[data-metric]");
-      expect(metrics.length).toBeGreaterThan(0);
-      // Tabular figures, so the column does not jitter between renders.
-      for (const cell of metrics) {
+      expect(row.querySelectorAll("[data-metric]").length).toBeGreaterThan(0);
+
+      // Tabular figures on every cell whose value is a *figure*, so a column
+      // does not jitter between renders. `data-numeric` is the figure subset —
+      // the verdict hint is a metric but a word, and setting `tabular-nums` on
+      // a word would be cargo cult rather than a guarantee.
+      const numerics = row.querySelectorAll("[data-numeric]");
+      expect(numerics.length).toBeGreaterThan(0);
+      for (const cell of numerics) {
         expect(cell.className).toContain("tabular-nums");
       }
     }

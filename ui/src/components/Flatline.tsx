@@ -1,29 +1,49 @@
-import { IconFlatline } from "./InstrumentIcon";
+import { IconFlatline, IconNotApplicable } from "./InstrumentIcon";
 
 /**
- * A dead readout: the value this cell would carry does not exist.
+ * A readout that carries no value — in one of **two** materially different
+ * senses, which get two different marks.
  *
- * Rendered as the flat-line trace rather than an empty cell, because an empty
- * cell is indistinguishable from a rendering bug — and carried by `chassis-500`
- * (4.03:1) rather than the `degraded` grey (2.43:1), because in a metric cell
- * this mark is the *only* visible thing saying "nothing here". The first render
- * used the degraded grey at glyph scale and it read as a speck.
+ * - `"dead"` — something should be here and is not. The artifact was
+ *   unreadable, the field was never recorded. This is damage, and Product
+ *   Principle 3 depends on it being visible as damage. Drawn as the flat-line
+ *   trace *between end stops*.
+ * - `"n/a"` — nothing should be here. A `compare` run has no gate verdict to
+ *   report; that is correctness, not damage. Drawn as a bare centred stroke
+ *   with no stops.
  *
- * The reason travels with it, always: as `title` for a pointer and as
- * screen-reader text for everything else. The stroke is never the only carrier.
+ * They were one mark in the first build, separated only by a `title` tooltip —
+ * invisible to a keyboard and to a projector. Compare, discoveries, trends and
+ * judge trust all have legitimately empty columns and would have inherited the
+ * conflation wholesale, which is how "degraded" quietly comes to mean "blank".
  *
- * `data-flatlined` marks a cell that carries no value. It is deliberately not
- * `data-metric`, which marks a cell that carries a real one — that distinction
- * is what `RunsTable.test.tsx` asserts a degraded row against.
+ * The reason travels with the mark either way: as `title` for a pointer and as
+ * screen-reader text for everything else. `chassis-500` (4.03:1) carries it,
+ * not the `degraded` grey (2.43:1) — in a metric cell this mark is the only
+ * visible thing saying "nothing here".
+ *
+ * `data-flatlined` marks a cell carrying no value. It is deliberately not
+ * `data-metric`, which marks a cell carrying a real one.
  */
-export function Flatline({ reason }: { reason: string }) {
+export function Flatline({
+  reason,
+  variant = "dead",
+}: {
+  reason: string;
+  variant?: "dead" | "n/a";
+}) {
+  const Mark = variant === "dead" ? IconFlatline : IconNotApplicable;
   return (
     <span
-      data-flatlined="true"
+      data-flatlined={variant}
       title={reason}
-      className="inline-flex items-center text-chassis-500"
+      className={
+        variant === "dead"
+          ? "inline-flex items-center text-chassis-500"
+          : "inline-flex items-center text-chassis-400"
+      }
     >
-      <IconFlatline className="h-4 w-10" />
+      <Mark className="h-4 w-10" />
       <span className="sr-only">{reason}</span>
     </span>
   );

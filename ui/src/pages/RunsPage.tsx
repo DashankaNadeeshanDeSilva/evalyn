@@ -24,7 +24,7 @@ export function RunsPage() {
   return (
     <section className="pb-16">
       <div className="engrave-b flex flex-wrap items-baseline gap-x-6 gap-y-1 px-4 py-3 sm:px-6">
-        <h1 className="text-panel uppercase">Runs</h1>
+        <h1 className="text-display uppercase">Runs</h1>
 
         <p className="text-legend tracking-normal text-chassis-600">
           {runs.isPending ? (
@@ -81,7 +81,7 @@ export function RunsPage() {
             type="button"
             onClick={() => void runs.fetchNextPage()}
             disabled={runs.isFetchingNextPage}
-            className="border border-chassis-400 px-4 py-1.5 text-legend uppercase text-chassis-900 transition-colors duration-detent hover:bg-chassis-100 disabled:cursor-not-allowed disabled:border-chassis-300 disabled:text-chassis-500"
+            className="border border-chassis-400 px-4 py-1.5 text-legend uppercase text-chassis-900 transition-colors duration-state hover:bg-chassis-100 disabled:cursor-not-allowed disabled:border-chassis-300 disabled:text-chassis-500"
           >
             {runs.isFetchingNextPage ? "Loading…" : "Load older runs"}
           </button>

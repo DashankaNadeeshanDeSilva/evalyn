@@ -45,13 +45,23 @@ export function DegradedRow({ run }: { run: RunSummary }) {
       <td className="py-2 pr-3">
         <Link
           to={`/runs/${run.run_id}`}
-          className="break-all text-readout text-chassis-900 underline decoration-chassis-400 underline-offset-4 transition-colors duration-detent hover:decoration-chassis-900"
+          className="break-all text-readout text-chassis-900 underline decoration-chassis-400 underline-offset-4 transition-colors duration-state hover:decoration-chassis-900"
         >
           {run.run_id}
         </Link>
-        <p className="mt-1 flex items-start gap-2 text-legend normal-case tracking-normal text-chassis-600">
-          <IconFlatline className="mt-1 h-3 w-7 shrink-0 text-chassis-500" />
-          <span>
+        {/*
+         * ONE line, clipped, never wrapped.
+         *
+         * ~26 of 80 real rows are degraded. Wrapped, this sentence repeats
+         * verbatim twenty-six times, roughly doubles the height of a third of
+         * the table and destroys the rhythm the face depends on — the defect is
+         * already visible at one row in four. The full text stays in the DOM
+         * (for the row's `title`, for a screen reader, and for the test), and
+         * the detail page states it in full.
+         */}
+        <p className="mt-1 flex items-center gap-2 text-legend normal-case tracking-normal text-chassis-600">
+          <IconFlatline className="h-3 w-7 shrink-0 text-chassis-500" />
+          <span className="truncate">
             <span className="uppercase tracking-[0.12em] text-chassis-700">
               Degraded
             </span>
@@ -67,11 +77,15 @@ export function DegradedRow({ run }: { run: RunSummary }) {
         {run.pack_name ?? <Flatline reason="pack name not recoverable" />}
       </td>
 
-      <td className="whitespace-nowrap py-2 pr-3 text-readout tabular-nums text-chassis-700">
+      <td
+        data-numeric="created_at"
+        className="whitespace-nowrap py-2 pr-3 text-readout tabular-nums text-chassis-700"
+      >
         {formatUtc(run.created_at)}
       </td>
 
-      {/* The readouts a dead channel cannot fill. Never `data-metric`. */}
+      {/* The readouts a dead channel cannot fill. Never `data-metric`, and
+          always the `dead` mark — this is damage, not correct absence. */}
       <td className="py-2 pr-3">
         <Flatline reason="no verdict: the probe results were not readable" />
       </td>

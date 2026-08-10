@@ -1,6 +1,6 @@
 import type { ReactElement, ReactNode, SVGProps } from "react";
 
-import type { RunStatus } from "../api/types";
+import type { RunStatus, VerdictHint } from "../api/types";
 
 /**
  * The cockpit's icon family — authored, not borrowed and not typed.
@@ -168,6 +168,78 @@ export function IconFlatline({ title, ...rest }: IconProps) {
       <path d="M2.5 4.4v7.2M37.5 4.4v7.2" />
     </svg>
   );
+}
+
+/**
+ * Not applicable: this channel was never wired, as opposed to a channel that
+ * died. Drawn as a single centred stroke with **no end stops** — the flat-line
+ * has stops because something should have been there between them, and this
+ * one does not because nothing should. The distinction is load-bearing: it is
+ * what keeps Product Principle 3 ("degrade visibly") from being diluted by
+ * every legitimately empty cell on five later pages.
+ */
+export function IconNotApplicable({ title, ...rest }: IconProps) {
+  return (
+    <svg
+      viewBox="0 0 40 16"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth={1.5}
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden={title ? undefined : true}
+      focusable="false"
+      {...rest}
+    >
+      {title ? <title>{title}</title> : null}
+      <path d="M14 8h12" />
+    </svg>
+  );
+}
+
+/** An unresolved reading: the instrument has no answer, not a negative one. */
+function IconQuery(props: IconProps) {
+  return (
+    <Glyph {...props}>
+      <circle cx="8" cy="8" r="5.6" />
+      <path d="M6.4 6.4a1.7 1.7 0 1 1 1.7 2v.9" />
+      <path d="M8.1 11.5h.01" />
+    </Glyph>
+  );
+}
+
+/** The only navigational mark on the surface, drawn in the family's stroke. */
+export function IconArrowLeft(props: IconProps) {
+  return (
+    <Glyph {...props}>
+      <path d="M13 8H3.5" />
+      <path d="M7 4.2 3.2 8 7 11.8" />
+    </Glyph>
+  );
+}
+
+/**
+ * One mark per `VerdictHint` member, exhaustive by type.
+ *
+ * The gate hint gets glyphs of its own rather than borrowing the status marks:
+ * the contract's FIRST VIEWPORT requires every verdict state to carry glyph AND
+ * word AND colour, and this column is the product's central output.
+ */
+const HINT_GLYPHS: Record<
+  VerdictHint,
+  (props: IconProps) => ReactElement
+> = {
+  passed: IconCheck,
+  failed: IconCross,
+  unknown: IconQuery,
+};
+
+export function VerdictHintIcon({
+  hint,
+  ...rest
+}: IconProps & { hint: VerdictHint }) {
+  const Mark = HINT_GLYPHS[hint];
+  return <Mark {...rest} />;
 }
 
 /** The redaction mark: a closed shackle over a solid body. */

@@ -17,10 +17,19 @@
     color-scheme: light;
   }
 
-  html {
-    /* The instrument face never scrolls sideways. Wide content (tables,
-       transcripts) scrolls inside its own container instead. */
-    overflow-x: hidden;
+  html,
+  body {
+    /**
+     * The instrument face never scrolls sideways. Wide content (tables,
+     * transcripts) scrolls inside its own container instead.
+     *
+     * `clip`, not `hidden`, and on both elements. `overflow-x: hidden` on
+     * `html` alone still left the page scrollable by 121px at narrow widths —
+     * measured, not assumed — because `hidden` makes the viewport a scroll
+     * container that a descendant's overflow can still reach. `clip` creates no
+     * scroll container at all, so there is nothing to scroll.
+     */
+    overflow-x: clip;
   }
 
   /**

@@ -38,9 +38,9 @@ export function AppShell() {
                     to={destination.path}
                     className={({ isActive }) =>
                       [
-                        // The detent: the marker snaps to a position, it does
-                        // not slide between them.
-                        "block border-b-2 pb-0.5 text-legend uppercase transition-colors duration-detent",
+                        // The marker sits at a position rather than sliding
+                        // between them; only its ink transitions.
+                        "block border-b-2 pb-0.5 text-legend uppercase transition-colors duration-state",
                         isActive
                           ? "border-chassis-900 text-chassis-900"
                           : "border-transparent text-chassis-600 hover:text-chassis-900",
