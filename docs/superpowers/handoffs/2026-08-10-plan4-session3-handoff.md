@@ -32,14 +32,33 @@ Read that only for history — this document supersedes it.
 | 1 — freeze API contract | complete, review-clean (`82baacf..2e0cade`) |
 | 2 — `run_id` + paths | complete, review-clean (`6a3ae93`) |
 | 3 — `RunIndex` | complete, review-clean (`14d23d0`, `d2e8e8e`, fix `05db131`) |
-| 4 — redaction chokepoint | **implemented this session; REVIEW IS THE NEXT SESSION'S FIRST ACTION** |
+| 4 — redaction chokepoint | DONE_WITH_CONCERNS (`5f20585`, `e13f9d4`) — **REVIEW IS SESSION 4'S FIRST ACTION** |
 | 5 — frontend scaffold | complete, review-clean; **merged** at `887bfe1` |
 | injection pack | free scope complete (`4daddf0`, `797c8cf`) — **new work, not a plan task** |
 | 6–21 | not started |
 
-**Tests: 726 → 1021** (before Task 4's additions), warning-clean in both colour modes, ruff clean.
+**Tests: 726 → 1079**, warning-clean in both colour modes, ruff clean.
 
-`dev` is **2 commits ahead of `origin/dev`** and unpushed (`8f3e2de`, `5de0515` — both docs).
+**Everything is pushed.** `feat/plan4-ui` → `origin/feat/plan4-ui` @ `e13f9d4` (branch created
+2026-08-10); `dev` → `origin/dev` @ `5de0515`. **No PR opened.**
+
+### ⚠️ Task 4 decision owed before Task 9 renders a transcript
+
+`contains` values are harvested by the redactor. That is **spec-faithful** and the implementer
+correctly refused to deviate unilaterally — but twincore's `contains` values are **whole assistant
+sentences** (`redirect_constants` in `probes/injection.yaml`). So a transcript where the model
+answered **correctly** renders `«redacted:check_value»` exactly where the good answer was.
+Over-redaction, not a leak — but on a projector it reads as "the tool is broken."
+
+**Controller view: narrow the harvest to `not_contains` only.** It looks right on the merits, not
+just for the demo — `not_contains` values are by definition what must *not* appear (secrets, PII) and
+are the real harvest target, while `contains` values are expected-**good** content. One-line change.
+It deviates from the spec, so it is the maintainer's call.
+
+Task 4's other concerns: `ErrorCode` has no "server error" member so the withheld-body 500 reuses
+`unreadable_artifact` (wants a ruling at final review); `display_path` deliberately not reused
+(redaction wants a marker, not a `~` label); **reveal is unimplemented and has no bypass — whoever
+builds it must not do so via a second `no_redact`**.
 
 **Committed at the end of session 3:** `PRODUCT.md`, `.impeccable/surfaces/ui-src.md` and this
 handoff, as `e5c1b60` + `06a1bf1`. Note these landed on **`feat/plan4-ui`, not `dev`**, contrary to
@@ -227,12 +246,13 @@ Read first, in this order:
    Read the surface brief BEFORE any page task (8, 9, 15, 16, 17, 21).
 5. docs/superpowers/plans/2026-08-07-evalyn-plan4-ui.md — the 22-task plan itself
 
-State: Tasks 0, 1, 2, 3 and 5 complete and review-clean. The twincore-injection demo pack is carved,
-guarded and staged. Suite 726 → 1021, warning-clean in both colour modes. Nothing pushed, no PR.
-**Task 4 (redaction chokepoint) was IN FLIGHT when the last session ended — check `git log` and the
-ledger for its outcome before doing anything else.**
+State: Tasks 0, 1, 2, 3 and 5 complete and review-clean. Task 4 (redaction chokepoint) is
+implemented at `e13f9d4` but **NOT reviewed**. The twincore-injection demo pack is carved, guarded
+and staged. Suite 726 → 1079, warning-clean in both colour modes. Everything is pushed to
+origin/feat/plan4-ui. No PR.
 
-First actions: (1) establish Task 4's true state and review it; (2) then Task 6 → 7 → 8 → 9.
+First actions: (1) review Task 4 — and rule on its `contains`-harvesting concern, which makes
+correct answers render as «redacted» in transcripts (see handoff §2); (2) then Task 6 → 7 → 8 → 9.
 Sequence Tasks 18–21 LAST — the demo proposal doesn't ask for them and Task 18 edits the engine
 modules my working terminal fallback runs through. I chose to attempt all 20 remaining tasks knowing
 an audit said it isn't achievable; that decision stands, don't re-litigate it.
