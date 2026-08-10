@@ -29,6 +29,10 @@ PHONE = "+14155552671"
 HOMEDIR = "/Users/alice/Drive/Projects/evalyn/runs/x.json"
 BEARER_SECRET = "sk-live-9f8e7d6c5b4a32100011"
 
+#: Not valid UTF-8 (a lone 0x89, a bare 0xff/0xfe pair): genuinely binary, the
+#: one thing a text scrubber must hand back untouched.
+BINARY_BODY = b"\x89PNG\r\n\x1a\n\xff\xfe\x00\x01owner@example.com"
+
 
 def _nested() -> dict:
     """One structure carrying every pattern at a different nesting depth."""
@@ -289,6 +293,23 @@ def _app():
     async def boom() -> dict:
         return {"content": f"mail {EMAIL}"}
 
+    @router.get("/yaml")
+    async def yaml_view():
+        """`FindingDetail.probe_yaml` rendered raw — the conventional type for it."""
+        from starlette.responses import Response
+        return Response(content=f"value: {EMAIL}\n", media_type="application/x-yaml")
+
+    @router.get("/bare")
+    async def bare():
+        """A plain Starlette `Response`: `media_type` is `None` by default."""
+        from starlette.responses import Response
+        return Response(content=json.dumps({"content": f"mail {EMAIL}"}))
+
+    @router.get("/binary")
+    async def binary():
+        from starlette.responses import Response
+        return Response(content=BINARY_BODY, media_type="application/octet-stream")
+
     app = FastAPI()
     app.include_router(router, prefix="/api")
     return app
@@ -322,6 +343,41 @@ async def test_a_plain_text_body_is_scrubbed_too():
     response = await _get(_app(), "/api/stderr")
     assert HOMEDIR not in response.text
     assert redaction_marker("path") in response.text
+
+
+async def test_a_yaml_body_is_scrubbed_and_not_waved_through_as_binary():
+    """`application/x-yaml` is the raw-YAML view of `FindingDetail.probe_yaml`.
+
+    That view serves `discovered-pii-leak-0bf80f3b.yaml` — the file with the
+    real address this module exists for. A content-type the scrubber does not
+    recognise must **not** mean "pass it through".
+    """
+    response = await _get(_app(), "/api/yaml")
+    assert EMAIL not in response.text
+    assert redaction_marker("email") in response.text
+
+
+async def test_a_response_with_no_media_type_at_all_is_still_scrubbed():
+    """Starlette's plain `Response` has `media_type = None`.
+
+    An endpoint that hands back a bare `Response` has not opted out of anything
+    — `no_redact` is the only opt-out there is.
+    """
+    response = await _get(_app(), "/api/bare")
+    assert EMAIL not in response.text
+    assert redaction_marker("email") in response.text
+
+
+async def test_a_genuinely_binary_body_is_handed_back_byte_for_byte():
+    """The one documented limit: bytes that are not UTF-8 are not text.
+
+    Pass-through here is deliberate and narrow — it is reached only by a
+    `UnicodeDecodeError`, never by a content type the scrubber failed to
+    recognise. The body must come back intact rather than mangled or withheld.
+    """
+    response = await _get(_app(), "/api/binary")
+    assert response.status_code == 200
+    assert response.content == BINARY_BODY
 
 
 async def test_a_streaming_response_is_passed_through_untouched():

@@ -425,6 +425,16 @@ def _withheld_response():
                     media_type="application/json")
 
 
+def _scrub_as_text(redactor: Redactor, body: bytes | bytearray) -> bytes:
+    """Scrub a rendered body as UTF-8 text.
+
+    The decode is **strict** on purpose: a `UnicodeDecodeError` is the only
+    evidence this module accepts that a body is genuinely binary. A label is
+    not evidence — an endpoint can put any string in `media_type`.
+    """
+    return redactor.scrub_text(bytes(body).decode("utf-8")).encode("utf-8")
+
+
 def _scrub_response(request: Any, response: Any) -> Any:
     """Rewrite a rendered body in place, or refuse to return it.
 
@@ -448,11 +458,17 @@ def _scrub_response(request: Any, response: Any) -> Any:
             except (ValueError, UnicodeDecodeError):
                 # A JSON-labelled body that is not JSON still gets scrubbed as
                 # text — degrading to "unparsed" must not degrade to "unread".
-                new_body = redactor.scrub_text(body.decode("utf-8")).encode("utf-8")
-        elif media.startswith("text/"):
-            new_body = redactor.scrub_text(body.decode("utf-8")).encode("utf-8")
+                new_body = _scrub_as_text(redactor, body)
         else:
-            return response                  # binary: nothing a regex can mean
+            # Everything else is text until the bytes say otherwise. The default
+            # has to be this way round: `media` is `""` for Starlette's bare
+            # `Response`, and `application/x-yaml` is the conventional type for
+            # the raw view of `FindingDetail.probe_yaml` — i.e. the file with
+            # the real address. A content type this function does not recognise
+            # must never be a silent opt-out; only `@no_redact` is one.
+            new_body = _scrub_as_text(redactor, body)
+    except UnicodeDecodeError:
+        return response                      # genuinely binary: not text, not ours
     except Exception:
         return _withheld_response()
 
