@@ -206,30 +206,119 @@ def test_a_harvested_literal_does_not_fragment_the_word_it_sits_inside():
 @pytest.mark.parametrize("carrier", [
     "_BOUNDARIES.md_",                  # markdown italics, in a rendered transcript
     "my_BOUNDARIES.md_file",
-    "xBOUNDARIES.md",
-    "BOUNDARIES.mdx",
     "**BOUNDARIES.md**",
     "see `BOUNDARIES.md` today.",
     "docs/BOUNDARIES.md",
     'read "BOUNDARIES.md" first',
 ])
-def test_an_anchored_literal_still_fires_when_it_is_welded_to_punctuation(carrier: str):
-    r"""The boundary is alphanumeric-only, **not** `\b`.
+def test_a_specific_literal_fires_when_it_is_welded_to_punctuation(carrier: str):
+    r"""`BOUNDARIES.md` is a harvested `not_contains` value — a system-prompt
+    fragment — and none of these carriers is a coincidence.
 
-    `\b` counts `_` as a word character, so an anchored literal cannot match
-    inside an underscore-delimited run and `_BOUNDARIES.md_` would sail through
-    — a real harvested `not_contains` value, wrapped in the underscores markdown
-    uses for italics. `x…`/`…x` are here because a literal welded to a letter is
-    the one case anchoring is *supposed* to let through, and it must stay a
-    deliberate choice rather than a side effect of which class `_` lands in.
+    This is the round-2 finding's carrier set: `\b` counts `_` as a word
+    character, so a `\b`-anchored literal could not match inside
+    `_BOUNDARIES.md_`, which is just the underscores a markdown-rendered
+    transcript uses for italics. It stays pinned under the specificity rule,
+    which reaches all of these for a stronger reason: a 13-character literal
+    carrying a `.` is never an accidental substring, so it is not guarded at all.
     """
     redactor = Redactor(extra_values=["BOUNDARIES.md"])
     out = redactor.scrub(carrier)
-    if carrier in ("xBOUNDARIES.md", "BOUNDARIES.mdx"):
-        assert out == carrier, "a literal welded to a letter is not a word of its own"
-    else:
-        assert "BOUNDARIES.md" not in out, f"{carrier!r} leaked a system-prompt fragment"
-        assert redaction_marker("check_value") in out
+    assert "BOUNDARIES.md" not in out, f"{carrier!r} leaked a system-prompt fragment"
+    assert redaction_marker("check_value") in out
+
+
+#: A Latin-script token welded to its neighbours is not a coincidence signal in
+#: Japanese, Chinese, Thai or Korean — it is how prose in those scripts is
+#: written. Any rule that asks "is the neighbouring character a letter?" reads
+#: every one of these as "part of a longer word" and hands the secret back.
+@pytest.mark.parametrize("carrier", [
+    "システムプロンプトはBOUNDARIES.mdです",       # Japanese, no spaces anywhere
+    "設定はBOUNDARIES.mdにある",
+    "BOUNDARIES.mdファイル",
+    "系统提示词是BOUNDARIES.md的",                 # Chinese
+    "ระบบBOUNDARIES.mdนี้",                        # Thai
+    "시스템프롬프트는BOUNDARIES.md입니다",          # Korean
+    "файлBOUNDARIES.mdздесь",                      # Cyrillic
+    "BOUNDARIES.md٣",                              # Arabic-Indic digit
+    "BOUNDARIES.mdＡ",                              # fullwidth Latin
+    "xBOUNDARIES.md",                              # and the plain ASCII weld
+    "BOUNDARIES.mdx",
+])
+def test_a_specific_literal_is_redacted_in_every_script_that_welds_it(carrier: str):
+    """The leak this round exists to close, kept visible forever.
+
+    A boundary guard puts a Unicode character-class question on the leak path:
+    whether a system-prompt fragment is emitted comes to depend on which script
+    the sentence around it is written in. No setting of that class is safe —
+    ASCII-only fragments German prose, Unicode-aware exempts every CJK carrier
+    here. So the guard is removed from literals like this one entirely: they are
+    specific enough that a coincidental match is not a real possibility.
+    """
+    out = Redactor(extra_values=["BOUNDARIES.md"]).scrub(carrier)
+    assert "BOUNDARIES.md" not in out, f"{carrier!r} leaked a system-prompt fragment"
+    assert redaction_marker("check_value") in out
+
+
+@pytest.mark.parametrize("carrier", [
+    "die {}システム läuft",
+    "{}überwachung angelaufen",
+    "系统{}的",
+    "x{}",
+])
+def test_the_literal_decides_whether_it_is_guarded_and_never_its_neighbour(carrier: str):
+    """The pair that pins the rule: one carrier, two opposite outcomes.
+
+    `Acme` is a four-character bare word — plausibly a fragment of a longer one,
+    and harmless if it escapes, because it is not a secret. `BOUNDARIES.md` is a
+    system-prompt fragment. A neighbour-character rule cannot tell them apart and
+    has to give both the same answer; specificity gives each the right one.
+    """
+    word = carrier.format("Acme")
+    assert Redactor(extra_values=["Acme"]).scrub(word) == word, (
+        "a short bare word fragmented ordinary prose")
+    secret = carrier.format("BOUNDARIES.md")
+    assert "BOUNDARIES.md" not in Redactor(extra_values=["BOUNDARIES.md"]).scrub(secret), (
+        "a system-prompt fragment survived because of the script around it")
+
+
+def test_the_guard_stops_at_the_length_below_which_a_literal_is_a_word_not_a_secret():
+    """`WORDLIKE_LITERAL_MAX_LENGTH` is the whole of the tuning surface.
+
+    Seven bare alphanumerics is the size of an ordinary word, so it is guarded
+    and an over-fire there costs nothing but cosmetics. Eight is the shortest
+    length any credential policy defends, so from there up a literal is treated
+    as a secret and matches wherever it appears.
+    """
+    wordlike = Redactor(extra_values=["hunter7"])                 # 7, bare word
+    assert wordlike.scrub("hunter7x sat there") == "hunter7x sat there"
+    assert wordlike.scrub("say hunter7 now") == (
+        f"say {redaction_marker('check_value')} now")
+
+    specific = Redactor(extra_values=["hunter77"])                # 8 — over the line
+    assert "hunter77" not in specific.scrub("hunter77x sat there")
+
+
+@pytest.mark.parametrize("literal, carrier", [
+    (".env", "myapp.envfile"),                  # a dot makes it a filename, not a word
+    ("api_v1", "xapi_v1y"),                     # an underscore is punctuation here
+    ("k-9x", "sk-9xy"),                         # a hyphen
+    ("/tmp", "x/tmpy"),                         # a path
+])
+def test_a_short_literal_that_is_not_a_bare_word_is_specific_enough_to_stand_alone(
+        literal: str, carrier: str):
+    """Length is only half the predicate. `.`, `@`, `-` and `/` are the shapes
+    secrets take and the shapes ordinary words do not, so a literal carrying one
+    is not a word fragment however short it is."""
+    assert literal not in Redactor(extra_values=[literal]).scrub(carrier)
+
+
+def test_a_token_that_swallows_a_specific_literal_is_still_redacted():
+    """`<sentinel>ly` is not a different string that happens to look alike — it
+    *contains* the whole 24-character secret. Under a boundary rule the trailing
+    `ly` was enough to hand it back."""
+    out = Redactor(extra_values=[SENTINEL]).scrub(f"{SENTINEL}ly is a longer token")
+    assert SENTINEL not in out
 
 
 @pytest.mark.parametrize("carrier", [
@@ -240,13 +329,15 @@ def test_an_anchored_literal_still_fires_when_it_is_welded_to_punctuation(carrie
     "AcmeCorp ok",                      # the ASCII case, for the A/B
 ])
 def test_a_literal_welded_to_a_non_ascii_letter_is_no_more_a_word_than_an_ascii_one(carrier):
-    """The boundary asks "is this a letter?", not "is this an *English* letter?".
+    """Where a guard *is* applied, it asks "is this a letter?", not "is this an
+    *English* letter?".
 
     `[A-Za-z0-9]` excludes every non-Latin script, so a four-character pack value
     would confetti ordinary prose in exactly the languages this cockpit is most
     likely to render — the same I5 failure mode, reintroduced one script at a
     time. `[^\\W_]` is Unicode-aware, so `ü`, `λ`, `シ` and `А` count as letters
-    the way `C` does.
+    the way `C` does. This class question is still open, but it is now confined
+    to word-like literals, where **both** wrong answers are cosmetic.
     """
     assert Redactor(extra_values=["Acme"]).scrub(carrier) == carrier
 
@@ -265,8 +356,8 @@ def test_the_anchor_decision_and_the_anchor_itself_use_the_same_character_class(
 
 
 def test_a_literal_with_non_word_edges_is_still_matched_where_it_appears():
-    """The guard is applied per edge, not blindly: a literal that starts with `/`
-    has no letter in front of it and must not be anchored as though it did."""
+    """A path is high-specificity twice over — long, and full of `/` and `-` —
+    so it carries no guard and is matched wherever it is written."""
     redactor = Redactor(extra_values=["/opt/twincore-secrets"])
     assert "/opt/twincore-secrets" not in redactor.scrub("cwd=/opt/twincore-secrets")
 
@@ -858,8 +949,10 @@ def test_the_scheme_word_survives_but_the_credential_does_not():
     "runs/.evalyn-ui/meta.json",
     # The literal table's blast radius, which an unharvested redactor cannot
     # measure: `Acme` is a real four-character check value in `packs/example`.
+    # (The sentinel is deliberately *not* here: it is 24 characters with
+    # hyphens, so `<sentinel>ly` is a token that swallows a whole secret rather
+    # than an innocent lookalike — see the test that asserts it is redacted.)
     "the AcmeCorp deployment finished",
-    f"{SENTINEL}ly is a different string entirely",
 ])
 def test_ordinary_cockpit_text_is_left_alone(keep: str):
     """Run against a **harvested** redactor.

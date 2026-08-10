@@ -68,6 +68,7 @@ __all__ = [
     "Redactor", "RedactingRoute", "no_redact", "is_no_redact",  # noqa: F822
     "redacting_exception_handlers",
     "NO_REDACT_ATTR", "MAX_DEPTH", "MIN_HARVEST_LENGTH",
+    "WORDLIKE_LITERAL_MAX_LENGTH",
 ]
 
 
@@ -186,55 +187,84 @@ _PATTERNS: tuple[tuple[re.Pattern[str], Any], ...] = (
 )
 
 
-#: "A word character that is not `_`" — the one character class the boundary
-#: logic uses, for both halves of the decision. `\w` is Unicode-aware, so this
-#: covers `ü`, `λ`, `システム` and every other script a transcript can carry;
-#: subtracting `_` is what makes an underscore punctuation rather than a letter.
-_WORD_EDGE_RE = re.compile(r"[^\W_]", re.UNICODE)
+#: "A word character that is not `_`" — the one character class the guard uses,
+#: for both halves of the decision: what makes a literal a bare word, and what
+#: counts as a neighbour once it is. `\w` is Unicode-aware, so this covers `ü`,
+#: `λ`, `システム` and every other script a transcript can carry; subtracting `_`
+#: is what makes an underscore punctuation rather than a letter.
+_WORD_CHAR = r"[^\W_]"
+_WORD_RUN_RE = re.compile(_WORD_CHAR + r"+", re.UNICODE)
+
+#: The length at which a literal stops being read as a word and starts being
+#: read as a secret. Eight is the shortest length any credential policy defends
+#: (NIST SP 800-63B's floor for a user-chosen secret), so below it "this is a
+#: word of ordinary prose" is the better guess, and above it the opposite is.
+WORDLIKE_LITERAL_MAX_LENGTH = 8
 
 
-def _is_word_edge(char: str) -> bool:
-    return bool(char) and _WORD_EDGE_RE.fullmatch(char) is not None
+def _is_wordlike(value: str) -> bool:
+    """Could this literal be a *fragment of an ordinary word* rather than a hit?
 
+    Both halves are needed and neither is about the surrounding text:
 
-def _bounded_literal(value: str) -> str:
-    r"""Escape a harvested literal and anchor it at whichever edge is a letter.
+    * **Short.** A long literal is not a coincidence, whatever it is made of.
+    * **A single run of letters and digits.** `.`, `/`, `-`, `@`, `_` and
+      whitespace are the shapes secrets take — filenames, paths, addresses,
+      identifiers, phrases — and the shapes words do not, so a literal carrying
+      one cannot be swallowed by a word however short it is.
 
-    Unanchored, a short check value fragments ordinary text: `packs/example`
-    carries a real four-character `contains` value, `Acme`, which turns
-    "AcmeCorp" into "«redacted:check_value»Corp". The guard is applied **per
-    edge** rather than blindly, because a literal that begins with `/` (a path)
-    or ends with `»` has no letter at that edge and anchoring it would stop it
-    matching at all — the failure mode that trades over-redaction for a leak.
-
-    The guard is a lookaround over `[^\W_]`, **deliberately neither `\b` nor an
-    ASCII class.** Not `\b`, because `\b` counts `_` as a word character, so
-    `\bBOUNDARIES\.md\b` cannot match inside `_BOUNDARIES.md_` or
-    `my_BOUNDARIES.md_file` — and `BOUNDARIES.md` is a harvested `not_contains`
-    value, i.e. a system-prompt fragment, wrapped in the underscores a
-    markdown-rendered transcript uses for italics. Anchoring must stop a literal
-    fragmenting a *word*; an underscore is punctuation as far as that job is
-    concerned.
-
-    **Script coverage is part of the contract, not an accident.** `[A-Za-z0-9]`
-    would answer "is this a letter?" with "is this an *English* letter?", so
-    `Acmeüberwachung`, `Acmeシステム` and `Acmeλ` would each be fragmented while
-    `AcmeCorp` was spared — the same confetti this function exists to prevent,
-    reintroduced for every non-Latin-script transcript, in a cockpit whose first
-    demo target is a German-language persona twin. `_is_word_edge` and the
-    emitted guard therefore share one class (`_WORD_EDGE_RE`): the test for
-    *whether* to anchor and the guard that *does* the anchoring must agree, or a
-    literal whose own edge is non-ASCII is anchored with a guard that cannot see
-    its neighbours.
-
-    `MIN_HARVEST_LENGTH` still applies; boundaries are the second floor, not a
-    replacement for the first.
+    Deliberately *not* a mixed-case test, which the round-4 brief floated: title
+    case is both the commonest way a word is written and the exact shape of the
+    canonical word-like literal (`Acme`), so "contains upper and lower" would
+    classify the one value this predicate exists to guard as a secret. An
+    internal-case-transition test would be a third proxy of the same brittle
+    family, and it would buy only short camelCase literals — a class with no
+    claim on either failure mode.
     """
-    return (
-        (r"(?<![^\W_])" if _is_word_edge(value[:1]) else "")
-        + re.escape(value)
-        + (r"(?![^\W_])" if _is_word_edge(value[-1:]) else "")
-    )
+    return (len(value) < WORDLIKE_LITERAL_MAX_LENGTH
+            and _WORD_RUN_RE.fullmatch(value) is not None)
+
+
+def _literal_pattern(value: str) -> str:
+    r"""Escape a harvested literal, and guard it **only where it might be a word**.
+
+    Anchoring used to be a property of the literal's *neighbours* — "is the next
+    character a letter?" — as a stand-in for "is this match an accidental
+    substring?". Three rounds re-tuned that character class and each one traded
+    one failure for the other, because the proxy only holds for space-separated
+    scripts: tighten it to `[A-Za-z0-9]` and `Acmeüberwachung` fragments; widen
+    it to `[^\W_]` and `システムプロンプトはBOUNDARIES.mdです` hands back a
+    system-prompt fragment, since welding a Latin token to its neighbours is not
+    a coincidence in Japanese, Chinese, Thai or Korean — it is how the prose is
+    written. There is no setting that serves both jobs.
+
+    The error was structural: **the guard sat on the leak path.** In a default-on
+    chokepoint, a Unicode character-class question must never get to decide
+    whether a secret is emitted. So the guard now depends on the literal's own
+    specificity (`_is_wordlike`), which the redactor knows for certain, instead
+    of on the script of the text around it, which it can only guess at:
+
+    * **A specific literal matches unanchored** — `BOUNDARIES.md`,
+      `/opt/twincore-secrets`, a leaked address. Leak risk goes to zero in every
+      script. What is traded away is the possibility of fragmenting a word that
+      happens to contain a 13-character filename, which is not a real event.
+    * **A word-like literal keeps the `[^\W_]` guard** — the `Acme` class. The
+      class question survives there, and it no longer matters: a bare word under
+      eight characters is not a secret, so an escape leaks nothing and an
+      over-fire costs cosmetics. Both wrong answers are cheap.
+
+    That is the point of the split, and it is the right way round: for a
+    redaction cockpit, over-redacting ordinary text is the cheap failure and
+    emitting a secret is the expensive one.
+
+    `MIN_HARVEST_LENGTH` still applies underneath, and stays at 3 rather than
+    rising to swallow this class: raising it would silently *drop* every short
+    `not_contains` value a pack declared, turning a cosmetic problem into a
+    value the chokepoint never looks for at all.
+    """
+    if not _is_wordlike(value):
+        return re.escape(value)
+    return rf"(?<!{_WORD_CHAR}){re.escape(value)}(?!{_WORD_CHAR})"
 
 
 def _classify(literal: str) -> str:
@@ -378,7 +408,7 @@ class Redactor:
         if self._literal_re is None and self._literals:
             ordered = sorted(self._literals, key=len, reverse=True)
             self._literal_re = re.compile(
-                "|".join(_bounded_literal(value) for value in ordered), re.IGNORECASE)
+                "|".join(_literal_pattern(value) for value in ordered), re.IGNORECASE)
         return self._literal_re
 
     def _replace_literal(self, match: re.Match[str]) -> str:
