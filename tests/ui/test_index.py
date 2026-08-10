@@ -29,7 +29,8 @@ from pathlib import Path
 
 import pytest
 
-from evalyn.discovery.run import DiscoveryArtifact
+from evalyn.discovery.replay import ReplayResult
+from evalyn.discovery.run import DiscoveryArtifact, Finding, ReplaySkipped
 from evalyn.engine.compare import CompareArtifact
 from evalyn.engine.gate import GateResult
 from evalyn.engine.run import ProbeResult, RunArtifact
@@ -42,6 +43,7 @@ from evalyn.ui.index import (
     SidecarState,
     derive_status,
 )
+from evalyn.ui.models import ReplayStatus
 
 pytestmark = pytest.mark.ui
 
@@ -456,10 +458,31 @@ def test_get_populates_the_compare_scoreboard_and_the_discovery_summary():
     comp = idx.get(COMPARE_ID)
     assert comp.compare is not None and comp.discovery is None
     assert comp.compare.label_a and comp.compare.label_b
+    assert all(isinstance(v, m.CategoryTally) for v in comp.compare.categories.values())
+    assert all(isinstance(v, m.HardMetrics) for v in comp.compare.hard_metrics.values())
+
     disc = idx.get(DISCOVER_ID)
     assert disc.discovery is not None and disc.compare is None
     assert disc.discovery.eval_status == "success"
     assert disc.discovery.findings
+    row = disc.discovery.findings[0]
+    assert row.run_id == DISCOVER_ID
+    assert row.probe_id == Path(row.probe_path).stem     # never the full path
+    assert row.replay_status is not None
+
+
+@pytest.mark.parametrize("replay,expected", [
+    (ReplayResult(reproduced=True, trials=3, pass_k=0.0), ReplayStatus.reproduced),
+    (ReplayResult(reproduced=False, trials=3, pass_k=1.0), ReplayStatus.not_reproduced),
+    (ReplaySkipped(reason="out of budget", budget=True), ReplayStatus.skipped_budget),
+    (ReplaySkipped(reason="--no-replay", budget=False), ReplayStatus.skipped_disabled),
+])
+def test_replay_status_flattens_both_replay_shapes(replay, expected):
+    """A budget skip and `--no-replay` are different claims; so is a replay that
+    ran and did not reproduce."""
+    finding = Finding(objective_id="o", confirmed=True,
+                      probe_path="packs/example/discovered/p.yaml", replay=replay)
+    assert ix._finding_row(finding, DISCOVER_ID, "x").replay_status is expected
 
 
 def test_get_refuses_an_id_that_is_not_a_run_id():
