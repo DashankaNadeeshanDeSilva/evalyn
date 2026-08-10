@@ -1,35 +1,44 @@
 import { describe, expect, it } from "vitest";
 
-import { META } from "../mocks/fixtures";
+import { MOCK_PAGE_SIZE } from "../mocks/handlers";
+import { META, RUN_SUMMARIES } from "../mocks/fixtures";
 
 /**
- * End-to-end smoke over the whole scaffold: the entry module mounts React into
- * `#root` and reads `/api/meta` through the mock layer.
+ * End-to-end smoke over the whole seam: the entry module mounts React into
+ * `#root`, the router lands on `/runs`, and the page fetches `/api/meta` and
+ * `/api/runs` through the mock layer.
  *
- * Worth its keep because it is the one test that exercises the seam Tasks 8–21
- * actually stand on — types, MSW, and a React root — rather than any one piece
- * of it. `main.tsx` runs its work at import time, so the import *is* the act
- * under test.
+ * Worth its keep because it is the one test that exercises the seam Tasks 8-21
+ * stand on — types, MSW, TanStack Query, the router and the shell — rather than
+ * any one piece of it. `main.tsx` runs its work at import time, so the import
+ * *is* the act under test.
  */
 describe("SPA entry point", () => {
-  it("mounts into #root and renders the meta line from the mock API", async () => {
+  it("mounts into #root and renders the runs table from the mock API", async () => {
     document.body.innerHTML = '<div id="root"></div>';
 
     await import("../main");
 
     const root = document.getElementById("root")!;
-    // Wait for the mount and the /api/meta round trip to settle.
     await vi.waitFor(() => {
-      expect(root.textContent).toContain("Evalyn");
-      expect(document.getElementById("meta")!.textContent).toContain(
-        META.version,
-      );
+      // `/` redirects to `/runs`, so the shell and its first page are both live.
+      expect(root.textContent).toContain("EVALYN");
+      expect(
+        root.querySelectorAll('[data-testid="run-row"]').length,
+      ).toBeGreaterThan(0);
     });
 
-    // The runs_dir is rendered as the display-safe label the server sent —
-    // `~`-collapsed, never an absolute home path.
-    const meta = document.getElementById("meta")!.textContent!;
-    expect(meta).toContain(META.runs_dir);
-    expect(meta).not.toMatch(/\/(Users|home)\//);
+    // One page's worth of rows, because the cursor is only followed on demand.
+    // Derived from the mock's own page size — never a literal row count.
+    expect(root.querySelectorAll('[data-testid="run-row"]')).toHaveLength(
+      Math.min(MOCK_PAGE_SIZE, RUN_SUMMARIES.length),
+    );
+
+    // The server's display-safe labels are rendered as sent: `~`-collapsed,
+    // never an absolute home path reconstructed on the client.
+    const legend = root.querySelector('[data-testid="meta-legend"]')!;
+    expect(legend.textContent).toContain(META.version);
+    expect(legend.textContent).toContain(META.runs_dir);
+    expect(legend.textContent).not.toMatch(/\/(Users|home)\//);
   });
 });
