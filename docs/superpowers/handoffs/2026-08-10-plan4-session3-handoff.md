@@ -24,7 +24,7 @@ Read that only for history — this document supersedes it.
 
 ## 2. Where things stand
 
-**Branch `feat/plan4-ui`**, cut from `dev` @ `8f3e2de`. **Nothing pushed. No PR opened.**
+**Branch `feat/plan4-ui`**, cut from `dev` @ `8f3e2de`. **Pushed to origin. No PR opened.**
 
 | Task | State |
 |---|---|
