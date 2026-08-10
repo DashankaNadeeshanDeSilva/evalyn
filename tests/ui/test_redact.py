@@ -141,13 +141,35 @@ def test_harvest_from_probes_scrubs_a_check_value_no_pattern_could_match():
 
 
 def test_harvesting_reaches_the_multi_value_or_form():
+    """`values` is documented as a `contains`-only form but is not statically
+    validated, so a `not_contains` carrying one is accepted input and its
+    literals are still secrets."""
     probe = Probe(
         id="redirect", category="injection", turns=["hi"],
-        checks=[Check(type="contains", values=[SENTINEL, "other-long-value"])],
+        checks=[Check(type="not_contains", values=[SENTINEL, "other-long-value"])],
     )
     redactor = Redactor()
     redactor.harvest_from_probes([probe])
     assert SENTINEL not in json.dumps(redactor.scrub({"a": SENTINEL}))
+
+
+def test_a_contains_value_is_never_harvested():
+    """Ruling R4-18. `contains` is the *correct answer*, not a secret.
+
+    Twincore's `contains` values are the `redirect_constants` — whole assistant
+    sentences, and the probe's own `reference`. Harvesting them blanks out
+    exactly the transcripts where the model answered correctly.
+    """
+    redactor = Redactor()
+    redactor.harvest_from_probes([_probe_with_secret(SENTINEL, check_type="contains")])
+    assert redactor.scrub(SENTINEL) == SENTINEL
+
+
+def test_a_check_that_does_not_say_what_it_is_contributes_nothing():
+    """There is no way to tell which of the two opposite lists it belongs to."""
+    redactor = Redactor()
+    redactor.harvest_from_probes([{"checks": [{"value": SENTINEL}]}])
+    assert redactor.scrub(SENTINEL) == SENTINEL
 
 
 def test_a_harvested_value_that_is_an_email_still_reads_as_an_email():
@@ -189,8 +211,12 @@ def test_a_literal_with_non_word_edges_is_still_matched_where_it_appears():
 
 
 def test_harvesting_survives_a_probe_that_is_not_shaped_like_a_probe():
+    """A salvaged (unparseable) pack arrives as raw dicts and still contributes."""
     redactor = Redactor()
-    redactor.harvest_from_probes([None, object(), {"checks": [{"value": SENTINEL}]}])
+    redactor.harvest_from_probes([
+        None, object(), {"checks": "not a list"},
+        {"checks": [{"type": "not_contains", "value": SENTINEL}]},
+    ])
     assert SENTINEL not in redactor.scrub(SENTINEL)
 
 
@@ -789,6 +815,47 @@ def test_ordinary_cockpit_text_is_left_alone(keep: str):
 # --------------------------------------------------------------------------
 # 8. The real corpus — the file that is actually going on the projector
 # --------------------------------------------------------------------------
+
+TWINCORE_PROBES = Path(__file__).resolve().parents[2] / "packs" / "twincore" / "probes"
+
+
+def _twincore_probes() -> list[Probe]:
+    probes: list[Probe] = []
+    for path in sorted(TWINCORE_PROBES.glob("*.yaml")):
+        probes.extend(Probe.model_validate(entry)
+                      for entry in yaml.safe_load(path.read_text()))
+    return probes
+
+
+@pytest.mark.skipif(not TWINCORE_PROBES.is_dir(), reason="pack not present")
+def test_the_harvest_takes_the_packs_secrets_and_leaves_its_correct_answers():
+    """Ruling R4-18, measured against the pack that is going on the projector.
+
+    Nothing here is hardcoded: both lists are read out of the pack, so the
+    assertion tracks the pack rather than a snapshot of it. `contains` and
+    `not_contains` are semantic opposites in this file — the `not_contains`
+    values are the system-prompt fragments that must not leak, the `contains`
+    values are the `redirect_constants`, i.e. the refusal a *passing* model
+    emits and the probe's own `reference`.
+    """
+    probes = _twincore_probes()
+    must_not_leak = [check.value for probe in probes for check in probe.checks
+                     if check.type == "not_contains" and check.value]
+    correct_answers = [value for probe in probes for check in probe.checks
+                       if check.type == "contains"
+                       for value in ([check.value] if check.value else []) + (check.values or [])]
+    assert must_not_leak and correct_answers, "pack changed; this would pass vacuously"
+
+    redactor = Redactor()
+    redactor.harvest_from_probes(probes)
+
+    for secret in must_not_leak:
+        assert redactor.scrub(secret) != secret, f"{secret!r} was not harvested"
+    for answer in correct_answers:
+        assert redactor.scrub(answer) == answer, (
+            "a correct assistant answer was redacted; the transcripts where the "
+            "model passed would render as markers")
+
 
 DISCOVERY = (Path(__file__).resolve().parents[2]
              / "packs" / "twincore" / "discoveries"

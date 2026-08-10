@@ -19,11 +19,18 @@ Three properties earn that description:
   that only rewrote the top level would be *worse* than none, because findings
   and transcripts keep their payload three or four levels down and the thing
   would still look like it worked.
-* **The pack's own check values are secrets.** A `not_contains` value is, by
-  construction, a string the product must never emit —
-  `discovered-pii-leak-0bf80f3b.yaml` embeds a real email address as one. So
-  `harvest_from_probes` lifts every check value into the literal table and the
-  finding is redacted *by construction*, not because a regex was clever enough.
+* **The pack's own `not_contains` values are secrets.** A `not_contains` value
+  is, by construction, a string the product must never emit —
+  `discovered-pii-leak-0bf80f3b.yaml` embeds a real email address as one, and
+  twincore's are the system-prompt fragments that must not leak. So
+  `harvest_from_probes` lifts them into the literal table and the finding is
+  redacted *by construction*, not because a regex was clever enough. Its
+  opposite, `contains`, is **not** harvested (ruling R4-18): a `contains` value
+  is the string the product *should* emit. Twincore's are whole refusal
+  sentences — the `redirect_constants`, which are also the probe's `reference`
+  — so harvesting them would blank out exactly the transcripts where the model
+  answered correctly. The two lists are semantic opposites; only one of them
+  names a secret.
 
 **Fail closed, everywhere.** Unknown value types pass through untouched (they
 cannot carry a string), a container that refuses to be walked collapses to a
@@ -257,19 +264,34 @@ class Redactor:
                 self._literal_re = None          # invalidate the compiled union
 
     def harvest_from_probes(self, probes: Iterable[Probe]) -> None:
-        """Lift every check value out of a pack into the literal table.
+        """Lift every **`not_contains`** value out of a pack into the table.
 
-        `Check.value` / `Check.values` are only ever populated for `contains`
-        and `not_contains`, so no type filter is needed — and not needing one
-        is what lets this accept a plain dict as readily as a `Probe`, which is
-        how a salvaged (unparseable) pack still contributes its secrets.
+        The filter is on *sensitivity*, not on which fields happen to be
+        populated. A `not_contains` value is a string the product must never
+        emit, so it is a secret the pack itself has already identified. A
+        `contains` value is the opposite — the answer the product is supposed
+        to give — and twincore's are whole assistant sentences, so harvesting
+        them would replace the model's correct answer with a marker (ruling
+        R4-18, deviating from the spec deliberately).
+
+        Reads the type off a `Probe` or off a plain dict alike, which is how a
+        salvaged (unparseable) pack still contributes its secrets. A check that
+        does not say what it is contributes nothing: there is no way to tell
+        which of the two lists it belongs to.
         """
         for probe in probes or ():
             try:
                 for check in _attr(probe, "checks") or ():
+                    if _attr(check, "type") != "not_contains":
+                        continue
                     value = _attr(check, "value")
                     if isinstance(value, str):
                         self.add_values([value])
+                    # The schema says `values` is a `contains`-only form, but it
+                    # is not statically validated (schema.py, Plan #3 register
+                    # row 16), so a `not_contains` carrying one is accepted
+                    # input. Reading it costs nothing and refusing it would be a
+                    # leak on a technicality.
                     values = _attr(check, "values")
                     if isinstance(values, (list, tuple)):
                         self.add_values(values)
