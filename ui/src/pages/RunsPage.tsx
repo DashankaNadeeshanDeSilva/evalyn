@@ -29,6 +29,10 @@ export function RunsPage() {
         <p className="text-legend tracking-normal text-chassis-600">
           {runs.isPending ? (
             "reading the index…"
+          ) : runs.isError ? (
+            // Never "0 loaded" on a failed read: zero is a measurement, and
+            // the client does not have one. Say what is actually true.
+            "the index could not be read"
           ) : (
             <>
               <span className="tabular-nums text-chassis-900">
