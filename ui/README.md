@@ -26,10 +26,20 @@ nvm use                 # or any Node 22.18.0
 npm ci                  # never `npm install` in CI
 npm run dev             # dev server on :5173, proxying /api to 127.0.0.1:8765
 VITE_MSW=1 npm run dev  # ...or serve the whole API from MSW instead
-npm run test -- --run   # Vitest
+npm test                # Vitest, single run — safe for scripts and agents
+npm run test:watch      # the watching variant, for humans
 npm run typecheck       # tsc --noEmit
 npm run build           # typecheck, then emit into ../src/evalyn/ui/static/
 ```
+
+`npm test` is `vitest run`, not bare `vitest`, on purpose: watch mode never
+exits, so a script or an agent running the obvious command would hang.
+
+`engines.node` is the looser `>=22.12` while `.nvmrc` pins the exact `22.18.0`.
+Deliberate: `>=22.12` is the real floor the dependency tree imposes (it is what
+admits jsdom 29), whereas `.nvmrc` names the one version this bundle is built
+and verified with. Reproducibility is guarded by the byte-identical rebuild
+check, not by the engines range.
 
 `npm run build` **is** the commit artifact step: source and bundle are committed
 together, so a PR that changes a component and forgets to rebuild is visible.

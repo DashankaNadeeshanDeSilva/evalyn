@@ -11,7 +11,8 @@
     "typecheck": "tsc --noEmit",
     "build": "npm run typecheck && vite build",
     "preview": "vite preview",
-    "test": "vitest",
+    "test": "vitest run",
+    "test:watch": "vitest",
     "msw:init": "msw init public/ --no-save"
   },
   "dependencies": {
