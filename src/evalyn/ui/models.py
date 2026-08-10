@@ -115,8 +115,18 @@ def is_run_id(value: str) -> bool:
 
     `RunIndex` uses this to exclude `baseline.json`, `logs/` and anything else
     a hostile `runs/` directory contains, without opening a single file.
+
+    **`fullmatch`, never `match`.** Python's `$` also matches immediately
+    before a trailing newline, so `RUN_ID_RE.match("…-example\\n")` succeeds —
+    but pydantic compiles the same pattern with the Rust regex engine, whose
+    `$` anchors to the end of the haystack only. `match` therefore made this
+    predicate *more permissive than the `RunId` type it speaks for*: the index
+    would admit a filename, and building the row from it would then raise. This
+    function and `RunId` must accept exactly the same set of strings, and
+    `tests/ui/test_models.py::test_is_run_id_and_the_RunId_type_never_disagree`
+    holds them to it.
     """
-    return bool(RUN_ID_RE.match(value)) and not value.endswith(".json")
+    return bool(RUN_ID_RE.fullmatch(value)) and not value.endswith(".json")
 
 
 # --------------------------------------------------------------------------

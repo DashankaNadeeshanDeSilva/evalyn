@@ -208,6 +208,55 @@ def test_run_id_grammar_rejects(run_id):
         _summary(run_id=run_id)
 
 
+#: Every shape the two run-id authorities are ever asked about. `is_run_id`
+#: (used by `RunIndex` to filter a directory listing) and the pydantic `RunId`
+#: type (used to validate a path parameter) must NEVER disagree about one of
+#: these: a value the filter admits and the type then rejects crashes row
+#: construction, which breaks "degradation, not failure".
+RUN_ID_CANDIDATES = [
+    "20260804T081544953468-53e4125b-example",
+    "20260806T091011000000-9f8e7d6c-example-compare",
+    "20260723T080347-example",
+    "20260723T080347-example\n",          # `$` matches before a trailing \n
+    "20260804T081544953468-53e4125b-example\n",
+    "\n20260723T080347-example",
+    "20260723T080347-example\nrm -rf /",
+    "20260804T081544953468-53e4125b-example.json",
+    "20260804T081544953468-53e4125b-example.json\n",
+    "../etc/passwd",
+    "runs/20260723T080347-example",
+    "baseline",
+    "baseline.json",
+    "",
+    " 20260723T080347-example",
+    "20260723T080347-example ",
+]
+
+
+@pytest.mark.parametrize("value", RUN_ID_CANDIDATES)
+def test_is_run_id_and_the_RunId_type_never_disagree(value):
+    """I3: `RUN_ID_RE.match()` let `"…-example\\n"` through because Python's `$`
+    matches before a trailing newline; pydantic validates the same pattern with
+    the Rust engine, which has no such tolerance. The filter said yes, the type
+    said no, and the row blew up. Both authorities must answer identically."""
+    predicate = m.is_run_id(value)
+    try:
+        _summary(run_id=value)
+        typed = True
+    except ValidationError:
+        typed = False
+    assert predicate is typed, f"is_run_id={predicate} but RunId={typed} for {value!r}"
+
+
+@pytest.mark.parametrize("value", [
+    "20260723T080347-example\n",
+    "20260804T081544953468-53e4125b-example\n",
+    "20260723T080347-example\nrm -rf /",
+])
+def test_a_trailing_newline_is_not_a_run_id(value):
+    assert m.is_run_id(value) is False
+
+
 def _summary(**over):
     kwargs = dict(
         run_id="20260804T081544953468-53e4125b-example",
