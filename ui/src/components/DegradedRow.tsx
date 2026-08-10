@@ -59,10 +59,10 @@ export function DegradedRow({ run }: { run: RunSummary }) {
          * (for the row's `title`, for a screen reader, and for the test), and
          * the detail page states it in full.
          */}
-        <p className="mt-1 flex items-center gap-2 text-legend normal-case tracking-normal text-chassis-600">
+        <p className="mt-1 flex items-center gap-2 text-legend text-chassis-600">
           <IconFlatline className="h-3 w-7 shrink-0 text-chassis-500" />
           <span className="truncate">
-            <span className="uppercase tracking-[0.12em] text-chassis-700">
+            <span className="uppercase tracking-legend text-chassis-700">
               Degraded
             </span>
             {" — "}
@@ -74,7 +74,9 @@ export function DegradedRow({ run }: { run: RunSummary }) {
       <td className="py-2 pr-3 text-readout text-chassis-700">{run.mode}</td>
 
       <td className="py-2 pr-3 text-readout text-chassis-700">
-        {run.pack_name ?? <Flatline reason="pack name not recoverable" />}
+        {run.pack_name ?? (
+          <Flatline word="unknown" reason="pack name not recoverable" />
+        )}
       </td>
 
       <td
@@ -87,10 +89,16 @@ export function DegradedRow({ run }: { run: RunSummary }) {
       {/* The readouts a dead channel cannot fill. Never `data-metric`, and
           always the `dead` mark — this is damage, not correct absence. */}
       <td className="py-2 pr-3">
-        <Flatline reason="no verdict: the probe results were not readable" />
+        <Flatline
+          word="unreadable"
+          reason="no verdict: the probe results were not readable"
+        />
       </td>
       <td className="py-2 pl-3 pr-4 text-right sm:pr-6">
-        <Flatline reason="judge spend was not recorded on this artifact" />
+        <Flatline
+          word="unrecorded"
+          reason="judge spend was not recorded on this artifact"
+        />
       </td>
     </tr>
   );

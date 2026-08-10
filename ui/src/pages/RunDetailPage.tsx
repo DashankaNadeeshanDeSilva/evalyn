@@ -30,7 +30,7 @@ function Field({
 }) {
   return (
     <div className="py-2">
-      <dt className="text-legend uppercase text-chassis-600">{label}</dt>
+      <dt className="text-legend uppercase tracking-legend text-chassis-600">{label}</dt>
       <dd className="mt-1 break-all text-readout text-chassis-900">
         {children}
       </dd>
@@ -94,17 +94,21 @@ export function RunDetailPage() {
         </Field>
         <Field label="Mode">{run.mode}</Field>
         <Field label="Pack">
-          {run.pack_name ?? <Flatline reason="pack name not recorded" />}
+          {run.pack_name ?? (
+            <Flatline word="unknown" reason="pack name not recorded" />
+          )}
         </Field>
         <Field label="Created (UTC)">
           <span className="tabular-nums">{formatUtc(run.created_at)}</span>
         </Field>
         <Field label="Judge model">
-          {run.judge_model ?? <Flatline reason="judge model not recorded" />}
+          {run.judge_model ?? (
+            <Flatline word="unrecorded" reason="judge model not recorded" />
+          )}
         </Field>
         <Field label="Judge USD">
           {run.judge_usd === null ? (
-            <Flatline reason="judge spend was not recorded" />
+            <Flatline word="unrecorded" reason="judge spend was not recorded" />
           ) : (
             <span className="tabular-nums">{formatUsd(run.judge_usd)}</span>
           )}
@@ -117,7 +121,10 @@ export function RunDetailPage() {
               empty transcript list means "not captured", not "the
               conversation was empty". */}
           {readableDrilldowns(caps) ?? (
-            <Flatline reason="this artifact captured no drill-downs" />
+            <Flatline
+              word="none captured"
+              reason="this artifact captured no drill-downs"
+            />
           )}
         </Field>
       </dl>
@@ -126,7 +133,7 @@ export function RunDetailPage() {
         <p className="engrave-t mt-4 flex items-start gap-2 pt-3 text-readout text-chassis-700">
           <IconFlatline className="mt-1 h-3 w-8 shrink-0 text-chassis-500" />
           <span>
-            <span className="text-legend uppercase text-chassis-900">
+            <span className="text-legend uppercase tracking-legend text-chassis-900">
               Degraded
             </span>
             {" — "}
@@ -150,14 +157,14 @@ function Shell({
       <div className="engrave-b px-4 py-3 sm:px-6">
         <Link
           to="/runs"
-          className="inline-flex items-center gap-1.5 text-legend uppercase text-chassis-600 transition-colors duration-state hover:text-chassis-900"
+          className="inline-flex items-center gap-1.5 text-legend uppercase tracking-legend text-chassis-600 transition-colors duration-state hover:text-chassis-900"
         >
           {/* Drawn, not `←`. The icon family's own comment explains at length
               why unicode marks are refused; this was the one that slipped. */}
           <IconArrowLeft className="h-4 w-4 shrink-0" />
           Runs
         </Link>
-        <h1 className="mt-1.5 break-all text-display tracking-normal">
+        <h1 className="mt-1.5 break-all text-display">
           {runId}
         </h1>
       </div>

@@ -19,7 +19,7 @@ import { RunsPage } from "./pages/RunsPage";
 function NoSuchPage() {
   return (
     <section className="px-4 py-8 sm:px-6">
-      <h1 className="text-display uppercase">No such page</h1>
+      <h1 className="text-display uppercase tracking-display">No such page</h1>
       <p className="mt-2 text-readout text-chassis-600">
         The cockpit has no view at this address.{" "}
         <Link

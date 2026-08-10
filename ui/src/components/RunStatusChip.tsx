@@ -57,7 +57,7 @@ export function RunStatusChip({
   return (
     <span
       data-testid="status-chip"
-      className={`inline-flex items-center gap-1.5 whitespace-nowrap text-legend uppercase ${
+      className={`inline-flex items-center gap-1.5 whitespace-nowrap text-legend uppercase tracking-legend ${
         muted ? "text-chassis-600" : STATUS_INK[status]
       }`}
     >

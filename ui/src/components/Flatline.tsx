@@ -12,24 +12,39 @@ import { IconFlatline, IconNotApplicable } from "./InstrumentIcon";
  *   report; that is correctness, not damage. Drawn as a bare centred stroke
  *   with no stops.
  *
- * They were one mark in the first build, separated only by a `title` tooltip —
- * invisible to a keyboard and to a projector. Compare, discoveries, trends and
- * judge trust all have legitimately empty columns and would have inherited the
- * conflation wholesale, which is how "degraded" quietly comes to mean "blank".
+ * ## `word` is required, and that is the whole design
  *
- * The reason travels with the mark either way: as `title` for a pointer and as
- * screen-reader text for everything else. `chassis-500` (4.03:1) carries it,
- * not the `degraded` grey (2.43:1) — in a metric cell this mark is the only
- * visible thing saying "nothing here".
+ * The mark alone was never enough. The `n/a` variant shipped at `chassis-400`
+ * (2.30:1) as the *sole* content of its cell, with the meaning available only
+ * through `title` and `sr-only` text — invisible to a keyboard, and on a
+ * projector that cell simply reads as blank. Which is precisely the failure
+ * this component's own docstring claims to prevent: degraded quietly coming to
+ * mean blank.
+ *
+ * Making `word` required rather than optional is deliberate. Compare has
+ * genuinely zero data, discoveries has an empty `probe_path`, trends have gaps;
+ * five later pages are full of legitimately empty cells, and a required
+ * parameter is what forces each of them to *say* what is absent instead of
+ * rendering a hairline and hoping. Two extra characters at the call site, and
+ * the glyph-plus-word rule holds across the whole cockpit.
+ *
+ * Contrast: the mark is `chassis-500` (4.03:1, clearing the 3:1 bar for a
+ * graphical object) and the word is `chassis-600` (5.98:1, clearing AA for
+ * text). The full reason still travels as `title` and as screen-reader text —
+ * the visible word is the short form, not the whole story.
  *
  * `data-flatlined` marks a cell carrying no value. It is deliberately not
  * `data-metric`, which marks a cell carrying a real one.
  */
 export function Flatline({
   reason,
+  word,
   variant = "dead",
 }: {
+  /** The full explanation. Tooltip and screen-reader text. */
   reason: string;
+  /** The short visible label. One or two words: `no gate`, `unrecorded`. */
+  word: string;
   variant?: "dead" | "n/a";
 }) {
   const Mark = variant === "dead" ? IconFlatline : IconNotApplicable;
@@ -37,13 +52,10 @@ export function Flatline({
     <span
       data-flatlined={variant}
       title={reason}
-      className={
-        variant === "dead"
-          ? "inline-flex items-center text-chassis-500"
-          : "inline-flex items-center text-chassis-400"
-      }
+      className="inline-flex items-center gap-1.5 whitespace-nowrap"
     >
-      <Mark className="h-4 w-10" />
+      <Mark className="h-4 w-6 shrink-0 text-chassis-500" />
+      <span className="text-chassis-600">{word}</span>
       <span className="sr-only">{reason}</span>
     </span>
   );

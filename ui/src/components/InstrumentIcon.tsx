@@ -70,7 +70,7 @@ function IconCross(props: IconProps) {
 }
 
 /** A ruled triangle — the artifact completed but means nothing. */
-function IconAlert(props: IconProps) {
+export function IconAlert(props: IconProps) {
   return (
     <Glyph {...props}>
       <path d="M8 2.2 14.6 13.4H1.4Z" />

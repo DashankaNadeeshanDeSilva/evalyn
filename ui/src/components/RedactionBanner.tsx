@@ -39,8 +39,8 @@ export function RedactionBanner({ redaction }: { redaction: RedactionMeta }) {
       className="engrave-b flex items-start gap-2.5 bg-chassis-100 px-4 py-2 text-chassis-800 sm:px-6"
     >
       <IconRedacted className="h-4 w-4 shrink-0 text-chassis-600" />
-      <p className="text-legend normal-case tracking-normal">
-        <span className="uppercase tracking-[0.12em] text-chassis-900">
+      <p className="text-legend">
+        <span className="uppercase tracking-legend text-chassis-900">
           Redaction on
         </span>
         <span className="mx-2 text-chassis-400" aria-hidden="true">

@@ -2,6 +2,7 @@ import { NavLink, Outlet } from "react-router-dom";
 
 import { useMeta } from "../api/client";
 import { shippedDestinations } from "../nav";
+import { IconAlert } from "./InstrumentIcon";
 import { RedactionBanner } from "./RedactionBanner";
 
 /**
@@ -55,7 +56,7 @@ export function AppShell() {
       <div className="mx-auto min-h-screen max-w-[100rem] border-x border-chassis-400 bg-chassis-25">
         <header className="engrave-b rule-major bg-chassis-50">
           <div className="flex flex-wrap items-center gap-x-8 gap-y-2 px-4 py-2.5 sm:px-6">
-            <span className="text-panel font-semibold uppercase leading-none">
+            <span className="text-panel font-semibold uppercase leading-none tracking-panel">
               Evalyn
             </span>
 
@@ -69,7 +70,7 @@ export function AppShell() {
                         [
                           // The marker sits at a position rather than sliding
                           // between them; only its ink transitions.
-                          "block border-b-2 pb-0.5 text-legend uppercase transition-colors duration-state",
+                          "block border-b-2 pb-0.5 text-legend uppercase tracking-legend transition-colors duration-state",
                           isActive
                             ? "border-chassis-900 text-chassis-900"
                             : "border-transparent text-chassis-600 hover:text-chassis-900",
@@ -85,7 +86,7 @@ export function AppShell() {
 
             <p
               data-testid="meta-legend"
-              className="ml-auto flex items-center gap-2 text-legend tracking-normal text-chassis-600"
+              className="ml-auto flex items-center gap-2 text-legend text-chassis-600"
             >
               {meta.data ? (
                 <>
@@ -98,9 +99,29 @@ export function AppShell() {
                   <span className="break-all">{meta.data.runs_dir}</span>
                 </>
               ) : meta.isError ? (
-                <span className="text-status-unreadable">server unreachable</span>
+                /*
+                 * The previous ink here was wrong twice over.
+                 *
+                 * It measured 4.34:1 on the strip's `chassis-50` — below AA for
+                 * 12px text, and the exact failure `tailwind.config.ts` predicts
+                 * by name ("status text may only sit on chassis-25"). It was
+                 * also a *vocabulary* error: the status palette is keyed to
+                 * `RunStatus` members, and "the server is unreachable" is not a
+                 * run state. Borrowing an enum-keyed token for a non-enum
+                 * meaning is how the enum stops being the authority.
+                 *
+                 * `chassis-900` measures 15.51:1 here, and the glyph carries the
+                 * alarm so the message is never colour alone.
+                 */
+                <span className="flex items-center gap-1.5 text-chassis-900">
+                  <IconAlert className="h-4 w-4 shrink-0" />
+                  server unreachable
+                </span>
               ) : (
-                <span className="text-chassis-500">reading server…</span>
+                // The previous ink was 3.82:1 on this ground. Same rule and
+                // same fix as the `gate ` prefix: secondary prose is
+                // chassis-600 (5.66:1 here).
+                <span className="text-chassis-600">reading server…</span>
               )}
             </p>
           </div>

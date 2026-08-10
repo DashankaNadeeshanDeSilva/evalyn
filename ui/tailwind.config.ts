@@ -112,17 +112,45 @@ export default {
           "monospace",
         ],
       },
+      /**
+       * A fixed rem scale, not a fluid one: an operator reads this at a
+       * consistent DPI, and the 2026-08-14 projection constrains scale upward
+       * rather than making it responsive.
+       *
+       * **Size carries size, and nothing else.** These three steps originally
+       * baked `letter-spacing` into the size, which made them the wrong shape:
+       * four of `text-legend`'s twelve call sites immediately cancelled it with
+       * `tracking-normal`, and two of those then re-applied the identical value
+       * on a child as the magic literal `tracking-[0.12em]` — the token's own
+       * value, written out by hand, because there was no way to ask for the
+       * size without the tracking.
+       *
+       * A token whose defining property is fought at a third of its uses
+       * teaches every later page to paste `tracking-normal` reflexively. Five
+       * tasks inherit this scale, so tracking now lives in its own axis below
+       * and a label opts in with `tracking-legend` rather than opting out.
+       */
       fontSize: {
-        // A fixed rem scale, not a fluid one: an operator reads this at a
-        // consistent DPI, and the 2026-08-14 projection constrains scale
-        // upward rather than making it responsive.
-        legend: ["0.75rem", { lineHeight: "1rem", letterSpacing: "0.12em" }],
+        legend: ["0.75rem", { lineHeight: "1rem" }],
         readout: ["0.875rem", { lineHeight: "1.25rem" }],
-        panel: ["1rem", { lineHeight: "1.5rem", letterSpacing: "0.14em" }],
+        panel: ["1rem", { lineHeight: "1.5rem" }],
         // The focal step. Four sizes total is still a tight Operate scale, but
         // without one step above `panel` nothing on the surface is focal — and
         // the 2026-08-14 projection constrains scale, not only contrast.
-        display: ["1.375rem", { lineHeight: "1.75rem", letterSpacing: "0.06em" }],
+        display: ["1.375rem", { lineHeight: "1.75rem" }],
+      },
+      /**
+       * The tracking axis, paired by name with the size it belongs to.
+       *
+       * Engraved legends on an instrument are letter-spaced; the data they
+       * label is not. Keeping the two axes separate is what lets a run id sit
+       * at `text-display` with normal tracking while the page's own legend sits
+       * at `text-display tracking-display`, without either fighting the other.
+       */
+      letterSpacing: {
+        legend: "0.12em",
+        panel: "0.14em",
+        display: "0.06em",
       },
       transitionDuration: {
         /**

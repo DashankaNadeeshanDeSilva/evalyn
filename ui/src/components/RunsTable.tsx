@@ -49,29 +49,33 @@ import { RunStatusChip } from "./RunStatusChip";
  * exercises. The column has to hold the widest **enum member**, not the widest
  * sample.
  *
- * Sizing at the 70rem (1120px) floor, verified in a browser for all nine
+ * Sizing at the 78rem (1248px) floor, verified in a browser for all nine
  * members — the check is that no cell overflows and the narrowest STATUS-to-RUN
- * gap stays above one character (16% left `failed_to_start` at 4px, which is a
- * collision waiting for a longer member):
- *   status  17% = 190px  — "✓ failed_to_start", the longest chip
- *   run     33% = 370px  — a 44-char run id at 14px mono
- *   mode     7% =  78px  — "discover"
- *   pack     6% =  67px  — "example"
- *   created 16% = 179px  — "2026-08-06 09:10:11Z", whitespace-nowrap
- *   verdict 13% = 146px  — "✓ gate passed" plus its glyph
- *   spend    8% =  90px  — "$0.1234", right-aligned
+ * gap stays above one character.
+ *
+ * The floor moved from 70rem when `Flatline` gained its required word: three
+ * columns that previously held a bare hairline now hold a mark plus a label,
+ * and an absent value needs as much room as a present one.
+ *
+ *   status  16% = 200px  — "✓ failed_to_start", the longest chip
+ *   run     30% = 374px  — a 44-char run id at 14px mono
+ *   mode     7% =  87px  — "discover"
+ *   pack     8% = 100px  — "example", or the mark plus "unknown"
+ *   created 15% = 187px  — "2026-08-06 09:10:11Z", whitespace-nowrap
+ *   verdict 12% = 150px  — "✓ gate passed", or the mark plus "unreadable"
+ *   spend   12% = 150px  — "$0.1234", or the mark plus "unrecorded"
  */
 const COLUMNS = [
-  { key: "status", label: "Status", width: "17%" },
-  { key: "run", label: "Run", width: "33%" },
+  { key: "status", label: "Status", width: "16%" },
+  { key: "run", label: "Run", width: "30%" },
   { key: "mode", label: "Mode", width: "7%" },
-  { key: "pack", label: "Pack", width: "6%" },
-  { key: "created", label: "Created (UTC)", width: "16%" },
+  { key: "pack", label: "Pack", width: "8%" },
+  { key: "created", label: "Created (UTC)", width: "15%" },
   // "hint" is in the header rather than on every cell: the list's verdict is
   // computed from `probes[]` without calling `evaluate_gate`, and the contract
   // says never to render it without saying so.
-  { key: "verdict", label: "Verdict (hint)", width: "13%" },
-  { key: "spend", label: "Judge USD", width: "8%", numeric: true },
+  { key: "verdict", label: "Verdict (hint)", width: "12%" },
+  { key: "spend", label: "Judge USD", width: "12%", numeric: true },
 ] as const;
 
 /**
@@ -91,14 +95,18 @@ function VerdictHintCell({ hint }: { hint: VerdictHint | null }) {
     // to report. A dead-channel mark here would dilute the one that means the
     // artifact is broken.
     return (
-      <Flatline variant="n/a" reason="this mode produces no gate verdict" />
+      <Flatline
+        variant="n/a"
+        word="no gate"
+        reason="this mode produces no gate verdict"
+      />
     );
   }
   return (
     <span
       data-metric="verdict_hint"
       title="Approximate — computed from the probe rows. The authoritative verdict comes from the gate."
-      className={`inline-flex items-center gap-1.5 whitespace-nowrap text-legend uppercase ${HINT_INK[hint]}`}
+      className={`inline-flex items-center gap-1.5 whitespace-nowrap text-legend uppercase tracking-legend ${HINT_INK[hint]}`}
     >
       {/* Glyph AND word AND colour. This column is the product's central
           output and was the one carrying colour + word alone. */}
@@ -141,7 +149,9 @@ function RunRow({ run }: { run: RunSummary }) {
       <td className="py-2 pr-3 text-readout text-chassis-700">{run.mode}</td>
 
       <td className="py-2 pr-3 text-readout text-chassis-700">
-        {run.pack_name ?? <Flatline reason="pack name not recorded" />}
+        {run.pack_name ?? (
+          <Flatline word="unknown" reason="pack name not recorded" />
+        )}
       </td>
 
       <td
@@ -158,7 +168,7 @@ function RunRow({ run }: { run: RunSummary }) {
       <td className="py-2 pl-3 pr-4 text-right sm:pr-6">
         {/* `null` is "this run cannot tell you", never 0.00. */}
         {run.judge_usd === null ? (
-          <Flatline reason="judge spend was not recorded" />
+          <Flatline word="unrecorded" reason="judge spend was not recorded" />
         ) : (
           <span
             data-metric="judge_usd"
@@ -193,7 +203,7 @@ export function RunsTable({ runs }: { runs: RunSummary[] }) {
       {/* No `max-w` here: the shell's terminating edge (R4-19) owns the
           face's measure, and a second competing cap is how two truths start
           drifting apart. The floor stays — the column budget derives from it. */}
-      <table className="w-full min-w-[70rem] table-fixed border-collapse text-left">
+      <table className="w-full min-w-[78rem] table-fixed border-collapse text-left">
         <caption className="sr-only">
           Indexed run artifacts, newest first.
         </caption>
@@ -208,7 +218,7 @@ export function RunsTable({ runs }: { runs: RunSummary[] }) {
               <th
                 key={column.key}
                 scope="col"
-                className={`whitespace-nowrap py-2 text-legend font-normal uppercase text-chassis-600 ${
+                className={`whitespace-nowrap py-2 text-legend font-normal uppercase tracking-legend text-chassis-600 ${
                   column.key === "status"
                     ? "pl-4 pr-3 sm:pl-6"
                     : column.key === "spend"
