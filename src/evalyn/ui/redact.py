@@ -31,18 +31,23 @@ marker, depth is capped so a cycle or a pathological artifact terminates, and a
 body the route cannot scrub is **withheld with a 500** rather than returned
 unredacted. Degradation, not failure — but never degradation into a leak.
 
-**Pure stdlib on import.** `RedactingRoute` needs FastAPI, so it is built on
-first attribute access (PEP 562) rather than at import. That keeps
+**No web framework on import.** `RedactingRoute` and
+`redacting_exception_handlers` both need FastAPI, so the first is built on
+first attribute access (PEP 562) and the second imports inside its body rather
+than at module level. That keeps
 `import evalyn.ui.redact` free of fastapi — the same discipline that keeps
 `evalyn/ui/__init__.py` empty — so the "install `evalyn[ui]`" refusal stays a
 sentence a human reads instead of an `ImportError` from three modules away.
 """
 from __future__ import annotations
 
+import dataclasses
 import json
 import re
 from collections.abc import Iterable, Mapping
 from typing import TYPE_CHECKING, Any
+
+from pydantic import BaseModel
 
 from evalyn.ui.models import REDACTION_MARKER_RE, ErrorCode, redaction_marker
 
@@ -252,6 +257,10 @@ class Redactor:
     def scrub(self, obj: Any) -> Any:
         """Return `obj` with every string inside it redacted.
 
+        Mappings, sequences, sets, **pydantic models and dataclasses** are all
+        walked; a model or dataclass comes back as its scrubbed `dict`
+        projection rather than as its own type (see `_walk`).
+
         Total by construction: an unexpected type comes back untouched, and an
         unexpected *failure* comes back as a marker rather than as the
         original, because the one outcome this must never have is a leak.
@@ -325,6 +334,22 @@ class Redactor:
                 return type(obj)(values), changed     # keep list/tuple/set as it was
             except Exception:
                 return values, changed
+
+        # A pydantic model or a dataclass *does* carry strings — `ui.models` is
+        # nothing but models — so neither may fall through to the leaf case
+        # below. Both collapse to their mapping projection and are then walked
+        # like any other mapping, which is also how they pick up the `redacted`
+        # flag. Rebuilding the original type is not available: a scrubbed value
+        # would have to re-satisfy the field's own validators, and every wire
+        # model is `extra="forbid"`.
+        if isinstance(obj, BaseModel) or (
+                dataclasses.is_dataclass(obj) and not isinstance(obj, type)):
+            try:
+                projection = (obj.model_dump() if isinstance(obj, BaseModel)
+                              else dataclasses.asdict(obj))
+            except Exception:
+                return redaction_marker("error"), True
+            return self._walk_mapping(projection, depth)
 
         # numbers, bools, None, and anything exotic: no string, nothing to do
         return obj, False

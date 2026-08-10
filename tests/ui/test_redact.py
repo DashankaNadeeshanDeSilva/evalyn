@@ -7,6 +7,7 @@ here rather than on a projector.
 """
 from __future__ import annotations
 
+import dataclasses
 import json
 import re
 from collections.abc import Mapping
@@ -245,6 +246,50 @@ def test_scrubbing_an_unexpected_type_returns_it_rather_than_raising():
     sentinel = object()
     assert Redactor().scrub(sentinel) is sentinel
     assert Redactor().scrub(b"bytes are opaque") == b"bytes are opaque"
+
+
+class _Wire(pydantic.BaseModel):
+    """Stands in for `evalyn.ui.models` — the whole module is pydantic."""
+
+    content: str
+    redacted: bool = False
+
+
+@dataclasses.dataclass
+class _Record:
+    content: str
+
+
+def test_a_pydantic_model_is_scrubbed_rather_than_waved_through():
+    """`scrub` promises "every string inside it redacted", and `ui.models` is
+    entirely pydantic. Passing a model through untouched would be a fail-open
+    no-op from a module that advertises fail-closed."""
+    out = Redactor().scrub(_Wire(content=f"mail {EMAIL}"))
+    assert EMAIL not in json.dumps(out)
+    assert out == {"content": f"mail {redaction_marker('email')}", "redacted": True}
+
+
+def test_a_dataclass_is_scrubbed_rather_than_waved_through():
+    out = Redactor().scrub(_Record(content=f"mail {EMAIL}"))
+    assert out == {"content": f"mail {redaction_marker('email')}"}
+
+
+def test_a_model_nested_inside_a_plain_structure_is_reached_too():
+    out = Redactor().scrub({"items": [_Wire(content=EMAIL), _Record(content=EMAIL)]})
+    assert EMAIL not in json.dumps(out)
+
+
+def test_a_scrubbed_model_comes_back_as_a_plain_dict_and_that_is_the_contract():
+    """Pinned deliberately, not left undefined.
+
+    Rebuilding the model is not available: the scrubbed value would have to
+    re-satisfy the field's own validators (`run_id` has a grammar) and every
+    wire model is `extra="forbid"`. `scrub` returns the JSON-able projection —
+    which is what a serializer wants anyway.
+    """
+    out = Redactor().scrub(_Wire(content="nothing sensitive"))
+    assert type(out) is dict
+    assert out == {"content": "nothing sensitive", "redacted": False}
 
 
 def test_a_tuple_and_a_set_are_walked_without_raising():
