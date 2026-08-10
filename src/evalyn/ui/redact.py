@@ -54,6 +54,7 @@ __all__ = [
     # bound at import, which is what keeps FastAPI out of this module's import
     # graph. Ruff cannot see a lazy binding, hence the silence.
     "Redactor", "RedactingRoute", "no_redact", "is_no_redact",  # noqa: F822
+    "redacting_exception_handlers",
     "NO_REDACT_ATTR", "MAX_DEPTH", "MIN_HARVEST_LENGTH",
 ]
 
@@ -476,6 +477,135 @@ def _scrub_response(request: Any, response: Any) -> Any:
         response.body = bytes(new_body)
         response.headers["content-length"] = str(len(response.body))
     return response
+
+
+# --------------------------------------------------------------------------
+# 4. The second gate: bodies rendered above the route
+# --------------------------------------------------------------------------
+#
+# `get_route_handler` wraps the *endpoint call*. An `HTTPException` never
+# returns from the endpoint — Starlette's `ExceptionMiddleware` catches it and
+# renders the body itself, above the route and therefore outside the route
+# class entirely. So does every registered handler, and so does the last-resort
+# 500. Those bodies are precisely the ones that carry the operator's run
+# directory under `$HOME`: "no such run at /Users/alice/…" is the single most
+# likely string to appear on a projector when a demo goes wrong.
+#
+# Hence a second gate with the same fail-closed rule. It is a factory rather
+# than a module constant because the app owns the redactor, and because
+# building it must not import FastAPI at module import time.
+
+#: HTTP status -> the closed `ErrorCode` set. The 422 mapping is the contract
+#: written down in `models.py`: a rejected **write body** is `launch_refused`,
+#: a rejected **path or query parameter** is `not_found` (the resource cannot
+#: exist, and saying so leaks nothing about the filesystem). `ErrorCode` has no
+#: "server error" member, so anything unmapped reuses `unreadable_artifact`
+#: with a message that says what actually happened — same stand-in the withheld
+#: 500 already makes, and the same open question for the Plan #4 final review.
+_STATUS_TO_CODE = {
+    400: ErrorCode.launch_refused,
+    403: ErrorCode.launch_refused,
+    404: ErrorCode.not_found,
+    409: ErrorCode.busy,
+    422: ErrorCode.launch_refused,
+    423: ErrorCode.busy,
+    429: ErrorCode.busy,
+    503: ErrorCode.busy,
+}
+
+
+def _envelope(redactor: Redactor, code: ErrorCode, message: str, status: int,
+              headers: Any = None) -> Any:
+    """Render `ErrorEnvelope` — scrubbed whole, not just in the message field."""
+    from starlette.responses import Response
+
+    from evalyn.ui.models import ApiError, ErrorEnvelope
+
+    payload = ErrorEnvelope(error=ApiError(code=code, message=message)).model_dump(
+        mode="json", exclude_none=True)
+    return Response(content=json.dumps(redactor.scrub(payload), ensure_ascii=False),
+                    status_code=status, media_type="application/json",
+                    headers=headers or None)
+
+
+def _validation_code(exc: Any) -> ErrorCode:
+    """`body` -> `launch_refused`; a path or query parameter -> `not_found`."""
+    try:
+        locations = {str(error.get("loc", ("",))[0]) for error in exc.errors()}
+    except Exception:
+        return ErrorCode.launch_refused
+    return ErrorCode.launch_refused if "body" in locations else ErrorCode.not_found
+
+
+def _validation_message(exc: Any) -> str:
+    """Name the fields, never quote the input.
+
+    `exc.errors()` carries `input` — the client's own payload verbatim — and a
+    rejected body is exactly where a hostile or confused client puts a path.
+    Only `loc` and `msg` are echoed, and the whole envelope is scrubbed after.
+    """
+    try:
+        parts = [
+            f"{'.'.join(str(piece) for piece in error.get('loc', ()))}: "
+            f"{error.get('msg', 'invalid')}"
+            for error in exc.errors()[:5]
+        ]
+    except Exception:
+        parts = []
+    return "request validation failed" + (f": {'; '.join(parts)}" if parts else "")
+
+
+def redacting_exception_handlers(redactor: Redactor | None = None) -> dict[Any, Any]:
+    """The exception handlers the app **must** mount alongside `RedactingRoute`.
+
+    Mounting `route_class=RedactingRoute` is not sufficient on its own: error
+    bodies never pass through the route class. Returns
+    `{exception_class: handler}` covering the three classes that render above
+    it — `HTTPException` (Starlette's, which FastAPI's subclasses, so keying on
+    the base catches both), `RequestValidationError`, and the last-resort
+    `Exception`.
+
+    `redactor` pins one for every request; left `None`, each handler resolves
+    `app.state.redactor` per request exactly as the route class does, falling
+    back to the module default — never to "no redaction".
+
+    Imports live in the body so that `import evalyn.ui.redact` still pulls no
+    fastapi and no starlette, for the same reason `RedactingRoute` is lazy.
+    """
+    from fastapi.exceptions import RequestValidationError
+    from starlette.exceptions import HTTPException
+
+    def _redactor(request: Any) -> Redactor:
+        return redactor if redactor is not None else _redactor_for(request)
+
+    async def http_exception_handler(request: Any, exc: Any) -> Any:
+        status = getattr(exc, "status_code", 500)
+        return _envelope(
+            _redactor(request),
+            _STATUS_TO_CODE.get(status, ErrorCode.unreadable_artifact),
+            str(getattr(exc, "detail", "") or "request failed"),
+            status,
+            getattr(exc, "headers", None),
+        )
+
+    async def validation_exception_handler(request: Any, exc: Any) -> Any:
+        return _envelope(_redactor(request), _validation_code(exc),
+                         _validation_message(exc), 422)
+
+    async def unhandled_exception_handler(request: Any, exc: Any) -> Any:
+        # The message is dropped, not scrubbed. An unhandled exception's text is
+        # arbitrary — a repr of whatever object blew up — so there is nothing to
+        # be gained by trying to filter it and a leak to be had by trying.
+        return _envelope(
+            _redactor(request), ErrorCode.unreadable_artifact,
+            "internal error; the details were withheld rather than returned "
+            "unredacted (see the terminal running `evalyn ui`)", 500)
+
+    return {
+        HTTPException: http_exception_handler,
+        RequestValidationError: validation_exception_handler,
+        Exception: unhandled_exception_handler,
+    }
 
 
 def _build_redacting_route() -> Any:

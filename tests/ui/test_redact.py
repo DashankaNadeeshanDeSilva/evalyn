@@ -12,6 +12,7 @@ import re
 from pathlib import Path
 
 import httpx
+import pydantic
 import pytest
 import yaml
 
@@ -261,6 +262,16 @@ def test_scrub_text_is_available_for_the_sse_tailer():
 # belongs in this file but cannot exist yet: it asserts over an app, and
 # `create_app` arrives in Task 6. The app factory's task inherits it. The tests
 # below cover the mechanism; only the census of the real route table is missing.
+#
+# **Task 6 also MUST mount `redacting_exception_handlers(...)` on the app, and
+# `route_class=RedactingRoute` alone is NOT sufficient.** `get_route_handler`
+# wraps the endpoint call only; `HTTPException` and every registered handler are
+# rendered by Starlette's `ExceptionMiddleware`, which sits *above* the route and
+# therefore never passes through the route class. An unhandled `HTTPException`
+# detail — routinely the operator's run directory under `$HOME` — would go out
+# unredacted. The census above should grow a second assertion: every one of
+# `HTTPException`, `RequestValidationError` and `Exception` is present in
+# `app.exception_handlers`. The handlers themselves are built and tested here.
 
 def _app():
     from fastapi import APIRouter, FastAPI
@@ -315,10 +326,16 @@ def _app():
     return app
 
 
-async def _get(app, path: str) -> httpx.Response:
-    transport = httpx.ASGITransport(app=app)
+async def _get(app, path: str, *, raise_app_exceptions: bool = True) -> httpx.Response:
+    transport = httpx.ASGITransport(app=app, raise_app_exceptions=raise_app_exceptions)
     async with httpx.AsyncClient(transport=transport, base_url="http://ui") as client:
         return await client.get(path)
+
+
+async def _post(app, path: str, payload: dict) -> httpx.Response:
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://ui") as client:
+        return await client.post(path, json=payload)
 
 
 async def test_a_route_under_the_redacting_router_is_scrubbed_without_asking():
@@ -452,12 +469,138 @@ def test_importing_the_module_does_not_drag_in_fastapi():
     import subprocess
     import sys
 
-    probe = ("import evalyn.ui.redact, sys, json;"
+    probe = ("import evalyn.ui.redact as r, sys, json;"
+             # Reaching the exception-handler factory must not import it either:
+             # it is a module-level `def`, so only *calling* it may pull FastAPI.
+             "r.redacting_exception_handlers;"
              "print(json.dumps(sorted({name.split('.')[0] for name in sys.modules}"
-             " & {'fastapi', 'uvicorn'})))")
+             " & {'fastapi', 'uvicorn', 'starlette'})))")
     done = subprocess.run([sys.executable, "-c", probe], check=True,
                           capture_output=True, text=True)
     assert json.loads(done.stdout) == [], done.stdout
+
+
+# --------------------------------------------------------------------------
+# 6b. Error bodies — rendered *above* the route, so the route class misses them
+# --------------------------------------------------------------------------
+
+class LaunchBody(pydantic.BaseModel):
+    """Module scope on purpose: this file is `from __future__ import annotations`,
+    so FastAPI resolves the endpoint's annotations against module globals. A
+    class nested in the factory would not resolve, and the parameter would
+    quietly become a *query* parameter — which is how this file's own
+    body-vs-parameter assertion first went wrong."""
+
+    run_id: str
+
+
+def _error_app(redactor: Redactor | None = None):
+    """A real ASGI app whose only redaction is the exception handlers."""
+    from fastapi import FastAPI, HTTPException
+
+    from evalyn.ui.redact import redacting_exception_handlers
+
+    app = FastAPI()
+    for exc_class, handler in redacting_exception_handlers().items():
+        app.add_exception_handler(exc_class, handler)
+    if redactor is not None:
+        app.state.redactor = redactor
+
+    @app.get("/api/missing")
+    async def missing():
+        raise HTTPException(status_code=404, detail=f"no such run at {HOMEDIR}")
+
+    @app.get("/api/held")
+    async def held():
+        raise HTTPException(status_code=404, detail=f"no such run {SENTINEL}")
+
+    @app.get("/api/crash")
+    async def crash():
+        raise RuntimeError(f"reading {HOMEDIR} for {EMAIL} failed")
+
+    @app.get("/api/typed")
+    async def typed(n: int):
+        return {"n": n}
+
+    @app.post("/api/launch")
+    async def launch(body: LaunchBody):
+        return {"run_id": body.run_id}
+
+    return app
+
+
+def test_the_factory_covers_every_class_that_renders_above_the_route():
+    from fastapi.exceptions import RequestValidationError
+    from starlette.exceptions import HTTPException
+
+    from evalyn.ui.redact import redacting_exception_handlers
+
+    handlers = redacting_exception_handlers()
+    # Starlette's `HTTPException`, not FastAPI's: FastAPI's subclasses it, so
+    # keying on the base catches both. Keying on the subclass would not.
+    assert set(handlers) == {HTTPException, RequestValidationError, Exception}
+
+
+async def test_an_httpexception_detail_is_scrubbed_before_it_reaches_the_browser():
+    """The most likely thing on the projector when a demo goes wrong.
+
+    `RedactingRoute` cannot see this body at all — `ExceptionMiddleware` renders
+    it above the route — so this is the test that proves the second gate exists.
+    """
+    response = await _get(_error_app(), "/api/missing")
+    assert response.status_code == 404
+    assert HOMEDIR not in response.text
+    assert "/Users/alice" not in response.text
+    assert redaction_marker("path") in response.json()["error"]["message"]
+    assert response.json()["error"]["code"] == "not_found"
+
+
+async def test_an_error_body_is_the_error_envelope_and_never_a_bare_detail():
+    body = (await _get(_error_app(), "/api/missing")).json()
+    assert set(body) == {"error"}, "the SPA reads error.code and has no second parser"
+    assert set(body["error"]) <= {"code", "message", "detail"}
+
+
+async def test_a_rejected_query_parameter_maps_to_not_found():
+    """models.py: a rejected path/query parameter is `not_found` — the resource
+    cannot exist, and saying so leaks nothing about the filesystem."""
+    response = await _get(_error_app(), "/api/typed?n=notanumber")
+    assert response.status_code == 422
+    assert "detail" not in response.json()
+    assert response.json()["error"]["code"] == "not_found"
+
+
+async def test_a_rejected_write_body_maps_to_launch_refused():
+    response = await _post(_error_app(), "/api/launch", {"nope": 1})
+    assert response.status_code == 422
+    assert response.json()["error"]["code"] == "launch_refused"
+
+
+async def test_a_validation_error_never_echoes_the_rejected_input():
+    """`exc.errors()` carries `input` — the client's own payload verbatim."""
+    response = await _post(_error_app(), "/api/launch", {"nope": HOMEDIR})
+    assert HOMEDIR not in response.text
+    assert "/Users/alice" not in response.text
+
+
+async def test_an_unhandled_exception_never_echoes_its_message():
+    response = await _get(_error_app(), "/api/crash", raise_app_exceptions=False)
+    assert response.status_code == 500
+    assert HOMEDIR not in response.text
+    assert EMAIL not in response.text
+    assert "RuntimeError" not in response.text
+    assert response.json()["error"]["code"]
+
+
+async def test_the_error_handlers_consult_the_apps_redactor():
+    """Same rule as the route class: harvested literals apply to error bodies."""
+    app = _error_app(redactor=Redactor(extra_values=[SENTINEL]))
+    response = await _get(app, "/api/held")
+    assert SENTINEL not in response.text
+    assert redaction_marker("check_value") in response.json()["error"]["message"]
+    # ...and without the harvest the sentinel would have survived, which is what
+    # makes the assertion above about *this* redactor rather than about a regex.
+    assert SENTINEL in (await _get(_error_app(), "/api/held")).text
 
 
 @pytest.mark.parametrize("leak", [
