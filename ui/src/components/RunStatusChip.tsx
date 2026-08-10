@@ -1,2 +1,48 @@
 import type { RunStatus } from "../api/types";
-export function RunStatusChip(_props: { status: RunStatus }) { return null; }
+import { StatusIcon } from "./InstrumentIcon";
+
+/**
+ * A run's state, as glyph AND word AND colour — never colour alone.
+ *
+ * That rule is load-bearing rather than decorative here: this product's central
+ * output is a pass/fail verdict and red/green is the most common colourblind
+ * failure pair. Strip the colour from this chip and it still reads correctly.
+ *
+ * The word is the `RunStatus` member **verbatim** in the DOM, uppercased only
+ * in CSS. An operator reading the cockpit and an operator reading the artifact
+ * JSON see the same token, and a test can assert against the enum rather than
+ * against a display string that would drift from it.
+ */
+
+/**
+ * Ink per status member, written out in full because Tailwind reads source
+ * text: a computed `text-status-${status}` would emit no CSS at all and every
+ * chip would render in the inherited ink. Being a `Record<RunStatus, string>`
+ * also makes a new enum member a compile error rather than a silent black chip.
+ *
+ * All nine measure >= 4.5:1 on `chassis-25`, which is why status ink is only
+ * ever placed on the lightest chassis step (see `tailwind.config.ts`).
+ */
+const STATUS_INK: Record<RunStatus, string> = {
+  passed: "text-status-passed",
+  gate_failed: "text-status-gate_failed",
+  invalid: "text-status-invalid",
+  running: "text-status-running",
+  paused: "text-status-paused",
+  cancelled: "text-status-cancelled",
+  interrupted: "text-status-interrupted",
+  failed_to_start: "text-status-failed_to_start",
+  unreadable: "text-status-unreadable",
+};
+
+export function RunStatusChip({ status }: { status: RunStatus }) {
+  return (
+    <span
+      data-testid="status-chip"
+      className={`inline-flex items-center gap-1.5 whitespace-nowrap text-legend uppercase ${STATUS_INK[status]}`}
+    >
+      <StatusIcon status={status} className="h-4 w-4 shrink-0" />
+      {status}
+    </span>
+  );
+}

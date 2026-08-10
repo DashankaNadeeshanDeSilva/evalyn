@@ -1,5 +1,5 @@
 import { QueryClientProvider } from "@tanstack/react-query";
-import { render, screen } from "@testing-library/react";
+import { render, screen, waitFor } from "@testing-library/react";
 import { matchRoutes, MemoryRouter } from "react-router-dom";
 import { describe, expect, it } from "vitest";
 
@@ -94,8 +94,15 @@ describe("AppShell", () => {
   it("reads the server's own display-safe labels into the legend", async () => {
     renderShell();
 
-    const legend = await screen.findByTestId("meta-legend");
-    expect(legend.textContent).toContain(META.version);
+    // The strip renders before the fetch settles, so wait for the readout to
+    // fill rather than asserting against its own loading state.
+    await waitFor(() =>
+      expect(screen.getByTestId("meta-legend").textContent).toContain(
+        META.version,
+      ),
+    );
+
+    const legend = screen.getByTestId("meta-legend");
     expect(legend.textContent).toContain(META.runs_dir);
     // `runs_dir` arrives `~`-collapsed. A real home path here means something
     // reconstructed it client-side.

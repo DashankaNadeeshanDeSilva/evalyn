@@ -21,8 +21,9 @@ describe("SPA entry point", () => {
 
     const root = document.getElementById("root")!;
     await vi.waitFor(() => {
-      // `/` redirects to `/runs`, so the shell and its first page are both live.
-      expect(root.textContent).toContain("EVALYN");
+      // `/` redirects to `/runs`, so the shell and its first page are both
+      // live: the legend strip is mounted and the table has real rows in it.
+      expect(root.querySelector("header nav")).not.toBeNull();
       expect(
         root.querySelectorAll('[data-testid="run-row"]').length,
       ).toBeGreaterThan(0);
