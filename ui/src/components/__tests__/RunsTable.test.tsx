@@ -2,8 +2,8 @@ import { render, screen } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
 import { describe, expect, it } from "vitest";
 
-import { RUN_STATUSES } from "../../api/types";
-import { RUN_SUMMARIES } from "../../mocks/fixtures";
+import { RUN_STATUSES, VERDICT_HINTS } from "../../api/types";
+import { RUN_SUMMARIES, SUMMARY_GATE } from "../../mocks/fixtures";
 import { RunStatusChip } from "../RunStatusChip";
 import { RunsTable } from "../RunsTable";
 
@@ -151,6 +151,60 @@ describe("RunsTable", () => {
       for (const cell of numerics) {
         expect(cell.className).toContain("tabular-nums");
       }
+    }
+  });
+
+  /**
+   * The gate hint is this product's central output, and the finish review found
+   * it rendering as colour + word with no glyph. Nothing guarded that fix: the
+   * reviewer deleted `<VerdictHintIcon>` and the whole suite stayed green at
+   * 156/156. A fix the project paid a design review to find, with no test under
+   * it, is a fix with a countdown on it.
+   */
+  it("carries the gate hint as glyph AND word for every VerdictHint member", () => {
+    for (const hint of VERDICT_HINTS) {
+      const { unmount } = renderTable([{ ...SUMMARY_GATE, verdict_hint: hint }]);
+
+      const cell = document.querySelector<HTMLElement>(
+        '[data-metric="verdict_hint"]',
+      );
+      expect(cell, `no verdict cell rendered for hint ${hint}`).not.toBeNull();
+      expect(cell!.textContent).toContain(hint);
+      expect(
+        cell!.querySelector("svg"),
+        `the ${hint} hint renders without a glyph — colour and word alone`,
+      ).not.toBeNull();
+
+      unmount();
+    }
+  });
+
+  /**
+   * The other unguarded finish-review fix: a degraded row was showing a
+   * saturated green check, which the report calls "the single most misreadable
+   * thing this page could show". Dropping `unverified` also stayed green.
+   */
+  it("withdraws the status colour on a degraded row, and only there", () => {
+    renderTable();
+
+    for (const run of DEGRADED_FIXTURES) {
+      const chip = rowFor(run.run_id).querySelector<HTMLElement>(
+        '[data-testid="status-chip"]',
+      )!;
+      // The word and glyph still state the status; only the colour claim goes.
+      expect(chip.textContent).toContain(run.status);
+      expect(chip.querySelector("svg")).not.toBeNull();
+      expect(
+        chip.className,
+        "a degraded row must not assert a status colour it could not verify",
+      ).not.toContain("text-status-");
+    }
+
+    for (const run of HEALTHY_FIXTURES) {
+      const chip = rowFor(run.run_id).querySelector<HTMLElement>(
+        '[data-testid="status-chip"]',
+      )!;
+      expect(chip.className).toContain(`text-status-${run.status}`);
     }
   });
 

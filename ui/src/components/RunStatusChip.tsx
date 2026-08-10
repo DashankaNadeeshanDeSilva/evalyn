@@ -37,11 +37,17 @@ const STATUS_INK: Record<RunStatus, string> = {
 
 export function RunStatusChip({
   status,
-  muted = false,
+  unverified = false,
 }: {
   status: RunStatus;
   /**
-   * Show the status, but withdraw the colour claim.
+   * This status survived a salvage read and is not fully trusted: show it, but
+   * withdraw the colour claim.
+   *
+   * Named for the **fact**, not the presentation. It was `muted` first, which
+   * described what the pixels do rather than what is true — and as Tasks 15, 16
+   * and 17 acquire their own reported-but-unverified states, a boolean called
+   * `muted` accretes unrelated meanings until it means "grey" and nothing else.
    *
    * Used on a degraded row, where `status` survived the salvage read but the
    * artifact behind it did not fully parse. A saturated green `✓ passed`
@@ -52,13 +58,13 @@ export function RunStatusChip({
    *
    * `chassis-600` measures 5.98:1, so nothing is traded for the honesty.
    */
-  muted?: boolean;
+  unverified?: boolean;
 }) {
   return (
     <span
       data-testid="status-chip"
       className={`inline-flex items-center gap-1.5 whitespace-nowrap text-legend uppercase tracking-legend ${
-        muted ? "text-chassis-600" : STATUS_INK[status]
+        unverified ? "text-chassis-600" : STATUS_INK[status]
       }`}
     >
       <StatusIcon status={status} className="h-4 w-4 shrink-0" />

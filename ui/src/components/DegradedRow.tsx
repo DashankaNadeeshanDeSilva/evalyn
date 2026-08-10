@@ -38,8 +38,8 @@ export function DegradedRow({ run }: { run: RunSummary }) {
       className="engrave-b bg-degraded/[0.08] align-top"
     >
       <td className="py-2 pl-4 pr-3 sm:pl-6">
-        {/* Reported by the salvage read, not verified — see `muted`. */}
-        <RunStatusChip status={run.status} muted />
+        {/* Reported by the salvage read, not verified. */}
+        <RunStatusChip status={run.status} unverified />
       </td>
 
       <td className="py-2 pr-3">

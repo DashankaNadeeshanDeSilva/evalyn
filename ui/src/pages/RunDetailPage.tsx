@@ -90,7 +90,7 @@ export function RunDetailPage() {
     <Shell runId={runId}>
       <dl className="grid grid-cols-1 gap-x-10 sm:grid-cols-2 lg:grid-cols-3">
         <Field label="Status">
-          <RunStatusChip status={run.status} muted={run.degraded} />
+          <RunStatusChip status={run.status} unverified={run.degraded} />
         </Field>
         <Field label="Mode">{run.mode}</Field>
         <Field label="Pack">
