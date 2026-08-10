@@ -473,6 +473,10 @@ class GateVerdict(_Model):
     #: Which baseline it diffed against; `None` = no baseline was available,
     #: which makes the capability checks advisory.
     baseline_run_id: str | None = None
+    #: True when `report_md` / `failures` passed through the redactor. Every
+    #: model the chokepoint may rewrite carries this: `extra="forbid"` means
+    #: middleware cannot add the key later, so it has to be declared here.
+    redacted: bool = False
 
 
 class RunDetail(RunSummary):
@@ -487,6 +491,9 @@ class RunDetail(RunSummary):
     total_unsure_trials: int | None = None
     cancelled: bool = False
     probes: list[ProbeRow] = []
+    #: True when anything in this view passed through the redactor — the
+    #: chokepoint's only way to say it ran. See `GateVerdict.redacted`.
+    redacted: bool = False
     #: Populated for `mode == compare` only.
     compare: "Scoreboard | None" = None
     #: Populated for `mode == discover` only.
@@ -673,6 +680,9 @@ class Scoreboard(_Model):
     #: Drives the banner: the run was allowed past a missing/stale calibration,
     #: so its rubric verdicts are untrusted.
     rubric_scores_untrusted: bool = False
+    #: True when the labels / sources passed through the redactor (they are
+    #: model ids and file paths). See `GateVerdict.redacted`.
+    redacted: bool = False
 
 
 class TrendPoint(_Model):

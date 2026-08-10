@@ -363,6 +363,46 @@ def test_run_detail_extends_run_summary():
     assert detail.probes == [] and detail.compare is None and detail.discovery is None
 
 
+#: Every model whose body can carry free text the redactor rewrites. The
+#: chokepoint must be able to *say* it ran, and `extra="forbid"` means the
+#: field cannot be bolted on by middleware later — it has to be here.
+REDACTABLE_MODELS = ["RunDetail", "GateVerdict", "Scoreboard", "TrialView",
+                     "CheckView", "TranscriptTurn", "FindingRow", "FindingDetail"]
+
+
+@pytest.mark.parametrize("name", REDACTABLE_MODELS)
+def test_redactable_models_can_record_that_redaction_ran(name):
+    """I2: `RunDetail`, `GateVerdict` and `Scoreboard` had nowhere to record it.
+    `report_md`, `evidence` and the label fields all pass through the redactor,
+    so a view that was scrubbed was indistinguishable from one that was not —
+    and the `RedactedChip` had nothing to bind to."""
+    field = getattr(m, name).model_fields.get("redacted")
+    assert field is not None, f"{name} has no `redacted` flag"
+    assert field.annotation is bool
+    assert field.default is False, "un-redacted is the default, never None"
+
+
+@pytest.mark.parametrize("name", REDACTABLE_MODELS)
+def test_the_redaction_flag_cannot_be_added_by_middleware_later(name):
+    """Why the field is structural and not cosmetic: `extra="forbid"` means a
+    later task literally cannot inject the key into the response dict."""
+    model = getattr(m, name)
+    assert model.model_config["extra"] == "forbid"
+    with pytest.raises(ValidationError, match="extra_forbidden|Extra inputs"):
+        model.model_validate({"was_redacted": True})
+
+
+def test_gate_verdict_and_scoreboard_default_to_not_redacted():
+    verdict = m.GateVerdict(run_id="20260723T080347-example", exit_code=0)
+    assert verdict.redacted is False
+    board = m.Scoreboard(run_id="20260723T080347-example",
+                         created_at="2026-07-23T08:03:47+00:00",
+                         label_a="a", label_b="b", redacted=True)
+    assert board.redacted is True
+    detail = m.RunDetail(**_summary().model_dump(), redacted=True)
+    assert detail.redacted is True
+
+
 def test_check_view_tier_is_typed_with_the_verdict_tier_enum():
     """I1: `VerdictTier` was exported and asserted but typed on nothing, so
     Task 9's `VerdictBadge` had no field to read. `tier: int` also let a
