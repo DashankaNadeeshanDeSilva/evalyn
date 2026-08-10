@@ -201,9 +201,29 @@ _WORD_RUN_RE = re.compile(_WORD_CHAR + r"+", re.UNICODE)
 #: word of ordinary prose" is the better guess, and above it the opposite is.
 WORDLIKE_LITERAL_MAX_LENGTH = 8
 
+#: Scripts written without spaces between words (scriptio continua), where the
+#: guard's whole premise — "a letter next to the match means the match is part of
+#: a longer word" — is simply false, because a neighbouring particle (`は`, `の`,
+#: `です`, `的`, `는`) is a word character and is also exactly how the script
+#: writes a sentence. Han (incl. Ext. A and the supplementary planes), Hiragana,
+#: Katakana (incl. halfwidth), Hangul (syllables and jamo), Thai, Lao, Khmer and
+#: Myanmar.
+_SCRIPTIO_CONTINUA_RE = re.compile(
+    "["
+    "\u3005-\u3007\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff"   # Han
+    "\U00020000-\U0002fa1f"                                 # Han, supplementary planes
+    "\u3040-\u30ff\uff66-\uff9f"                               # Hiragana, Katakana (+halfwidth)
+    "\u1100-\u11ff\u3130-\u318f\ua960-\ua97f"                     # Hangul jamo
+    "\uac00-\ud7a3\ud7b0-\ud7ff"                               # Hangul syllables
+    "\u0e00-\u0e7f\u0e80-\u0eff"                               # Thai, Lao
+    "\u1780-\u17ff\u19e0-\u19ff"                               # Khmer
+    "\u1000-\u109f\ua9e0-\ua9ff\uaa60-\uaa7f"                     # Myanmar
+    "]"
+)
+
 
 def _is_wordlike(value: str) -> bool:
-    """Could this literal be a *fragment of an ordinary word* rather than a hit?
+    r"""Could this literal be a *fragment of an ordinary word* rather than a hit?
 
     Both halves are needed and neither is about the surrounding text:
 
@@ -212,6 +232,22 @@ def _is_wordlike(value: str) -> bool:
       whitespace are the shapes secrets take — filenames, paths, addresses,
       identifiers, phrases — and the shapes words do not, so a literal carrying
       one cannot be swallowed by a word however short it is.
+    * **Written in a script where whitespace marks word boundaries.** The other
+      two terms measure length in *code points*, and 8 code points is a word in
+      Latin script and a whole sentence in Han, Kana or Hangul — so every short
+      CJK/Korean literal landed on the guarded side, where the guard then
+      essentially never fires, because the neighbouring particle (`は`, `の`,
+      `です`, `的`, `는`) is a `[^\W_]` word character and is also just how the
+      sentence is written. `社外秘` inside `これは社外秘です` was the leak. This
+      term only ever *removes* a guard, never grants an exemption, so it cannot
+      put the class question back on the leak path: the default is unguarded,
+      and unguarded means redacted.
+
+    Indic and Thai literals mostly land unguarded for a second, weaker reason —
+    a combining vowel sign is `\W` under `re`, so `ลับ` fails the word-run test
+    before the script test is reached. That is a side effect of how `re`
+    classifies combining marks, not a decision; the script term is what makes
+    the outcome intentional for the ones that would otherwise pass.
 
     Deliberately *not* a mixed-case test, which the round-4 brief floated: title
     case is both the commonest way a word is written and the exact shape of the
@@ -222,7 +258,8 @@ def _is_wordlike(value: str) -> bool:
     claim on either failure mode.
     """
     return (len(value) < WORDLIKE_LITERAL_MAX_LENGTH
-            and _WORD_RUN_RE.fullmatch(value) is not None)
+            and _WORD_RUN_RE.fullmatch(value) is not None
+            and _SCRIPTIO_CONTINUA_RE.search(value) is None)
 
 
 def _literal_pattern(value: str) -> str:
@@ -245,9 +282,10 @@ def _literal_pattern(value: str) -> str:
     of on the script of the text around it, which it can only guess at:
 
     * **A specific literal matches unanchored** — `BOUNDARIES.md`,
-      `/opt/twincore-secrets`, a leaked address. Leak risk goes to zero in every
-      script. What is traded away is the possibility of fragmenting a word that
-      happens to contain a 13-character filename, which is not a real event.
+      `/opt/twincore-secrets`, a leaked address. For this class, leak risk is
+      zero in every script, because no character class is consulted at all. What
+      is traded away is the possibility of fragmenting a word that happens to
+      contain a 13-character filename, which is not a real event.
     * **A word-like literal keeps the `[^\W_]` guard** — the `Acme` class. The
       class question survives there, and it no longer matters: a bare word under
       eight characters is not a secret, so an escape leaks nothing and an
@@ -256,6 +294,13 @@ def _literal_pattern(value: str) -> str:
     That is the point of the split, and it is the right way round: for a
     redaction cockpit, over-redacting ordinary text is the cheap failure and
     emitting a secret is the expensive one.
+
+    **The claim is about the two classes, not about the whole module.** The guard
+    still exempts a short bare word welded to a letter, so a credential that is
+    itself a short bare word — `abc123` in `パスワードはabc123です` — is the one
+    leak shape this design does not reach. It needs a secret shorter than any
+    credential policy permits *and* a welded carrier, and `_is_wordlike`'s script
+    term is what keeps that remainder from covering whole languages.
 
     `MIN_HARVEST_LENGTH` still applies underneath, and stays at 3 rather than
     rising to swallow this class: raising it would silently *drop* every short

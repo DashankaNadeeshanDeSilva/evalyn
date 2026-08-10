@@ -260,6 +260,28 @@ def test_a_specific_literal_is_redacted_in_every_script_that_welds_it(carrier: s
     assert redaction_marker("check_value") in out
 
 
+@pytest.mark.parametrize("literal, carrier", [
+    ("社外秘", "これは社外秘です"),           # "company confidential", Han
+    ("内部文档", "这是内部文档的内容"),        # "internal document", Han
+    ("비밀번호", "비밀번호는입니다"),           # "password", Hangul
+    ("パスワード", "パスワードはabcです"),      # "password", Katakana
+])
+def test_a_literal_in_a_script_without_spaces_is_never_guarded(literal: str, carrier: str):
+    """The guard's length term counts code points, and 8 code points is a word in
+    Latin script and a whole sentence in Han, Kana or Hangul.
+
+    So every short CJK/Korean literal fell on the guarded side, and in a script
+    with no spaces the guard essentially never fires: the neighbouring particle
+    (`は`, `の`, `です`, `的`, `는`) is a `[^\\W_]` word character. That left the
+    class question on the leak path for exactly the literals a length-in-code-
+    points rule mis-measures. The guard is now offered only to scripts where
+    whitespace marks a word boundary, which is the only place its premise holds.
+    """
+    out = Redactor(extra_values=[literal]).scrub(carrier)
+    assert literal not in out, f"{literal!r} leaked inside {carrier!r}"
+    assert redaction_marker("check_value") in out
+
+
 @pytest.mark.parametrize("carrier", [
     "die {}システム läuft",
     "{}überwachung angelaufen",
