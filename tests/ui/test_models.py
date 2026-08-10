@@ -347,6 +347,33 @@ def test_error_envelope_shape():
         "error": {"code": "not_found", "message": "no such run", "detail": None}}
 
 
+def test_the_contract_records_the_422_wrapping_obligation():
+    """I6: the framework generates non-2xx responses this module never sees.
+    FastAPI answers a malformed body with its own `RequestValidationError` →
+    422 `{"detail": [...]}`, which is not `ErrorEnvelope`. Task 6 owns the
+    handlers, and has no way to discover the obligation unless the frozen
+    contract carries it — so the requirement lives in the docstrings, where a
+    reader of the module cannot miss it."""
+    module_doc = m.__doc__ or ""
+    for token in ("422", "RequestValidationError", "ErrorEnvelope",
+                  "exception handler"):
+        assert token in module_doc, f"module docstring must name {token!r}"
+
+    envelope_doc = m.ErrorEnvelope.__doc__ or ""
+    for token in ("422", "RequestValidationError", "HTTPException"):
+        assert token in envelope_doc, f"ErrorEnvelope docstring must name {token!r}"
+
+
+def test_the_422_error_code_mapping_is_expressible_in_the_closed_set():
+    """The set is closed, so the wrapped 422 must map onto a member that
+    already exists — the docstring names which, and this proves it is real."""
+    assert m.ErrorCode.launch_refused in m.ErrorCode
+    body = m.ErrorEnvelope(error=m.ApiError(code=m.ErrorCode.launch_refused,
+                                            message="invalid request body",
+                                            detail="mode: input not a RunMode"))
+    assert json.loads(body.model_dump_json())["error"]["code"] == "launch_refused"
+
+
 def test_error_code_must_come_from_the_closed_enum():
     with pytest.raises(ValidationError):
         m.ApiError(code="teapot", message="nope")

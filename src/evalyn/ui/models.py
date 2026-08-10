@@ -19,6 +19,23 @@ Three rules make this a contract rather than a suggestion:
   measured import-isolation baseline (`import evalyn.cli` loads neither
   fastapi nor uvicorn).
 
+One obligation this module cannot enforce, and therefore states outright:
+
+* **The 422 nobody wrote is still part of the contract.** These models are how
+  Evalyn *chooses* to fail, but the framework fails on its own too: a body that
+  does not validate never reaches a handler, and FastAPI answers it with its
+  own `RequestValidationError` → HTTP 422 shaped `{"detail": [...]}`. That is
+  not an `ErrorEnvelope`, so the SPA's single error path — read
+  `error.code`, switch on it — breaks on exactly the responses a hostile or
+  buggy client produces most. **The task that builds the app owns installing an
+  exception handler for `RequestValidationError` *and* for `HTTPException`,
+  each re-wrapping the response as `ErrorEnvelope`** so that *every* non-2xx
+  body in the system has the same shape. `ErrorCode` is a closed set and the
+  wrapped 422 must map into it: a rejected **write body** is
+  `launch_refused`, a rejected **path or query parameter** (a `run_id` that
+  fails the grammar above, say) is `not_found` — the resource cannot exist,
+  and saying so leaks nothing about the filesystem.
+
 Two conventions the SPA depends on and must not be re-derived:
 
 * **Absent vs null.** Affordances are disabled off `Capabilities`, never off
@@ -357,7 +374,15 @@ class ApiError(_Model):
 
 
 class ErrorEnvelope(_Model):
-    """The body of **every** non-2xx response. Never a bare `{"detail": …}`."""
+    """The body of **every** non-2xx response. Never a bare `{"detail": …}`.
+
+    "Every" includes the ones no Evalyn handler raises. FastAPI's own
+    `RequestValidationError` (HTTP 422, from a body that fails these very
+    models) and `HTTPException` both bypass this shape unless the app installs
+    exception handlers that re-wrap them. Doing so is a hard requirement on
+    whichever task builds the app, not a nicety: the SPA reads `error.code` and
+    has no second parser. See the module docstring for the code mapping.
+    """
 
     error: ApiError
 
