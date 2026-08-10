@@ -13,13 +13,22 @@ import { IconRedacted } from "./InstrumentIcon";
  * chassis ink on a chassis field. Safety orange is rationed to actions that
  * spend money or interrupt work, and this is neither.
  *
- * **One line, and short.** The first build spent a 44-word paragraph at ~190
- * characters of measure — nearly triple the readable ceiling — on every one of
- * seven pages, restating an unchangeable policy to an expert who cannot turn it
- * off, in the region the direction reserves for the readout and the verdict
- * rows. Density over decoration (Product Principle 5) cuts the explanation and
- * keeps the two facts the operator actually needs: that redaction is on, and
- * what a removed value looks like when they meet one.
+ * **One line, and short — but it must keep its subject.** The first build spent
+ * a 44-word paragraph at ~190 characters of measure, nearly triple the readable
+ * ceiling, on every page. Cutting it to one line then cut the wrong half: it
+ * kept *how* a removed value looks and dropped *what* gets removed, which is
+ * the load-bearing noun. The banner is permanent precisely so nobody has to
+ * wonder whether a quiet transcript is quiet or censored, and only the scope
+ * answers that.
+ *
+ * So the line carries three facts and stops: redaction is on, **transcripts,
+ * findings and paths** are what it touches, and this is what a removed value
+ * looks like when you meet one.
+ *
+ * `reveal_required` is deliberately not rendered here. Revealing is per-object
+ * and belongs beside the object being revealed (the finding detail view), not
+ * as a fourth clause in a standing legend on six pages that have nothing to
+ * reveal.
  */
 export function RedactionBanner({ redaction }: { redaction: RedactionMeta }) {
   if (!redaction.enabled) return null;
@@ -37,18 +46,14 @@ export function RedactionBanner({ redaction }: { redaction: RedactionMeta }) {
         <span className="mx-2 text-chassis-400" aria-hidden="true">
           ·
         </span>
+        transcripts, findings and paths are scrubbed
+        <span className="mx-2 text-chassis-400" aria-hidden="true">
+          ·
+        </span>
         removed values read{" "}
         <code className="bg-chassis-200 px-1 text-chassis-900">
           {redaction.marker}
         </code>
-        {redaction.reveal_required ? (
-          <>
-            <span className="mx-2 text-chassis-400" aria-hidden="true">
-              ·
-            </span>
-            revealing is per-object and logged
-          </>
-        ) : null}
       </p>
     </div>
   );

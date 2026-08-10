@@ -33,18 +33,45 @@ import { RunStatusChip } from "./RunStatusChip";
  * the eye stops reading it as one row, which is worse on a projector than on a
  * desk. The percentages are the face's fixed graduation; `table-fixed` is what
  * makes the browser honour them.
+ *
+ * **The budget is sized against the widest content each column can ever hold, at
+ * the table's own minimum width — not against the desktop render and not against
+ * what the fixtures happen to contain.** `table-fixed` does not clip an
+ * overflowing cell; it lets it collide with its neighbour, so an under-sized
+ * column is illegible rather than merely tight.
+ *
+ * Two attempts got this wrong in the same way, which is why the numbers below
+ * are measured rather than estimated. STATUS at 9% of a 62rem floor gave a chip
+ * 89px and left a 7px gap to the run id — and on a degraded row, where the chip
+ * is muted to the same grey as the id, the two read as one string. Re-sizing to
+ * 12% fixed the fixtures (all of which say `passed`) while still overflowing by
+ * 41px on `failed_to_start`, the longest `RunStatus` member, which no fixture
+ * exercises. The column has to hold the widest **enum member**, not the widest
+ * sample.
+ *
+ * Sizing at the 70rem (1120px) floor, verified in a browser for all nine
+ * members — the check is that no cell overflows and the narrowest STATUS-to-RUN
+ * gap stays above one character (16% left `failed_to_start` at 4px, which is a
+ * collision waiting for a longer member):
+ *   status  17% = 190px  — "✓ failed_to_start", the longest chip
+ *   run     33% = 370px  — a 44-char run id at 14px mono
+ *   mode     7% =  78px  — "discover"
+ *   pack     6% =  67px  — "example"
+ *   created 16% = 179px  — "2026-08-06 09:10:11Z", whitespace-nowrap
+ *   verdict 13% = 146px  — "✓ gate passed" plus its glyph
+ *   spend    8% =  90px  — "$0.1234", right-aligned
  */
 const COLUMNS = [
-  { key: "status", label: "Status", width: "9%" },
-  { key: "run", label: "Run", width: "34%" },
-  { key: "mode", label: "Mode", width: "8%" },
-  { key: "pack", label: "Pack", width: "10%" },
+  { key: "status", label: "Status", width: "17%" },
+  { key: "run", label: "Run", width: "33%" },
+  { key: "mode", label: "Mode", width: "7%" },
+  { key: "pack", label: "Pack", width: "6%" },
   { key: "created", label: "Created (UTC)", width: "16%" },
   // "hint" is in the header rather than on every cell: the list's verdict is
   // computed from `probes[]` without calling `evaluate_gate`, and the contract
   // says never to render it without saying so.
   { key: "verdict", label: "Verdict (hint)", width: "13%" },
-  { key: "spend", label: "Judge USD", width: "10%", numeric: true },
+  { key: "spend", label: "Judge USD", width: "8%", numeric: true },
 ] as const;
 
 /**
@@ -80,7 +107,10 @@ function VerdictHintCell({ hint }: { hint: VerdictHint | null }) {
           the same green `passed` twice on a gate run — and because the gate
           outcome is literally what this is. */}
       <span>
-        <span className="text-chassis-500">gate </span>
+        {/* chassis-600, NOT chassis-500: this is 12px body text in the
+            product's central-output column, and the config's own rule is that
+            4.03:1 does not carry text. 5.98:1 de-emphasises just as well. */}
+        <span className="text-chassis-600">gate </span>
         {hint}
       </span>
       <span className="sr-only"> (approximate)</span>
@@ -160,7 +190,7 @@ export function RunsTable({ runs }: { runs: RunSummary[] }) {
     // Wide content scrolls inside its own container; the page body never
     // scrolls horizontally.
     <div className="overflow-x-auto">
-      <table className="w-full min-w-[62rem] max-w-[120rem] table-fixed border-collapse text-left">
+      <table className="w-full min-w-[70rem] max-w-[120rem] table-fixed border-collapse text-left">
         <caption className="sr-only">
           Indexed run artifacts, newest first.
         </caption>
