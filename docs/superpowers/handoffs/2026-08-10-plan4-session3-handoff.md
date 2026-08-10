@@ -41,10 +41,13 @@ Read that only for history — this document supersedes it.
 
 `dev` is **2 commits ahead of `origin/dev`** and unpushed (`8f3e2de`, `5de0515` — both docs).
 
+**Committed at the end of session 3:** `PRODUCT.md`, `.impeccable/surfaces/ui-src.md` and this
+handoff, as `e5c1b60` + `06a1bf1`. Note these landed on **`feat/plan4-ui`, not `dev`**, contrary to
+the docs-only convention in CLAUDE.md — switching branches would have yanked the working tree out
+from under the running Task 4 agent. Cherry-pick them to `dev` if you want them there.
+
 **Uncommitted in the working tree, deliberately:**
 - `docs/superpowers/handoffs/2026-08-07-plan4-ui-kickoff.md` — the maintainer's own edit, never staged
-- `PRODUCT.md` and `.impeccable/` — design artifacts created this session. **Decide whether to commit
-  them.** They hold real decisions; my inclination is yes, as a docs commit.
 
 **Worktree `../Evalyn_frontend_lane`** still exists but is merged and no longer needed —
 `git worktree remove` it when convenient.
