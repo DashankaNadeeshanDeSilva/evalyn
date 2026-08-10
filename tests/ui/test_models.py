@@ -11,6 +11,8 @@ from __future__ import annotations
 
 import json
 import pathlib
+import types
+import typing
 
 import pytest
 from pydantic import BaseModel, ValidationError
@@ -686,6 +688,359 @@ def test_models_module_does_not_import_fastapi():
         elif isinstance(node, ast.ImportFrom) and node.module:
             imported.add(node.module.split(".")[0])
     assert not imported & {"fastapi", "starlette", "uvicorn"}, imported
+
+
+# --------------------------------------------------------------------------
+# I4 / R4-15 — the freeze, ENFORCED: every model's exact structure
+#
+# Everything above pins *behaviour* — an enum's members, a validator, a
+# rejected key. None of it noticed a **renamed or deleted field**: nine models
+# had no structural assertion at all, so `ProbeRow.pass_k -> passk` was a
+# silent, green change to a module whose entire purpose is that such a change
+# cannot be silent. The dict below is the freeze itself. Editing it is the
+# deliberate act of re-cutting the contract, and every edit must land in
+# `ui/src/api/types.ts` in the same commit.
+#
+# R4-15: the model list is derived from `__all__`, never hand-listed, so a
+# model added later is covered the moment it is exported rather than joining
+# the unpinned nine.
+# --------------------------------------------------------------------------
+
+def _type_name(tp) -> str:
+    """Render an annotation the way a reader would have written it."""
+    if tp is type(None):
+        return "None"
+    if hasattr(tp, "__metadata__"):                  # Annotated[X, ...] -> X
+        return _type_name(tp.__origin__)
+    origin = typing.get_origin(tp)
+    if origin in (typing.Union, types.UnionType):
+        return " | ".join(_type_name(a) for a in typing.get_args(tp))
+    if origin is not None:
+        args = ", ".join(_type_name(a) for a in typing.get_args(tp))
+        return f"{getattr(origin, '__name__', str(origin))}[{args}]"
+    return getattr(tp, "__name__", str(tp))
+
+
+def _structure(model) -> dict[str, tuple[str, bool]]:
+    """`{field: (annotation, is_required)}` — the whole shape of one model."""
+    return {name: (_type_name(field.annotation), field.is_required())
+            for name, field in model.model_fields.items()}
+
+
+#: Named separately because `RunDetail` is a strict **superset** of the row —
+#: the SPA renders the detail page from a warm cache entry, which only works
+#: while that stays true. Same for `FindingDetail` over `FindingRow`.
+_RUN_SUMMARY = {
+    "run_id": ("str", True),
+    "mode": ("RunMode", True),
+    "pack_name": ("str | None", False),
+    "created_at": ("str", True),
+    "status": ("RunStatus", True),
+    "degraded": ("bool", False),
+    "degraded_reason": ("str | None", False),
+    "capabilities": ("Capabilities", True),
+    "judge_usd": ("float | None", False),
+    "verdict_hint": ("VerdictHint | None", False),
+}
+
+_FINDING_ROW = {
+    "probe_id": ("str", True),
+    "run_id": ("str | None", False),
+    "objective_id": ("str", True),
+    "confirmed": ("bool", True),
+    "probe_path": ("str", True),
+    "category": ("str | None", False),
+    "safety_critical": ("bool", False),
+    "persona_id": ("str", False),
+    "playbook_id": ("str", False),
+    "duplicate_of": ("str | None", False),
+    "duplicate_reason": ("str | None", False),
+    "replay_status": ("ReplayStatus | None", False),
+    "created_at": ("str | None", False),
+    "redacted": ("bool", False),
+}
+
+EXPECTED_STRUCTURE: dict[str, dict[str, tuple[str, bool]]] = {
+    "ApiError": {
+        "code": ("ErrorCode", True),
+        "message": ("str", True),
+        "detail": ("str | None", False),
+    },
+    "ErrorEnvelope": {"error": ("ApiError", True)},
+    "Capabilities": {
+        "transcripts": ("bool", True),
+        "trial_records": ("bool", True),
+        "hard_metrics": ("bool", True),
+    },
+    "CheckView": {
+        "check": ("str", True),
+        "tier": ("VerdictTier", True),
+        "required": ("bool", True),
+        "weight": ("float", True),
+        "passed": ("bool | None", False),
+        "score": ("float | None", False),
+        "turn": ("int | None", False),
+        "evidence": ("str", False),
+        "unsure": ("bool", False),
+        "redacted": ("bool", False),
+    },
+    "TranscriptTurn": {
+        "role": ("TurnRole", True),
+        "text": ("str", True),
+        "redacted": ("bool", False),
+    },
+    "ProbeRow": {
+        "id": ("str", True),
+        "category": ("str", True),
+        "kind": ("str", True),
+        "safety_critical": ("bool", True),
+        "samples": ("int", True),
+        "trials": ("int", True),
+        "expected_trials": ("int", False),
+        "pass_at_k": ("float | None", False),
+        "pass_k": ("float | None", False),
+        "mean_score": ("float | None", False),
+        "unsure_trials": ("int", False),
+        "checks": ("list[CheckView]", False),
+        "trial_epochs": ("list[int]", False),
+    },
+    "RunSummary": _RUN_SUMMARY,
+    "RunDetail": {
+        **_RUN_SUMMARY,
+        "pack_hash": ("str | None", False),
+        "judge_model": ("str | None", False),
+        "log_path": ("str | None", False),
+        "rubric_scores_untrusted": ("bool", False),
+        "total_unsure_trials": ("int | None", False),
+        "cancelled": ("bool", False),
+        "probes": ("list[ProbeRow]", False),
+        "redacted": ("bool", False),
+        "compare": ("Scoreboard | None", False),
+        "discovery": ("DiscoverySummary | None", False),
+    },
+    "DiscoverySummary": {
+        "agent_model": ("str | None", False),
+        "rubric_judge_model": ("str | None", False),
+        "eval_status": ("str", False),
+        "error_count": ("int", False),
+        "sessions_total": ("int", False),
+        "confirmed_count": ("int", False),
+        "live_spend_usd": ("float | None", False),
+        "reconciled_spend_usd": ("float | None", False),
+        "effective_spend_usd": ("float | None", False),
+        "budget_exhausted": ("bool", False),
+        "partial": ("bool", False),
+        "objectives": ("list[str]", False),
+        "findings": ("list[FindingRow]", False),
+    },
+    "RunListPage": {
+        "items": ("list[RunSummary]", False),
+        "next_cursor": ("str | None", False),
+    },
+    "TrialView": {
+        "run_id": ("str", True),
+        "probe_id": ("str", True),
+        "epoch": ("int", True),
+        "turns": ("list[TranscriptTurn]", False),
+        "session_seconds": ("float | None", False),
+        "invariant_failures": ("int", False),
+        "checks": ("list[CheckView]", False),
+        "redacted": ("bool", False),
+    },
+    "GateVerdict": {
+        "run_id": ("str", True),
+        "exit_code": ("int", True),
+        "failures": ("list[str]", False),
+        "quarantined": ("list[str]", False),
+        "report_md": ("str", False),
+        "baseline_run_id": ("str | None", False),
+        "redacted": ("bool", False),
+    },
+    "ReplayView": {
+        "status": ("ReplayStatus", True),
+        "reproduced": ("bool | None", False),
+        "trials": ("int | None", False),
+        "pass_k": ("float | None", False),
+        "pass_at_k": ("float | None", False),
+        "expected_trials": ("int | None", False),
+        "checks": ("list[CheckView]", False),
+        "reason": ("str", False),
+    },
+    "FindingRow": _FINDING_ROW,
+    "FindingDetail": {
+        **_FINDING_ROW,
+        "probe_yaml": ("str", False),
+        "provenance": ("dict[str, str]", False),
+        "checks": ("list[CheckView]", False),
+        "turns": ("list[TranscriptTurn]", False),
+        "replay": ("ReplayView | None", False),
+    },
+    "CategoryTally": {
+        "wins_a": ("int", False),
+        "wins_b": ("int", False),
+        "ties": ("int", False),
+        "unsure": ("int", False),
+        "flips": ("int", False),
+        "criteria_judged": ("int", False),
+        "flip_rate": ("float", False),
+    },
+    "HardMetrics": {
+        "latency_mean_a": ("float | None", False),
+        "latency_mean_b": ("float | None", False),
+        "latency_p95_a": ("float | None", False),
+        "latency_p95_b": ("float | None", False),
+        "invariant_failures_a": ("int", False),
+        "invariant_failures_b": ("int", False),
+        "trials_a": ("int", False),
+        "trials_b": ("int", False),
+    },
+    "Scoreboard": {
+        "run_id": ("str", True),
+        "pack_name": ("str | None", False),
+        "created_at": ("str", True),
+        "label_a": ("str", True),
+        "label_b": ("str", True),
+        "source_a": ("str | None", False),
+        "source_b": ("str | None", False),
+        "created_at_a": ("str | None", False),
+        "created_at_b": ("str | None", False),
+        "categories": ("dict[str, CategoryTally]", False),
+        "hard_metrics": ("dict[str, HardMetrics]", False),
+        "excluded_pairs": ("int", False),
+        "judge_usd": ("float | None", False),
+        "rubric_scores_untrusted": ("bool", False),
+        "redacted": ("bool", False),
+    },
+    "TrendPoint": {
+        "run_id": ("str", True),
+        "created_at": ("str", True),
+        "value": ("float", True),
+    },
+    "TrendSeries": {
+        "pack_name": ("str", True),
+        "probe_id": ("str", True),
+        "metric": ("TrendMetric", True),
+        "points": ("list[TrendPoint]", False),
+    },
+    "CriterionCounts": {"hits": ("int", True), "total": ("int", True)},
+    "TrustReport": {
+        "pack_name": ("str", True),
+        "judge_model": ("str | None", False),
+        "agreement": ("float | None", False),
+        "per_rubric_agreement": ("dict[str, float]", False),
+        "per_criterion_agreement": ("dict[str, float]", False),
+        "per_criterion_counts": ("dict[str, CriterionCounts]", False),
+        "unmatched": ("list[str]", False),
+        "stale": ("bool", False),
+        "stale_reason": ("str | None", False),
+        "calibrated_at": ("str | None", False),
+        "threshold": ("float | None", False),
+    },
+    "LaunchRequest": {
+        "mode": ("RunMode", True),
+        "pack_id": ("str", True),
+        "confirm": ("str", True),
+        "baseline_run_id": ("str | None", False),
+        "run_id_a": ("str | None", False),
+        "run_id_b": ("str | None", False),
+        "max_usd": ("float | None", False),
+        "objectives": ("list[str]", False),
+        "allow_uncalibrated": ("bool", False),
+    },
+    "ControlRequest": {"action": ("ControlAction", True)},
+    "RedactionMeta": {
+        "enabled": ("bool", False),
+        "marker": ("str", False),
+        "reveal_required": ("bool", False),
+    },
+    "MetaResponse": {
+        "version": ("str", True),
+        "runs_dir": ("str", True),
+        "packs": ("list[str]", False),
+        "allow_discover": ("bool", False),
+        "redaction": ("RedactionMeta", False),
+        "heartbeat_seconds": ("float", False),
+    },
+    "HealthResponse": {"ok": ("bool", False), "version": ("str", True)},
+}
+
+#: R4-15's "skip non-model exports **explicitly**". Listing them by hand is the
+#: point: a new export lands in neither set and the classification test reds,
+#: so nobody can add a model and quietly leave it unpinned.
+NON_MODEL_EXPORTS = {
+    "RUN_ID_PATTERN", "RUN_ID_RE", "RunId", "is_run_id",
+    "REDACTION_MARKER_RE", "redaction_marker", "HEARTBEAT_SECONDS",
+    "CURSOR_SEPARATOR", "make_cursor", "parse_cursor", "display_path",
+    "RunMode", "RunStatus", "ErrorCode", "VerdictTier", "VerdictHint",
+    "ControlAction", "ReplayStatus", "TurnRole", "TrendMetric", "EventName",
+}
+
+
+def test_every_export_is_classified_as_a_model_or_not():
+    """R4-15: coverage grows with the module instead of rotting."""
+    exported_models = {c.__name__ for c in _all_models()}
+    assert not exported_models & NON_MODEL_EXPORTS
+    assert exported_models | NON_MODEL_EXPORTS == set(m.__all__), (
+        "a new export must be pinned in EXPECTED_STRUCTURE or declared in "
+        "NON_MODEL_EXPORTS — leaving it unclassified is what I4 caught")
+
+
+def test_the_structural_pin_covers_every_exported_model():
+    """The list is derived, never hand-maintained — this is what makes it so."""
+    assert set(EXPECTED_STRUCTURE) == {c.__name__ for c in _all_models()}
+
+
+@pytest.mark.parametrize("name", sorted(EXPECTED_STRUCTURE))
+def test_model_structure_is_frozen(name):
+    """Rename, retype, add, drop or make-optional any field and this reds."""
+    assert _structure(getattr(m, name)) == EXPECTED_STRUCTURE[name]
+
+
+def test_the_detail_models_stay_supersets_of_their_rows():
+    """Not an accident of the dict above — the SPA renders the detail page
+    from a warm list-cache entry, which requires the row's shape to survive."""
+    detail = _structure(m.RunDetail)
+    assert all(detail[k] == v for k, v in _structure(m.RunSummary).items())
+    finding = _structure(m.FindingDetail)
+    assert all(finding[k] == v for k, v in _structure(m.FindingRow).items())
+
+
+# --------------------------------------------------------------------------
+# and the one thing `(annotation, is_required)` cannot see: `RunId` erases to
+# `str`, so the pin above would not notice a path parameter losing its grammar
+# --------------------------------------------------------------------------
+
+#: `{model: {fields typed RunId or RunId | None}}`. Widening one of these to a
+#: bare `str` reopens the traversal hole the grammar closes by construction.
+RUN_ID_TYPED_FIELDS = {
+    "RunSummary": {"run_id"},
+    "RunDetail": {"run_id"},
+    "GateVerdict": {"run_id"},
+    "TrialView": {"run_id"},
+    "Scoreboard": {"run_id"},
+    "TrendPoint": {"run_id"},
+    "FindingRow": {"run_id"},
+    "FindingDetail": {"run_id"},
+    "LaunchRequest": {"baseline_run_id", "run_id_a", "run_id_b"},
+}
+
+
+def _carries_run_id_grammar(fragment) -> bool:
+    if isinstance(fragment, dict):
+        if fragment.get("pattern") == m.RUN_ID_PATTERN:
+            return True
+        return any(_carries_run_id_grammar(v) for v in fragment.values())
+    if isinstance(fragment, list):
+        return any(_carries_run_id_grammar(v) for v in fragment)
+    return False
+
+
+@pytest.mark.parametrize("name", sorted(EXPECTED_STRUCTURE))
+def test_exactly_the_declared_fields_are_typed_with_the_run_id_grammar(name):
+    schema = getattr(m, name).model_json_schema()
+    typed = {field for field, frag in schema.get("properties", {}).items()
+             if _carries_run_id_grammar(frag)}
+    assert typed == RUN_ID_TYPED_FIELDS.get(name, set())
 
 
 def test_ui_package_init_is_docstring_only():
