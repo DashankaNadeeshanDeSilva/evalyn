@@ -56,11 +56,22 @@ src/test/setup.ts       jest-dom + one MSW server per Vitest run
 
 ## Things that will bite you
 
-**`types.ts` is hand-written, not generated.** `src/api/__tests__/types.test.ts`
-is the only thing holding it to `models.py`: it pastes every enum as a frozen
-literal *and* parses `models.py` at test time, so a self-consistent TypeScript
-edit still goes red. If it fails, read the Python change before touching the
-literals.
+**`types.ts` is hand-written, not generated.** Two tests are the only things
+holding it to `models.py`, and between them they cover enums, constants, model
+fields and nullability:
+
+- `src/api/__tests__/types.test.ts` — the ten closed enums and the four module
+  constants.
+- `src/api/__tests__/models-drift.test.ts` — the 27 wire models: field names,
+  field order, `extends` relationships, and that every Python `X | None` is a
+  TypeScript `X | null`.
+
+Both work the same way: a frozen literal a reviewer can read, checked at test
+time against `models.py` **and** against `types.ts` parsed as source (interfaces
+are erased at run time, so there is nothing to import). That triangle is what
+makes them discriminating in both directions — a rename on either side goes red,
+and so does a self-consistent edit that touches only one file. If one fails,
+read the change on the other side before touching the literals.
 
 **`VerdictTier` is a string on the wire** — `"1" | "2" | "3" | "abstained"`.
 Never `tier === 1`. `abstained` is a member, so an integer form was never
