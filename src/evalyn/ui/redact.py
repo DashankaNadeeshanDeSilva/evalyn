@@ -186,27 +186,35 @@ _PATTERNS: tuple[tuple[re.Pattern[str], Any], ...] = (
 )
 
 
-def _is_word_char(char: str) -> bool:
-    return bool(char) and (char.isalnum() or char == "_")
+def _is_alnum(char: str) -> bool:
+    return bool(char) and char.isalnum()
 
 
 def _bounded_literal(value: str) -> str:
-    r"""Escape a harvested literal and anchor it at whichever edge is a word.
+    r"""Escape a harvested literal and anchor it at whichever edge is alphanumeric.
 
     Unanchored, a short check value fragments ordinary text: `packs/example`
     carries a real four-character `contains` value, `Acme`, which turns
-    "AcmeCorp" into "«redacted:check_value»Corp". `\b` is applied **per edge**
-    rather than blindly, because a literal that begins with `/` (a path) or ends
-    with `»` has no word boundary there and anchoring it would stop it matching
-    at all — the failure mode that trades over-redaction for a leak.
+    "AcmeCorp" into "«redacted:check_value»Corp". The guard is applied **per
+    edge** rather than blindly, because a literal that begins with `/` (a path)
+    or ends with `»` has no alphanumeric edge there and anchoring it would stop
+    it matching at all — the failure mode that trades over-redaction for a leak.
+
+    The guard is an **alphanumeric-only lookaround, deliberately not `\b`.**
+    `\b` counts `_` as a word character, so `\bBOUNDARIES\.md\b` cannot match
+    inside `_BOUNDARIES.md_` or `my_BOUNDARIES.md_file` — and `BOUNDARIES.md` is
+    a harvested `not_contains` value, i.e. a system-prompt fragment, wrapped in
+    the underscores a markdown-rendered transcript uses for italics. Anchoring
+    must stop a literal fragmenting a *word*; an underscore is punctuation as
+    far as that job is concerned.
 
     `MIN_HARVEST_LENGTH` still applies; boundaries are the second floor, not a
     replacement for the first.
     """
     return (
-        (r"\b" if _is_word_char(value[:1]) else "")
+        (r"(?<![A-Za-z0-9])" if _is_alnum(value[:1]) else "")
         + re.escape(value)
-        + (r"\b" if _is_word_char(value[-1:]) else "")
+        + (r"(?![A-Za-z0-9])" if _is_alnum(value[-1:]) else "")
     )
 
 

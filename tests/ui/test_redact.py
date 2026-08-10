@@ -203,6 +203,35 @@ def test_a_harvested_literal_does_not_fragment_the_word_it_sits_inside():
         f"the {redaction_marker('check_value')} deployment")
 
 
+@pytest.mark.parametrize("carrier", [
+    "_BOUNDARIES.md_",                  # markdown italics, in a rendered transcript
+    "my_BOUNDARIES.md_file",
+    "xBOUNDARIES.md",
+    "BOUNDARIES.mdx",
+    "**BOUNDARIES.md**",
+    "see `BOUNDARIES.md` today.",
+    "docs/BOUNDARIES.md",
+    'read "BOUNDARIES.md" first',
+])
+def test_an_anchored_literal_still_fires_when_it_is_welded_to_punctuation(carrier: str):
+    r"""The boundary is alphanumeric-only, **not** `\b`.
+
+    `\b` counts `_` as a word character, so an anchored literal cannot match
+    inside an underscore-delimited run and `_BOUNDARIES.md_` would sail through
+    — a real harvested `not_contains` value, wrapped in the underscores markdown
+    uses for italics. `x…`/`…x` are here because a literal welded to a letter is
+    the one case anchoring is *supposed* to let through, and it must stay a
+    deliberate choice rather than a side effect of which class `_` lands in.
+    """
+    redactor = Redactor(extra_values=["BOUNDARIES.md"])
+    out = redactor.scrub(carrier)
+    if carrier in ("xBOUNDARIES.md", "BOUNDARIES.mdx"):
+        assert out == carrier, "a literal welded to a letter is not a word of its own"
+    else:
+        assert "BOUNDARIES.md" not in out, f"{carrier!r} leaked a system-prompt fragment"
+        assert redaction_marker("check_value") in out
+
+
 def test_a_literal_with_non_word_edges_is_still_matched_where_it_appears():
     """`\\b` is applied per edge, not blindly: a literal that starts with `/` has
     no word boundary in front of it and must not be anchored as though it did."""
