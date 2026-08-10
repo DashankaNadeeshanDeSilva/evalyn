@@ -186,35 +186,54 @@ _PATTERNS: tuple[tuple[re.Pattern[str], Any], ...] = (
 )
 
 
-def _is_alnum(char: str) -> bool:
-    return bool(char) and char.isalnum()
+#: "A word character that is not `_`" — the one character class the boundary
+#: logic uses, for both halves of the decision. `\w` is Unicode-aware, so this
+#: covers `ü`, `λ`, `システム` and every other script a transcript can carry;
+#: subtracting `_` is what makes an underscore punctuation rather than a letter.
+_WORD_EDGE_RE = re.compile(r"[^\W_]", re.UNICODE)
+
+
+def _is_word_edge(char: str) -> bool:
+    return bool(char) and _WORD_EDGE_RE.fullmatch(char) is not None
 
 
 def _bounded_literal(value: str) -> str:
-    r"""Escape a harvested literal and anchor it at whichever edge is alphanumeric.
+    r"""Escape a harvested literal and anchor it at whichever edge is a letter.
 
     Unanchored, a short check value fragments ordinary text: `packs/example`
     carries a real four-character `contains` value, `Acme`, which turns
     "AcmeCorp" into "«redacted:check_value»Corp". The guard is applied **per
     edge** rather than blindly, because a literal that begins with `/` (a path)
-    or ends with `»` has no alphanumeric edge there and anchoring it would stop
-    it matching at all — the failure mode that trades over-redaction for a leak.
+    or ends with `»` has no letter at that edge and anchoring it would stop it
+    matching at all — the failure mode that trades over-redaction for a leak.
 
-    The guard is an **alphanumeric-only lookaround, deliberately not `\b`.**
-    `\b` counts `_` as a word character, so `\bBOUNDARIES\.md\b` cannot match
-    inside `_BOUNDARIES.md_` or `my_BOUNDARIES.md_file` — and `BOUNDARIES.md` is
-    a harvested `not_contains` value, i.e. a system-prompt fragment, wrapped in
-    the underscores a markdown-rendered transcript uses for italics. Anchoring
-    must stop a literal fragmenting a *word*; an underscore is punctuation as
-    far as that job is concerned.
+    The guard is a lookaround over `[^\W_]`, **deliberately neither `\b` nor an
+    ASCII class.** Not `\b`, because `\b` counts `_` as a word character, so
+    `\bBOUNDARIES\.md\b` cannot match inside `_BOUNDARIES.md_` or
+    `my_BOUNDARIES.md_file` — and `BOUNDARIES.md` is a harvested `not_contains`
+    value, i.e. a system-prompt fragment, wrapped in the underscores a
+    markdown-rendered transcript uses for italics. Anchoring must stop a literal
+    fragmenting a *word*; an underscore is punctuation as far as that job is
+    concerned.
+
+    **Script coverage is part of the contract, not an accident.** `[A-Za-z0-9]`
+    would answer "is this a letter?" with "is this an *English* letter?", so
+    `Acmeüberwachung`, `Acmeシステム` and `Acmeλ` would each be fragmented while
+    `AcmeCorp` was spared — the same confetti this function exists to prevent,
+    reintroduced for every non-Latin-script transcript, in a cockpit whose first
+    demo target is a German-language persona twin. `_is_word_edge` and the
+    emitted guard therefore share one class (`_WORD_EDGE_RE`): the test for
+    *whether* to anchor and the guard that *does* the anchoring must agree, or a
+    literal whose own edge is non-ASCII is anchored with a guard that cannot see
+    its neighbours.
 
     `MIN_HARVEST_LENGTH` still applies; boundaries are the second floor, not a
     replacement for the first.
     """
     return (
-        (r"(?<![A-Za-z0-9])" if _is_alnum(value[:1]) else "")
+        (r"(?<![^\W_])" if _is_word_edge(value[:1]) else "")
         + re.escape(value)
-        + (r"(?![A-Za-z0-9])" if _is_alnum(value[-1:]) else "")
+        + (r"(?![^\W_])" if _is_word_edge(value[-1:]) else "")
     )
 
 

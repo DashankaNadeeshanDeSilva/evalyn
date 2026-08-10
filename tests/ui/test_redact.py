@@ -232,9 +232,41 @@ def test_an_anchored_literal_still_fires_when_it_is_welded_to_punctuation(carrie
         assert redaction_marker("check_value") in out
 
 
+@pytest.mark.parametrize("carrier", [
+    "Acmeüberwachung angelaufen",       # German — the demo target is a persona twin
+    "die Acmeシステム läuft",
+    "Acmeλ ok",
+    "АкмеAcmeтест",
+    "AcmeCorp ok",                      # the ASCII case, for the A/B
+])
+def test_a_literal_welded_to_a_non_ascii_letter_is_no_more_a_word_than_an_ascii_one(carrier):
+    """The boundary asks "is this a letter?", not "is this an *English* letter?".
+
+    `[A-Za-z0-9]` excludes every non-Latin script, so a four-character pack value
+    would confetti ordinary prose in exactly the languages this cockpit is most
+    likely to render — the same I5 failure mode, reintroduced one script at a
+    time. `[^\\W_]` is Unicode-aware, so `ü`, `λ`, `シ` and `А` count as letters
+    the way `C` does.
+    """
+    assert Redactor(extra_values=["Acme"]).scrub(carrier) == carrier
+
+
+def test_the_anchor_decision_and_the_anchor_itself_use_the_same_character_class():
+    """A sharper symptom of the same root cause.
+
+    `str.isalnum()` is Unicode-aware and `[A-Za-z0-9]` is not, so a literal whose
+    own edge is non-ASCII was anchored with a guard that could not see its
+    neighbours: anchored, and still fragmenting.
+    """
+    redactor = Redactor(extra_values=["café"])
+    assert redactor.scrub("a caféé here") == "a caféé here"
+    # ...and the literal standing on its own is still a literal.
+    assert redactor.scrub("a café here") == f"a {redaction_marker('check_value')} here"
+
+
 def test_a_literal_with_non_word_edges_is_still_matched_where_it_appears():
-    """`\\b` is applied per edge, not blindly: a literal that starts with `/` has
-    no word boundary in front of it and must not be anchored as though it did."""
+    """The guard is applied per edge, not blindly: a literal that starts with `/`
+    has no letter in front of it and must not be anchored as though it did."""
     redactor = Redactor(extra_values=["/opt/twincore-secrets"])
     assert "/opt/twincore-secrets" not in redactor.scrub("cwd=/opt/twincore-secrets")
 
