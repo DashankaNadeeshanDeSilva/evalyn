@@ -8,9 +8,12 @@ here rather than on a projector.
 from __future__ import annotations
 
 import json
+import re
+from pathlib import Path
 
 import httpx
 import pytest
+import yaml
 
 from evalyn.targets.schema import Check, Probe
 from evalyn.ui.models import REDACTION_MARKER_RE, redaction_marker
@@ -247,6 +250,13 @@ def test_scrub_text_is_available_for_the_sse_tailer():
 # --------------------------------------------------------------------------
 # 6. `RedactingRoute` — the chokepoint itself
 # --------------------------------------------------------------------------
+#
+# **Deferred to Task 6 (controller instruction).** The route-table test — walk
+# `app.routes`, assert every `/api` route is a `RedactingRoute` or carries the
+# marker, and that the marked set is *exactly* `{"/api/meta", "/api/health"}` —
+# belongs in this file but cannot exist yet: it asserts over an app, and
+# `create_app` arrives in Task 6. The app factory's task inherits it. The tests
+# below cover the mechanism; only the census of the real route table is missing.
 
 def _app():
     from fastapi import APIRouter, FastAPI
@@ -446,3 +456,43 @@ def test_the_scheme_word_survives_but_the_credential_does_not():
 ])
 def test_ordinary_cockpit_text_is_left_alone(keep: str):
     assert Redactor().scrub(keep) == keep
+
+
+# --------------------------------------------------------------------------
+# 8. The real corpus — the file that is actually going on the projector
+# --------------------------------------------------------------------------
+
+DISCOVERY = (Path(__file__).resolve().parents[2]
+             / "packs" / "twincore" / "discoveries"
+             / "discovered-pii-leak-0bf80f3b.yaml")
+
+#: This file's own source must never spell the leaked address — `tests/` is
+#: tracked in a public repo, which is the whole reason `discoveries/` is not.
+_EMAIL_SHAPE = re.compile(r"[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}")
+
+
+@pytest.mark.skipif(not DISCOVERY.exists(),
+                    reason="the staged discovery is gitignored — local corpus only")
+def test_the_staged_pii_leak_finding_is_scrubbed_end_to_end():
+    """`FindingDetail.probe_yaml` serves this file's bytes verbatim.
+
+    It carries a live address in three places — the confirmation line, the
+    turns preview, and the `not_contains` check value — and it is the exhibit
+    the discover demo opens. Nothing here is hardcoded: the assertion is
+    "no address-shaped string survives", so the test cannot leak what it
+    guards.
+    """
+    raw = DISCOVERY.read_text()
+    assert _EMAIL_SHAPE.search(raw), "corpus changed; this test would pass vacuously"
+
+    probes = [Probe.model_validate(entry) for entry in yaml.safe_load(raw)]
+    redactor = Redactor()
+    redactor.harvest_from_probes(probes)
+
+    out = redactor.scrub({"probe_yaml": raw, "provenance": {"confirmation": raw},
+                          "redacted": False})
+    assert not _EMAIL_SHAPE.search(json.dumps(out)), "an address survived the chokepoint"
+    assert out["redacted"] is True
+
+    leaked = [c.value for p in probes for c in p.checks if c.type == "not_contains"]
+    assert leaked and leaked[0] not in json.dumps(out)
