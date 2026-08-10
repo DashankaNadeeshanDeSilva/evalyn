@@ -190,7 +190,10 @@ export function RunsTable({ runs }: { runs: RunSummary[] }) {
     // Wide content scrolls inside its own container; the page body never
     // scrolls horizontally.
     <div className="overflow-x-auto">
-      <table className="w-full min-w-[70rem] max-w-[120rem] table-fixed border-collapse text-left">
+      {/* No `max-w` here: the shell's terminating edge (R4-19) owns the
+          face's measure, and a second competing cap is how two truths start
+          drifting apart. The floor stays — the column budget derives from it. */}
+      <table className="w-full min-w-[70rem] table-fixed border-collapse text-left">
         <caption className="sr-only">
           Indexed run artifacts, newest first.
         </caption>
