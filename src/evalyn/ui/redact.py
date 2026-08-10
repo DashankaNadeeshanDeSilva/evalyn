@@ -179,6 +179,30 @@ _PATTERNS: tuple[tuple[re.Pattern[str], Any], ...] = (
 )
 
 
+def _is_word_char(char: str) -> bool:
+    return bool(char) and (char.isalnum() or char == "_")
+
+
+def _bounded_literal(value: str) -> str:
+    r"""Escape a harvested literal and anchor it at whichever edge is a word.
+
+    Unanchored, a short check value fragments ordinary text: `packs/example`
+    carries a real four-character `contains` value, `Acme`, which turns
+    "AcmeCorp" into "«redacted:check_value»Corp". `\b` is applied **per edge**
+    rather than blindly, because a literal that begins with `/` (a path) or ends
+    with `»` has no word boundary there and anchoring it would stop it matching
+    at all — the failure mode that trades over-redaction for a leak.
+
+    `MIN_HARVEST_LENGTH` still applies; boundaries are the second floor, not a
+    replacement for the first.
+    """
+    return (
+        (r"\b" if _is_word_char(value[:1]) else "")
+        + re.escape(value)
+        + (r"\b" if _is_word_char(value[-1:]) else "")
+    )
+
+
 def _classify(literal: str) -> str:
     """Name a harvested literal by what it *is*, not by how it was learned.
 
@@ -305,7 +329,7 @@ class Redactor:
         if self._literal_re is None and self._literals:
             ordered = sorted(self._literals, key=len, reverse=True)
             self._literal_re = re.compile(
-                "|".join(re.escape(value) for value in ordered), re.IGNORECASE)
+                "|".join(_bounded_literal(value) for value in ordered), re.IGNORECASE)
         return self._literal_re
 
     def _replace_literal(self, match: re.Match[str]) -> str:

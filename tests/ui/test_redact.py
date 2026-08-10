@@ -167,6 +167,27 @@ def test_a_short_or_empty_check_value_is_never_harvested():
     assert redactor.scrub("no problem, none at all") == "no problem, none at all"
 
 
+def test_a_harvested_literal_does_not_fragment_the_word_it_sits_inside():
+    """`packs/example` carries a real four-character check value: `Acme`.
+
+    Matched unanchored, it turns "AcmeCorp" into
+    "«redacted:check_value»Corp" — mid-word confetti in ordinary text, from a
+    literal a pack put there for an entirely different reason.
+    """
+    redactor = Redactor(extra_values=["Acme"])
+    assert redactor.scrub("the AcmeCorp deployment") == "the AcmeCorp deployment"
+    # ...while the literal standing on its own is still a literal.
+    assert redactor.scrub("the Acme deployment") == (
+        f"the {redaction_marker('check_value')} deployment")
+
+
+def test_a_literal_with_non_word_edges_is_still_matched_where_it_appears():
+    """`\\b` is applied per edge, not blindly: a literal that starts with `/` has
+    no word boundary in front of it and must not be anchored as though it did."""
+    redactor = Redactor(extra_values=["/opt/twincore-secrets"])
+    assert "/opt/twincore-secrets" not in redactor.scrub("cwd=/opt/twincore-secrets")
+
+
 def test_harvesting_survives_a_probe_that_is_not_shaped_like_a_probe():
     redactor = Redactor()
     redactor.harvest_from_probes([None, object(), {"checks": [{"value": SENTINEL}]}])
@@ -748,8 +769,20 @@ def test_the_scheme_word_survives_but_the_credential_does_not():
     "version 0.4.0, cost 0.41 usd",
     "/usr/local/lib/python3.12/site-packages",
     "runs/.evalyn-ui/meta.json",
+    # The literal table's blast radius, which an unharvested redactor cannot
+    # measure: `Acme` is a real four-character check value in `packs/example`.
+    "the AcmeCorp deployment finished",
+    f"{SENTINEL}ly is a different string entirely",
 ])
 def test_ordinary_cockpit_text_is_left_alone(keep: str):
+    """Run against a **harvested** redactor.
+
+    An unharvested `Redactor()` has an empty literal table, so it cannot see the
+    one over-redaction risk that harvesting introduces — which is exactly how
+    mid-word fragmentation stayed invisible here.
+    """
+    harvested = Redactor(extra_values=["Acme", SENTINEL, "BOUNDARIES.md"])
+    assert harvested.scrub(keep) == keep
     assert Redactor().scrub(keep) == keep
 
 
