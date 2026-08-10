@@ -206,3 +206,46 @@ explicitly, never `git add .`; commits under the maintainer identity with **no C
   review loop is earning its cost — do not downgrade reviewer models.
 - **Reviewers that re-ran mutations themselves caught what report-reading would have missed.** Ask
   for mutation evidence, then have the reviewer reproduce it.
+
+---
+
+## 10. Kickoff prompt for the next session
+
+```
+We're continuing Plan #4 — the `evalyn ui` cockpit. Demo is 2026-08-14 (AI Tinkerers Bremen).
+Work on branch `feat/plan4-ui`.
+
+Read first, in this order:
+1. docs/superpowers/handoffs/2026-08-10-plan4-session3-handoff.md — full state transfer, START HERE
+2. .superpowers/sdd/2026-08-07-evalyn-plan4-ui/progress.md — the ledger; rulings R4-6 … R4-17
+3. .superpowers/sdd/2026-08-07-evalyn-plan4-ui/DEMO-READINESS-AUDIT.md — true dependency graph +
+   the file-collision map that governs what can run in parallel
+4. PRODUCT.md and .impeccable/surfaces/ui-src.md — product truth + the locked design direction.
+   Read the surface brief BEFORE any page task (8, 9, 15, 16, 17, 21).
+5. docs/superpowers/plans/2026-08-07-evalyn-plan4-ui.md — the 22-task plan itself
+
+State: Tasks 0, 1, 2, 3 and 5 complete and review-clean. The twincore-injection demo pack is carved,
+guarded and staged. Suite 726 → 1021, warning-clean in both colour modes. Nothing pushed, no PR.
+**Task 4 (redaction chokepoint) was IN FLIGHT when the last session ended — check `git log` and the
+ledger for its outcome before doing anything else.**
+
+First actions: (1) establish Task 4's true state and review it; (2) then Task 6 → 7 → 8 → 9.
+Sequence Tasks 18–21 LAST — the demo proposal doesn't ask for them and Task 18 edits the engine
+modules my working terminal fallback runs through. I chose to attempt all 20 remaining tasks knowing
+an audit said it isn't achievable; that decision stands, don't re-litigate it.
+
+I'll give you the twin slug early on. A billed diagnostic run (~$0.11–0.30) is built and waiting on
+it — `./packs/twincore-injection/demo.sh bless`. State the cost and get a fresh yes from me before
+billing; the previous approval was a different session. Do NOT auto-bless: read the verdict first,
+because injection-exfil-boundaries is inside that subset and was at pass^k = 0.0.
+
+Working agreements: `uv` only (system python3 is 3.9); suite green and warning-clean in BOTH colour
+modes; ALL subagents on Opus 5, set explicitly on every dispatch; TDD with a DISCRIMINATING red, and
+ask reviewers to reproduce the mutation evidence rather than trust it; two lanes maximum (one Python,
+one TypeScript) and NEVER two Python lanes that can bind port 8899; stage explicitly, never
+`git add .`; commits under my identity with no Claude trailer; ASK before every push and any PR.
+Tell every implementer to commit each coherent piece as it finishes — transient API stalls killed
+five agents last session and only the incremental committers kept their work.
+
+Use superpowers:subagent-driven-development. Think hard, be careful, and ask me questions.
+```
