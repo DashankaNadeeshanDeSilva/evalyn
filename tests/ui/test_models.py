@@ -600,6 +600,78 @@ def test_heartbeat_interval_is_pinned():
 
 
 # --------------------------------------------------------------------------
+# C1 / R4-14 — /api/meta is redaction-EXEMPT, so it must be safe by itself
+# --------------------------------------------------------------------------
+
+def test_display_path_collapses_the_current_home_directory(monkeypatch):
+    monkeypatch.setenv("HOME", "/Users/alice")
+    assert m.display_path("/Users/alice/Drive/x/runs") == "~/Drive/x/runs"
+    assert m.display_path("/Users/alice") == "~"
+    assert m.display_path("/Users/alice/") == "~/"
+
+
+def test_display_path_is_not_hardcoded_to_macos(monkeypatch):
+    monkeypatch.setenv("HOME", "/home/bob")
+    assert m.display_path("/home/bob/evalyn/runs") == "~/evalyn/runs"
+    assert m.display_path("/Users/alice/Drive/x") == "/Users/alice/Drive/x"
+
+
+@pytest.mark.parametrize("path", [
+    "/Users",                       # a bare /Users prefix is NOT the home dir
+    "/Users/",
+    "/Users/alicia/Drive/x",        # a different user whose name starts the same
+    "/Users/alice2/runs",           # prefix without a separator boundary
+    "/opt/evalyn/runs",             # not under home at all
+    "/",
+    "runs",                         # relative — nothing to collapse
+    "~/Drive/x",                    # already collapsed; idempotent
+    "",
+])
+def test_display_path_leaves_everything_else_alone(monkeypatch, path):
+    """R4-14: the helper must be correct when the path is not under the home
+    directory, and must not collapse a `/Users` prefix that isn't this user."""
+    monkeypatch.setenv("HOME", "/Users/alice")
+    assert m.display_path(path) == path
+
+
+def test_display_path_is_idempotent(monkeypatch):
+    monkeypatch.setenv("HOME", "/Users/alice")
+    once = m.display_path("/Users/alice/Drive/x/runs")
+    assert m.display_path(once) == once
+
+
+def test_meta_response_never_ships_an_absolute_home_path(monkeypatch):
+    """C1: `GET /api/meta` is one of exactly two routes exempt from redaction,
+    and `runs_dir` is the single field most likely to hold `/Users/<name>/…`.
+    The SPA renders it, on a shared screen. R4-14: keep the field, fix the
+    value — and `packs` leaks identically, so it gets the same treatment."""
+    monkeypatch.setenv("HOME", "/Users/alice")
+    meta = m.MetaResponse(
+        version="0.2.0",
+        runs_dir="/Users/alice/Drive/Projects/Evalyn_eval_agent/runs",
+        packs=["/Users/alice/Drive/Projects/Evalyn_eval_agent/packs/example",
+               "/opt/shared/packs/prod"],
+    )
+    assert meta.runs_dir == "~/Drive/Projects/Evalyn_eval_agent/runs"
+    assert meta.packs == ["~/Drive/Projects/Evalyn_eval_agent/packs/example",
+                          "/opt/shared/packs/prod"]
+    blob = meta.model_dump_json()
+    assert "/Users/alice" not in blob
+    assert "alice" not in blob
+
+
+def test_meta_response_collapses_on_revalidation_too(monkeypatch):
+    """The SPA round-trips the body; a re-parsed MetaResponse must not be a
+    second chance to smuggle the absolute path back in."""
+    monkeypatch.setenv("HOME", "/Users/alice")
+    reloaded = m.MetaResponse.model_validate(
+        {"version": "0.2.0", "runs_dir": "/Users/alice/runs",
+         "packs": ["/Users/alice/packs/example"]})
+    assert reloaded.runs_dir == "~/runs"
+    assert reloaded.packs == ["~/packs/example"]
+
+
+# --------------------------------------------------------------------------
 # isolation — models.py is imported by the CLI-adjacent package
 # --------------------------------------------------------------------------
 

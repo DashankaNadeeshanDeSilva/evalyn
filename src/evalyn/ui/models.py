@@ -48,6 +48,7 @@ Two conventions the SPA depends on and must not be re-derived:
 """
 from __future__ import annotations
 
+import os.path
 import re
 from enum import Enum
 from typing import Annotated
@@ -66,7 +67,7 @@ __all__ = [
     # grammar + constants
     "RUN_ID_PATTERN", "RUN_ID_RE", "RunId", "is_run_id",
     "REDACTION_MARKER_RE", "redaction_marker", "HEARTBEAT_SECONDS",
-    "CURSOR_SEPARATOR", "make_cursor", "parse_cursor",
+    "CURSOR_SEPARATOR", "make_cursor", "parse_cursor", "display_path",
     # enums
     "RunMode", "RunStatus", "ErrorCode", "VerdictTier", "VerdictHint",
     "ControlAction", "ReplayStatus", "TurnRole", "TrendMetric", "EventName",
@@ -166,6 +167,45 @@ def redaction_marker(kind: str) -> str:
 #: The SSE stream emits a `heartbeat` comment at this cadence so an idle run
 #: does not look like a dead connection to a proxy or to the browser.
 HEARTBEAT_SECONDS = 15.0
+
+
+# --------------------------------------------------------------------------
+# 2a. Display-safe paths — the one thing redaction cannot cover (R4-14)
+# --------------------------------------------------------------------------
+
+def display_path(path: str) -> str:
+    """Collapse the current user's home directory to `~`.
+
+    `/api/meta` and `/api/health` are the only two routes exempt from the
+    redaction chokepoint, and `runs_dir` is the field most likely to hold
+    `/Users/<name>/…` — a home-directory path, which is the very first pattern
+    the spec's redaction list names. Exempt route plus leaky field plus a SPA
+    that renders it on a shared screen is how a demo leaks an operator's name.
+
+    The field stays (the plan mandates that `/api/meta` returns `runs_dir`);
+    the *value* becomes display-safe. `~/Drive/x/runs` still answers "which
+    runs directory is this cockpit serving" without answering "who is running
+    it". Task 4 and Task 6 both call this — one implementation, not two.
+
+    Deliberately conservative:
+
+    * A path that is **not** under the home directory is returned unchanged.
+    * The match is on a separator boundary, so a bare `/Users` prefix, or
+      another account whose name merely starts the same (`/Users/alicia` when
+      home is `/Users/alice`), is left alone — collapsing those would be a
+      false claim about whose directory it is.
+    * Idempotent: an already-collapsed `~/…` passes through untouched.
+    """
+    if not path:
+        return path
+    home = os.path.expanduser("~").rstrip(os.sep)
+    if not home:                      # no HOME, or HOME is the filesystem root
+        return path
+    if path == home:
+        return "~"
+    if path.startswith(home + os.sep):
+        return "~" + path[len(home):]
+    return path
 
 
 # --------------------------------------------------------------------------
@@ -821,14 +861,34 @@ class RedactionMeta(_Model):
 
 
 class MetaResponse(_Model):
-    """`GET /api/meta` — one of exactly two routes exempt from redaction."""
+    """`GET /api/meta` — one of exactly two routes exempt from redaction.
+
+    Which is why both filesystem fields below are made display-safe *here*,
+    by the model, rather than left to a chokepoint that will never see this
+    response. Validation is where it belongs: a later task cannot forget it,
+    and re-parsing the body is not a second chance to reintroduce the path.
+    """
 
     version: str
+    #: Absolute on disk, `~`-collapsed on the wire (R4-14). Answers "which runs
+    #: directory is this cockpit serving" without naming the operator.
     runs_dir: str
+    #: The start-time pack allowlist. Same class of value as `runs_dir` and it
+    #: leaks identically, so it gets identical treatment.
     packs: list[str] = []
     allow_discover: bool = False
     redaction: RedactionMeta = RedactionMeta()
     heartbeat_seconds: float = HEARTBEAT_SECONDS
+
+    @field_validator("runs_dir")
+    @classmethod
+    def _runs_dir_is_display_safe(cls, value: str) -> str:
+        return display_path(value)
+
+    @field_validator("packs")
+    @classmethod
+    def _pack_paths_are_display_safe(cls, value: list[str]) -> list[str]:
+        return [display_path(p) for p in value]
 
 
 class HealthResponse(_Model):
