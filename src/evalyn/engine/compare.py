@@ -164,7 +164,8 @@ async def run_compare(pack: Pack, art_a: RunArtifact, art_b: RunArtifact,
                       max_concurrency: int = 4,
                       out_dir: str = "runs",
                       label_a: str = "A", label_b: str = "B",
-                      source_a: str = "", source_b: str = "") -> CompareArtifact:
+                      source_a: str = "", source_b: str = "",
+                      run_id: str | None = None) -> CompareArtifact:
     if max_concurrency < 1:
         raise ValueError(f"max_concurrency must be >= 1, got {max_concurrency}")
     _check_preconditions(pack, art_a, art_b)
@@ -277,18 +278,25 @@ async def run_compare(pack: Pack, art_a: RunArtifact, art_b: RunArtifact,
     # metered evidence survives a breach for inspection.
     cap = pack.spec.budget.max_usd_per_run
     if cap and judge_usd > cap:
-        write_compare_artifact(art, out_dir=out_dir)
+        # The breach artifact carries the SAME run_id the caller asked for: a
+        # cockpit-launched compare that busts its cap must still land at the
+        # path the server is watching, or the run reads as vanished.
+        write_compare_artifact(art, out_dir=out_dir, run_id=run_id)
         raise BudgetExceeded(
             f"judge spend ${judge_usd:.4f} exceeded max_usd_per_run "
             f"${cap:.2f} (compare artifact written)")
     return art
 
 
-def write_compare_artifact(art: CompareArtifact, out_dir: str = "runs") -> Path:
+def write_compare_artifact(art: CompareArtifact, out_dir: str = "runs",
+                           *, run_id: str | None = None) -> Path:
     """Atomic temp-then-rename write with a collision-proof name — the shared
-    house writer (R8-13), suffixed `-compare`."""
+    house writer (R8-13), suffixed `-compare`.
+
+    `run_id=None` mints exactly as before; a caller that passes one (the CLI,
+    from `EVALYN_RUN_ID`) gets `runs/<run_id>-compare.json`."""
     return atomic_write_artifact(art.to_dict(), art.pack_name, out_dir,
-                                 suffix="-compare")
+                                 suffix="-compare", run_id=run_id)
 
 
 def _fmt(val: float | None, suffix: str = "") -> str:

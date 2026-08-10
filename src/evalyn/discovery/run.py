@@ -336,8 +336,15 @@ def _reconcile_path(path: str) -> float:
 # orchestration
 # --------------------------------------------------------------------------
 
-async def run_discovery(pack: Pack, cfg: DiscoveryConfig) -> DiscoveryArtifact:
-    """Run one `discover` pass and return its record. Never raises on budget."""
+async def run_discovery(pack: Pack, cfg: DiscoveryConfig, *,
+                        run_id: str | None = None) -> DiscoveryArtifact:
+    """Run one `discover` pass and return its record. Never raises on budget.
+
+    `run_id` (keyword-only, `None` = mint as before) reaches the writer from the
+    CLI's `EVALYN_RUN_ID` read. It has to travel this far because discover owns
+    its own writes — including the partial one on the failing path, which is the
+    write a cockpit most needs to find.
+    """
     meter = SpendMeter(cfg.limits.max_usd)
     task = build_discovery_task(pack, cfg, meter=meter)
 
@@ -486,7 +493,7 @@ async def run_discovery(pack: Pack, cfg: DiscoveryConfig) -> DiscoveryArtifact:
         # always carries both.
         try:
             write_discovery_artifact(_build_artifact(aborted=True),
-                                     out_dir=str(cfg.out_dir))
+                                     out_dir=str(cfg.out_dir), run_id=run_id)
         except Exception as e:  # noqa: BLE001 — report it, never swallow it
             warnings.warn(
                 f"discovery run failed AND its partial artifact could not be "
@@ -499,7 +506,7 @@ async def run_discovery(pack: Pack, cfg: DiscoveryConfig) -> DiscoveryArtifact:
     # Write BEFORE returning — and, on the failing path above, before the raise
     # — so neither a budget stop nor a mid-loop exception leaves a run that
     # spent money with no record (spec §12 / R8-5).
-    write_discovery_artifact(artifact, out_dir=str(cfg.out_dir))
+    write_discovery_artifact(artifact, out_dir=str(cfg.out_dir), run_id=run_id)
     return artifact
 
 
@@ -531,11 +538,15 @@ async def _replay_finding(pack: Pack, cfg: DiscoveryConfig, meter: SpendMeter,
 # --------------------------------------------------------------------------
 
 def write_discovery_artifact(artifact: DiscoveryArtifact,
-                             out_dir: str = "runs") -> Path:
+                             out_dir: str = "runs",
+                             *, run_id: str | None = None) -> Path:
     """Atomic temp-then-rename write — the shared house writer (R8-13), suffixed
-    `-discover`."""
+    `-discover`.
+
+    `run_id=None` mints exactly as before; a caller that passes one gets
+    `runs/<run_id>-discover.json`."""
     return atomic_write_artifact(artifact.to_dict(), artifact.pack_name, out_dir,
-                                 suffix="-discover")
+                                 suffix="-discover", run_id=run_id)
 
 
 def _replay_line(replay: ReplayResult | ReplaySkipped) -> str:

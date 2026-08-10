@@ -43,14 +43,14 @@ def _artifact(*, sessions_total: int, error_count: int,
 
 def _no_spend(monkeypatch):
     """Install a run seam that fails loudly if any preflight lets a run start."""
-    async def guard(pack, cfg):
+    async def guard(pack, cfg, **kw):
         raise AssertionError("run_discovery must not be called — preflight "
                              "should have refused before any spend")
     monkeypatch.setattr("evalyn.discovery.run.run_discovery", guard)
 
 
 def _returns(monkeypatch, art: DiscoveryArtifact):
-    async def fake(pack, cfg):
+    async def fake(pack, cfg, **kw):   # **kw: the CLI now also passes run_id
         return art
     monkeypatch.setattr("evalyn.discovery.run.run_discovery", fake)
 
@@ -332,7 +332,7 @@ def test_mid_run_failure_exits_3_and_names_the_partial_artifact(monkeypatch,
     `run_discovery` happens AFTER real spend and after R8-5 wrote the partial
     record, so it is run-invalid (3) — and the operator gets a pointer to the
     record their money bought."""
-    async def boom(pack, cfg):
+    async def boom(pack, cfg, **kw):
         raise RuntimeError("target died mid-hunt")
     monkeypatch.setattr("evalyn.discovery.run.run_discovery", boom)
 

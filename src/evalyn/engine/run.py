@@ -19,6 +19,12 @@ from evalyn.engine.budget import BudgetExceeded, estimate_cost
 from evalyn.engine.task_builder import build_task
 from evalyn.scoring.checks import aggregate_trial
 from evalyn.targets.loader import Pack
+# The run-id grammar has ONE home (ruling R4-7): the frozen contract in
+# `evalyn.ui.models`. Importing it here — rather than re-spelling the check —
+# is what keeps the writer and the cockpit's `RunId` type from ever disagreeing.
+# The module is pure pydantic (no fastapi/starlette/uvicorn, asserted by
+# `tests/ui/test_models.py`), so this costs the engine no web dependency.
+from evalyn.ui.models import is_run_id
 
 
 @dataclass
@@ -110,23 +116,51 @@ class RunArtifact:
                 f"({e}); this artifact does not match the current schema") from e
 
 
-def atomic_write_artifact(payload: dict, pack_name: str, out_dir: str,
-                          suffix: str) -> Path:
-    """Write `payload` as JSON to `out_dir/<stamp>-<uuid8>-<slug><suffix>.json`.
+def new_run_id(pack_name: str) -> str:
+    """Mint `<stamp><micros>-<uuid8>-<slug>` — a run's identity, no suffix.
 
-    The house pattern, factored so `gate`, `compare` and `discover` share ONE
-    writer instead of three copies that drift (R8-13). Atomic temp-then-rename
-    (a crash mid-write never leaves a torn artifact); the name is collision-proof
-    (microseconds + a short uuid so parallel/fast runs never `os.replace`-clobber
-    each other) and filesystem-safe (the pack name is slugified so an odd name
-    cannot escape `out_dir`). `suffix` distinguishes the modes: "" for gate,
-    "-compare", "-discover".
+    Factored out of `atomic_write_artifact` (it is the *same* minting, moved,
+    not a second one) so a launcher can know the id BEFORE the run starts and
+    pass it down as `EVALYN_RUN_ID`. Collision-proof (microseconds + a short
+    uuid, so parallel or same-second runs never `os.replace`-clobber each other)
+    and filesystem-safe (the pack name is slugified, so an odd or hostile name
+    cannot escape `out_dir`).
     """
-    out_path = Path(out_dir)
-    out_path.mkdir(parents=True, exist_ok=True)
     stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%f")
     slug = re.sub(r"[^A-Za-z0-9._-]+", "-", pack_name).strip("-.") or "pack"
-    final = out_path / f"{stamp}-{uuid.uuid4().hex[:8]}-{slug}{suffix}.json"
+    return f"{stamp}-{uuid.uuid4().hex[:8]}-{slug}"
+
+
+def atomic_write_artifact(payload: dict, pack_name: str, out_dir: str,
+                          suffix: str, *, run_id: str | None = None) -> Path:
+    """Write `payload` as JSON to `out_dir/<run_id><suffix>.json`.
+
+    The house pattern, factored so `gate`, `compare` and `discover` share ONE
+    writer instead of three copies that drift (R8-13). Atomic temp-then-rename:
+    a crash mid-write never leaves a torn artifact. `suffix` distinguishes the
+    modes: "" for gate, "-compare", "-discover".
+
+    `run_id` is **keyword-only and optional, and `None` mints exactly as before**
+    — same stamp, same uuid8, same slug rules — so every existing caller writes
+    a byte-identical filename format and no artifact already on disk changes
+    meaning. A caller that passes one (the `ui` launcher, via `EVALYN_RUN_ID`
+    read in `cli.py`) knows the artifact's path before the run starts, which is
+    what lets the server correlate a run without newest-file heuristics.
+
+    This function **never reads the process env** (a test asserts it by reading
+    this source, so mind the wording): env is how a subprocess is told its id,
+    the parameter is how that id flows onward. A hostile or malformed id is
+    refused rather than joined onto a path (`is_run_id` admits no `/`).
+    """
+    if run_id is None:
+        run_id = new_run_id(pack_name)
+    elif not is_run_id(run_id):
+        raise ValueError(
+            f"not a run_id: {run_id!r} — expected an artifact stem like "
+            f"'20260807T101112000000-deadbeef-example' (no directory, no .json)")
+    out_path = Path(out_dir)
+    out_path.mkdir(parents=True, exist_ok=True)
+    final = out_path / f"{run_id}{suffix}.json"
     fd, tmp = tempfile.mkstemp(dir=out_path, suffix=".tmp")
     with os.fdopen(fd, "w") as f:
         f.write(json.dumps(payload, indent=2, default=str))
@@ -272,7 +306,8 @@ def run_gate(pack: Pack, judge_model: str = "mockllm/model",
              log_dir: str = "runs/logs", rubric_judge_model: str | None = None,
              rubric_scores_untrusted: bool = False,
              out_dir: str = "runs",
-             cache_dir: str | Path | None = None) -> RunArtifact:
+             cache_dir: str | Path | None = None,
+             *, run_id: str | None = None) -> RunArtifact:
     # Grading-steps cache for the tier-3 judge. Defaults to the pack's .cache
     # dir — the SAME location `evalyn calibrate` caches under — so gate trials
     # are judged with the steps calibration validated, instead of regenerating
@@ -302,7 +337,8 @@ def run_gate(pack: Pack, judge_model: str = "mockllm/model",
     # Write the artifact BEFORE any budget check so a partial/complete artifact
     # survives a budget breach for inspection. Atomic temp-then-rename so a
     # crash mid-write never leaves a torn artifact behind (shared writer, R8-13).
-    atomic_write_artifact(art.to_dict(), pack.spec.name, out_dir, suffix="")
+    atomic_write_artifact(art.to_dict(), pack.spec.name, out_dir, suffix="",
+                          run_id=run_id)
     # Fully-dead target (round-2 N6): with fail_on_error=False every sample can
     # error individually while log.status stays "success" — if NO probe
     # collected a single scored trial the run is a SETUP failure (CLI exit 2),

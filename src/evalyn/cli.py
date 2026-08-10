@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 import typer
@@ -7,6 +8,35 @@ import typer
 from evalyn.targets.loader import AllowlistError, PackError, load_pack
 
 app = typer.Typer(help="Evalyn — evaluation agent for LLM-powered products.", no_args_is_help=True)
+
+#: The cockpit tells a launched run its identity through the child's env; this
+#: is the ONLY place that env var is read. Everything below the CLI takes the id
+#: as a parameter, so no engine function's behaviour depends on ambient state.
+RUN_ID_ENV = "EVALYN_RUN_ID"
+
+
+def _run_id_from_env() -> str | None:
+    """The launcher-assigned run id, or `None` to mint one as usual.
+
+    Read at command entry so the server knows the artifact path
+    (`runs/<run_id><suffix>.json`) *before* the run starts — no newest-file
+    heuristic, and no race between two runs finishing in the same second.
+
+    **A bad value is ignored, never fatal.** A stale export in an operator's
+    shell, or a launcher bug, must not be able to abort a run: the fallback —
+    mint as always — is always correct. It is loud on stderr, never silent.
+    """
+    raw = os.environ.get(RUN_ID_ENV)
+    if not raw:
+        return None
+    # the ONE grammar (R4-7): the frozen contract's own predicate, imported
+    # lazily so `evalyn --help` stays free of the ui layer
+    from evalyn.ui.models import is_run_id
+    if not is_run_id(raw):
+        typer.echo(f"warning: ignoring invalid {RUN_ID_ENV} {raw!r} — the run "
+                   f"artifact will be named as usual", err=True)
+        return None
+    return raw
 
 
 @app.command()
@@ -42,6 +72,7 @@ def gate(
     from evalyn.engine.validate import validate_pack
     from evalyn.targets.loader import resolve_base_url
 
+    run_id = _run_id_from_env()  # at command entry: a bad value warns here, early
     try:
         pack = load_pack(target)
         base_url = resolve_base_url(pack)  # enforces allowlist
@@ -98,7 +129,7 @@ def gate(
         art = run_mod.run_gate(pack, judge_model=judge_model,
                                rubric_judge_model=rubric_judge_model,
                                rubric_scores_untrusted=rubric_untrusted,
-                               out_dir=out_dir)
+                               out_dir=out_dir, run_id=run_id)
     except BudgetExceeded as e:
         if debug:
             raise
@@ -203,6 +234,8 @@ def compare(
     from evalyn.engine.task_builder import _model_family
     from evalyn.engine.validate import validate_pack
 
+    run_id = _run_id_from_env()  # at command entry: a bad value warns here, early
+
     # Compare never touches the target: no resolve_base_url, no HTTP.
     try:
         pack = load_pack(target)
@@ -267,7 +300,7 @@ def compare(
             cache_dir=Path(target) / ".cache",
             rubric_scores_untrusted=rubric_untrusted, seed=seed,
             out_dir=out_dir, label_a=label_a, label_b=label_b,
-            source_a=a, source_b=b))
+            source_a=a, source_b=b, run_id=run_id))
     except BudgetExceeded as e:
         if debug:
             raise
@@ -288,7 +321,7 @@ def compare(
     # Guarded write/render: an OSError here (unwritable/full --out-dir) must
     # stay inside compare's exit-0/2 contract, never escape as exit 1.
     try:
-        path = cmp_mod.write_compare_artifact(art, out_dir=out_dir)
+        path = cmp_mod.write_compare_artifact(art, out_dir=out_dir, run_id=run_id)
         report_md = cmp_mod.render_compare_report(art)
     except Exception as e:
         if debug:
@@ -444,6 +477,7 @@ def discover(
     from evalyn.engine.validate import validate_pack
     from evalyn.targets.loader import resolve_base_url
 
+    run_id = _run_id_from_env()  # at command entry: a bad value warns here, early
     try:
         pack = load_pack(target)
         base_url = resolve_base_url(pack)  # enforces allowlist
@@ -618,7 +652,7 @@ def discover(
         raise typer.Exit(0)
 
     try:
-        art = asyncio.run(discovery_run.run_discovery(pack, cfg))
+        art = asyncio.run(discovery_run.run_discovery(pack, cfg, run_id=run_id))
     except Exception as e:
         if debug:
             raise
