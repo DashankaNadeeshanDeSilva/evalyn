@@ -1,4 +1,4 @@
-import { StrictMode } from "react";
+import { StrictMode, useEffect, useState } from "react";
 import { createRoot } from "react-dom/client";
 
 import "./index.css";
@@ -23,31 +23,46 @@ async function enableMocking(): Promise<void> {
   await worker.start({ onUnhandledRequest: "bypass" });
 }
 
+/**
+ * Data lives in state, not in a `getElementById` after `render()`.
+ *
+ * React 18's `createRoot().render()` is concurrent and returns before the DOM
+ * exists, so the imperative version raced the mount and silently rendered
+ * nothing. Later tasks fetch through TanStack Query; the rule is the same.
+ */
 function Boot() {
+  const [line, setLine] = useState("loading…");
+
+  useEffect(() => {
+    let live = true;
+    void (async () => {
+      try {
+        const res = await fetch(new URL("/api/meta", window.location.origin));
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const meta = (await res.json()) as MetaResponse;
+        // `runs_dir` is a display-safe label with `$HOME` collapsed to `~`.
+        // Display only — never join it onto anything, never send it back.
+        if (live) setLine(`v${meta.version} · runs_dir ${meta.runs_dir}`);
+      } catch (err) {
+        if (live) setLine(`no API yet (${String(err)})`);
+      }
+    })();
+    return () => {
+      live = false;
+    };
+  }, []);
+
   return (
     <main className="p-8 font-mono text-sm">
       <h1 className="text-lg font-semibold">Evalyn</h1>
       <p className="mt-2 text-neutral-600">
         Cockpit scaffold. The shell lands in Task 8.
       </p>
-      <pre id="meta" className="mt-4 rounded bg-neutral-100 p-3" />
+      <pre id="meta" className="mt-4 rounded bg-neutral-100 p-3">
+        {line}
+      </pre>
     </main>
   );
-}
-
-async function showMeta(): Promise<void> {
-  const el = document.getElementById("meta");
-  if (!el) return;
-  try {
-    const res = await fetch("/api/meta");
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    const meta = (await res.json()) as MetaResponse;
-    // `runs_dir` is a display-safe label, `$HOME` collapsed to `~`. Display
-    // only — never join it onto anything, never send it back.
-    el.textContent = `v${meta.version} · runs_dir ${meta.runs_dir}`;
-  } catch (err) {
-    el.textContent = `no API yet (${String(err)})`;
-  }
 }
 
 void enableMocking().then(() => {
@@ -58,5 +73,4 @@ void enableMocking().then(() => {
       <Boot />
     </StrictMode>,
   );
-  void showMeta();
 });
