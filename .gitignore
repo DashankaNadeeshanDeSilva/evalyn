@@ -8,6 +8,13 @@ __pycache__/
 venv/
 .DS_Store
 
+# Frontend build inputs. NOTE the deliberate ABSENCE of
+# `src/evalyn/ui/static/`: the built bundle is committed on purpose, because
+# hatchling honours .gitignore and a gitignored bundle would silently ship an
+# empty wheel. `ui/dist/` is listed only to catch a stray default-outDir build.
+ui/node_modules/
+ui/dist/
+
 # SDD scratch (progress ledger, briefs)
 .superpowers/
 
