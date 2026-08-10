@@ -25,6 +25,8 @@ import inspect
 import json
 import os
 import stat
+import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -36,6 +38,7 @@ from evalyn.engine.gate import GateResult
 from evalyn.engine.run import ProbeResult, RunArtifact
 from evalyn.ui import index as ix
 from evalyn.ui import models as m
+from evalyn.ui import paths
 from evalyn.ui.index import (
     LoadedArtifact,
     RunIndex,
@@ -44,6 +47,14 @@ from evalyn.ui.index import (
     derive_status,
 )
 from evalyn.ui.models import ReplayStatus
+from evalyn.ui.paths import (
+    CONTROL_SUFFIX,
+    META_EXIT_CODE_KEY,
+    META_FILENAME,
+    META_LAUNCHED_KEY,
+    SIDECAR_DIR_NAME,
+    control_path,
+)
 
 pytestmark = pytest.mark.ui
 
@@ -291,6 +302,7 @@ def test_list_never_calls_evaluate_gate(monkeypatch):
 
 _FAILING = _gate_artifact([_probe(safety_critical=True, pass_k=0.0)])
 _NO_PROBES = _gate_artifact([])
+_CAPABILITY_ONLY = _gate_artifact([_probe(kind="capability")])
 _DISCOVER_ERRORED = DiscoveryArtifact(
     pack_name="example", pack_hash="0" * 64, agent_model="m", judge_model="m",
     rubric_judge_model=None, created_at="2026-08-05T10:11:12+00:00", findings=[],
@@ -309,6 +321,14 @@ STATUS_TABLE = [
      m.RunStatus.gate_failed),
     ("a gate artifact with no probes measured nothing",
      _loaded(_NO_PROBES), SidecarState(), None, m.RunStatus.invalid),
+    # R4-17: a capability-only run measured exactly what it set out to measure,
+    # and `evaluate_gate` returns 0 for it. `invalid` would be a false claim.
+    ("a capability-only run gated nothing, which is not the same as invalid",
+     _loaded(_CAPABILITY_ONLY), SidecarState(), None, m.RunStatus.passed),
+    ("a real gate verdict is consulted BEFORE the hint is ever inspected",
+     _loaded(_CAPABILITY_ONLY), SidecarState(),
+     GateResult(exit_code=1, failures=["x"], quarantined=[], report_md=""),
+     m.RunStatus.gate_failed),
     ("a discover run whose eval itself failed",
      _loaded(_DISCOVER_ERRORED, run_id=DISCOVER_ID, mode=m.RunMode.discover),
      SidecarState(), None, m.RunStatus.invalid),
@@ -324,6 +344,11 @@ STATUS_TABLE = [
      None, m.RunStatus.cancelled),
     ("a process that vanished without writing an artifact",
      None, SidecarState(present=True, exit_code=1, events=True),
+     None, m.RunStatus.interrupted),
+    # a meta.json this build cannot read is NOT evidence of life — claiming
+    # `running` would leave a dead run spinning in the table forever
+    ("a process record this build cannot read is not evidence of life",
+     None, SidecarState(present=True, schema_unrecognised=True),
      None, m.RunStatus.interrupted),
     ("a child that never started",
      None, SidecarState(present=True, launched=False), None,
@@ -352,11 +377,144 @@ def test_derive_status_is_pure():
     assert (art, side) == before
 
 
+def test_a_capability_only_run_keeps_its_unknown_hint_while_passing(tmp_path):
+    """R4-17: `passed` costs no information — `unknown` still says nothing gated.
+
+    The pair matters. `invalid` is defined by this module as "parsed, but the
+    numbers mean nothing", which is a false claim about a run that measured
+    exactly what it set out to. That nothing was *gated* is carried losslessly
+    by `verdict_hint`, so the row can say both things at once.
+    """
+    runs = tmp_path / "runs"
+    runs.mkdir()
+    rid = "20260807T170000000000-deadbeef-example"
+    runs.joinpath(f"{rid}.json").write_text(
+        json.dumps(_CAPABILITY_ONLY.to_dict()))
+
+    (row,) = RunIndex(runs).list()
+    assert row.status is m.RunStatus.passed
+    assert row.verdict_hint is m.VerdictHint.unknown
+    assert row.degraded is False
+
+
+def test_invalid_is_reserved_for_an_artifact_that_measured_nothing():
+    assert derive_status(_loaded(_NO_PROBES)) is m.RunStatus.invalid
+    assert derive_status(_loaded(_CAPABILITY_ONLY)) is not m.RunStatus.invalid
+
+
 def test_a_cancelled_run_that_did_write_an_artifact_is_still_cancelled():
     assert derive_status(
         _loaded(_gate_artifact()),
         SidecarState(present=True, control=m.ControlAction.cancel, exit_code=0),
         None) is m.RunStatus.cancelled
+
+
+# --------------------------------------------------------------------------
+# 5b. the launcher's process record — read through `ui.paths`, never guessed
+# --------------------------------------------------------------------------
+
+def _planted(tmp_path: Path, meta: str | None) -> tuple[RunIndex, str, Path]:
+    """A `runs/` with a sidecar directory for one run, and no artifact."""
+    runs = tmp_path / "runs"
+    rid = "20260807T180000000000-deadbeef-example"
+    meta_dir = runs / SIDECAR_DIR_NAME / rid
+    meta_dir.mkdir(parents=True)
+    if meta is not None:
+        meta_dir.joinpath(META_FILENAME).write_text(meta)
+    return RunIndex(runs), rid, runs / f"{rid}.json"
+
+
+def test_a_readable_process_record_is_understood(tmp_path):
+    idx, rid, artifact = _planted(
+        tmp_path, json.dumps({META_LAUNCHED_KEY: True, META_EXIT_CODE_KEY: 0}))
+    state = idx._sidecar(rid, artifact)
+    assert state.present is True and state.launched is True
+    assert state.exit_code == 0 and state.schema_unrecognised is False
+    assert derive_status(None, state) is m.RunStatus.interrupted   # dead, no artifact
+
+
+def test_a_live_process_record_reads_as_running(tmp_path):
+    idx, rid, artifact = _planted(tmp_path, json.dumps({META_EXIT_CODE_KEY: None}))
+    state = idx._sidecar(rid, artifact)
+    assert state.schema_unrecognised is False and state.exit_code is None
+    assert derive_status(None, state) is m.RunStatus.running
+
+
+def test_a_child_that_never_started_reads_as_failed_to_start(tmp_path):
+    idx, rid, artifact = _planted(tmp_path, json.dumps({META_LAUNCHED_KEY: False}))
+    assert derive_status(None, idx._sidecar(rid, artifact)) \
+        is m.RunStatus.failed_to_start
+
+
+@pytest.mark.parametrize("meta,why", [
+    (None, "the launcher never wrote the file"),
+    ("{", "the file is torn"),
+    ("[]", "the file is not an object"),
+    ('{"pid": 42, "argv": []}', "the file carries neither key this build knows"),
+])
+def test_an_unreadable_process_record_never_reads_as_running(tmp_path, meta, why):
+    """The defect this flag exists to prevent: a dead run spinning forever.
+
+    `exit_code` absent is indistinguishable from `exit_code` unreadable unless
+    the reader records which one it was — and `list()` may not raise, so
+    failing loudly is not available as a defence.
+    """
+    idx, rid, artifact = _planted(tmp_path, meta)
+    state = idx._sidecar(rid, artifact)
+    assert state.present is True, why
+    assert state.schema_unrecognised is True, why
+    assert derive_status(None, state) is m.RunStatus.interrupted, why
+
+
+def test_an_explicit_pause_survives_an_unreadable_process_record(tmp_path):
+    """The control file is a second, readable source of positive evidence."""
+    idx, rid, artifact = _planted(tmp_path, "{")
+    control_path(artifact).write_text(json.dumps({"action": "pause"}))
+    assert derive_status(None, idx._sidecar(rid, artifact)) is m.RunStatus.paused
+
+
+def test_a_runs_dir_this_cockpit_never_launched_into_reports_no_process_facts():
+    idx = RunIndex(FIXTURES)
+    assert idx._sidecar(GATE_ID, FIXTURES / f"{GATE_ID}.json") == SidecarState()
+
+
+def test_the_meta_schema_is_named_in_ui_paths_not_retyped_here():
+    """R4-7's medicine, applied to the launcher's record (F4).
+
+    Task 19 writes this file and this module reads it. A hardcoded literal on
+    either side is how the two silently disagree — and the failure mode is not
+    a crash, it is a dead run reported as `running`.
+    """
+    src = inspect.getsource(ix)
+    for literal in ('"meta.json"', '"launched"', '"exit_code"'):
+        assert literal not in src, f"{literal} must come from evalyn.ui.paths"
+    assert "META_FILENAME" in inspect.getsource(paths)
+    assert paths.meta_path(Path("runs"), GATE_ID) == \
+        Path("runs") / SIDECAR_DIR_NAME / GATE_ID / META_FILENAME
+
+
+# --------------------------------------------------------------------------
+# 5c. the CLI's import graph — the half of the guard nobody was asserting
+# --------------------------------------------------------------------------
+
+def test_importing_the_cli_loads_no_web_framework():
+    """`import evalyn.cli` must stay free of fastapi/starlette/uvicorn (F5).
+
+    `test_ui_package_init_is_docstring_only` covers `evalyn/ui/__init__.py`,
+    and `test_models_module_does_not_import_fastapi` AST-scans `models.py` —
+    but nothing asserted the property that actually matters, which is about the
+    **CLI's** import graph. It is live now: `evalyn.ui.index` imports
+    `evalyn.engine.run`, which pulls `inspect_ai`, which pulls `starlette`. The
+    CLI is safe only because it reaches into `evalyn.ui` lazily, and one eager
+    `import evalyn.ui.index` in `cli.py` would end that silently. A subprocess,
+    because this interpreter has already imported everything.
+    """
+    probe = ("import evalyn.cli, sys, json;"
+             "print(json.dumps(sorted({name.split('.')[0] for name in sys.modules}"
+             " & {'fastapi', 'starlette', 'uvicorn'})))")
+    done = subprocess.run([sys.executable, "-c", probe], check=True,
+                          capture_output=True, text=True)
+    assert json.loads(done.stdout) == [], done.stdout
 
 
 # --------------------------------------------------------------------------
@@ -537,22 +695,24 @@ def test_a_reread_is_served_from_cache_until_the_file_changes(tmp_path):
 REAL_RUNS = Path(__file__).resolve().parents[2] / "runs"
 
 
-@pytest.mark.skipif(not REAL_RUNS.is_dir(),
-                    reason="runs/ is gitignored; CI has no such directory")
-def test_the_real_runs_directory_indexes_without_raising():
-    """The test that would have caught the minefield — as an INVARIANT.
+def _assert_index_invariants(runs_dir: Path) -> list:
+    """Every number computed from the directory as it stands — never a literal.
 
-    Every number here is computed from the directory as it stands, so running
-    another eval cannot red this test (R4-6). What is asserted is the
-    *relationship*: nothing is silently dropped, and everything that degrades
-    still says who it is and why.
+    The candidate set **mirrors `_candidates`' two documented exclusions**: the
+    control sidecar is dropped by name (its stem `<run_id>.control` *passes* the
+    run-id grammar, because `.` is a legal slug character), and `is_file()` is
+    deliberately not applied (a directory or broken symlink named like a run is
+    still meant to produce a degraded row). Getting either wrong makes this test
+    red for a reason that has nothing to do with the index — and Task 20 writes
+    control files into `runs/`, so that is not hypothetical.
     """
-    candidates = sorted(p for p in REAL_RUNS.glob("*.json") if p.is_file())
-    indexable = [p for p in candidates if m.is_run_id(p.stem)]
-    skipped = [p for p in candidates if not m.is_run_id(p.stem)]
+    candidates = sorted(runs_dir.glob("*.json"))
+    indexable = [p for p in candidates
+                 if not p.name.endswith(CONTROL_SUFFIX) and m.is_run_id(p.stem)]
+    skipped = [p for p in candidates if p not in indexable]
     assert len(indexable) + len(skipped) == len(candidates)
 
-    rows = RunIndex(REAL_RUNS).list(limit=len(candidates) + 1)
+    rows = RunIndex(runs_dir).list(limit=len(candidates) + 1)
     assert {r.run_id for r in rows} == {p.stem for p in indexable}
 
     # the degraded set is exactly the set that really fails the typed loader —
@@ -560,8 +720,7 @@ def test_the_real_runs_directory_indexes_without_raising():
     expected_degraded = set()
     for p in indexable:
         try:
-            raw = json.loads(p.read_text())
-            _typed_loader_for(p.stem)(raw)
+            _typed_loader_for(p.stem)(json.loads(p.read_text()))
         except Exception:
             expected_degraded.add(p.stem)
     assert {r.run_id for r in rows if r.degraded} == expected_degraded
@@ -571,6 +730,42 @@ def test_the_real_runs_directory_indexes_without_raising():
         if row.degraded:
             assert row.degraded_reason
             assert row.judge_usd is None and row.verdict_hint is None
+    return rows
+
+
+def test_the_invariants_hold_over_a_directory_with_task_20s_sidecars(tmp_path):
+    """The same invariants, over a directory planted with everything hostile.
+
+    This is the guard on the helper itself: Task 20 writes `.control.json` into
+    `runs/`, and before this test the candidate set did not exclude it, so the
+    real-directory test below would have gone red mid-plan for the wrong reason.
+    """
+    runs = _copy_fixtures(tmp_path / "runs")
+    live = "20260807T190000000000-deadbeef-example"
+    torn = "20260807T190001000000-deadbeef-example"
+    runs.joinpath(f"{live}.json").write_text(json.dumps(_gate_artifact().to_dict()))
+    runs.joinpath(f"{live}{CONTROL_SUFFIX}").write_text('{"action": "pause"}')
+    runs.joinpath(f"{live}.events.jsonl").write_text('{"seq": 1}\n')
+    runs.joinpath(f"{torn}.json").write_text("{")
+    runs.joinpath("baseline.json").write_text("{}")
+    runs.joinpath("logs").mkdir()
+
+    ids = {r.run_id for r in _assert_index_invariants(runs)}
+    assert {live, torn} <= ids
+    assert f"{live}.control" not in ids
+    assert "baseline" not in ids
+
+
+@pytest.mark.skipif(not REAL_RUNS.is_dir(),
+                    reason="runs/ is gitignored; CI has no such directory")
+def test_the_real_runs_directory_indexes_without_raising():
+    """The test that would have caught the minefield — as an INVARIANT (R4-6).
+
+    Nothing is silently dropped, and everything that degrades still says who it
+    is and why. Running another eval cannot red it.
+    """
+    rows = _assert_index_invariants(REAL_RUNS)
+    assert rows, "runs/ exists but indexed nothing"
 
 
 def _typed_loader_for(run_id: str):

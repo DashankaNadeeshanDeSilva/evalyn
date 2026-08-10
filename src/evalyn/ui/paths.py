@@ -37,12 +37,35 @@ from pathlib import Path
 from evalyn.ui.models import RUN_ID_RE, is_run_id
 
 __all__ = ["RUN_ID_RE", "is_run_id", "events_path", "control_path", "sidecar_dir",
-           "SIDECAR_DIR_NAME", "EVENTS_SUFFIX", "CONTROL_SUFFIX"]
+           "meta_path", "SIDECAR_DIR_NAME", "EVENTS_SUFFIX", "CONTROL_SUFFIX",
+           "META_FILENAME", "META_LAUNCHED_KEY", "META_EXIT_CODE_KEY"]
 
 #: Dot-prefixed so `runs/*.json` and a user's `ls` both ignore it.
 SIDECAR_DIR_NAME = ".evalyn-ui"
 EVENTS_SUFFIX = ".events.jsonl"
 CONTROL_SUFFIX = ".control.json"
+
+# --------------------------------------------------------------------------
+# The launcher's own bookkeeping — named HERE so the writer and the reader
+# cannot drift (the same medicine R4-7 applied to the run-id grammar).
+#
+# The launcher (Task 19) writes this file; `ui.index` reads it to decide
+# whether a run with no artifact is `running`, `interrupted` or
+# `failed_to_start`. Those two sides being separated by two tasks and a hard-
+# coded string literal is precisely how a dead run ends up spinning in the
+# table forever: the reader looks for `exit_code`, the writer spelled it
+# `exitcode`, the read fails soft, and "no exit code recorded" is
+# indistinguishable from "still alive". **Import these names; do not retype
+# them.** Anything else in the file is the writer's business — the reader
+# ignores keys it does not know.
+# --------------------------------------------------------------------------
+
+#: Lives at `runs/.evalyn-ui/<run_id>/meta.json`.
+META_FILENAME = "meta.json"
+#: `bool` — did the child process actually start? `False` is `failed_to_start`.
+META_LAUNCHED_KEY = "launched"
+#: `int | None` — the child's exit status; absent/None means "still running".
+META_EXIT_CODE_KEY = "exit_code"
 
 
 def _stem_of(artifact: Path) -> str:
@@ -91,3 +114,13 @@ def sidecar_dir(runs_dir: Path, run_id: str) -> Path:
     if not is_run_id(run_id):
         raise ValueError(f"not a run_id: {run_id!r}")
     return Path(runs_dir) / SIDECAR_DIR_NAME / run_id
+
+
+def meta_path(runs_dir: Path, run_id: str) -> Path:
+    """`runs/.evalyn-ui/<run_id>/meta.json` — the launcher's process record.
+
+    A locator, like `sidecar_dir`, and validated the same way. One function so
+    the writer and the reader cannot disagree about where the file is any more
+    than they can disagree about what it is called.
+    """
+    return sidecar_dir(runs_dir, run_id) / META_FILENAME

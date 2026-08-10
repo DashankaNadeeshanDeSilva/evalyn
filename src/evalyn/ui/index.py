@@ -69,9 +69,12 @@ from evalyn.ui.models import (
 )
 from evalyn.ui.paths import (
     CONTROL_SUFFIX,
+    META_EXIT_CODE_KEY,
+    META_LAUNCHED_KEY,
     SIDECAR_DIR_NAME,
     control_path,
     is_run_id,
+    meta_path,
     sidecar_dir,
 )
 
@@ -192,6 +195,12 @@ class SidecarState:
     exit_code: int | None = None
     #: A `<stem>.events.jsonl` exists — evidence the run got as far as emitting.
     events: bool = False
+    #: `meta.json` is there but this build understood **nothing** in it — it did
+    #: not parse, or carried neither known key. Load-bearing rather than
+    #: diagnostic: without it, "no exit code recorded" is indistinguishable
+    #: from "still alive", and a dead run spins in the table forever. With it,
+    #: the absence of understanding degrades to `interrupted` instead.
+    schema_unrecognised: bool = False
 
 
 # --------------------------------------------------------------------------
@@ -252,7 +261,9 @@ def derive_status(artifact: LoadedArtifact | None,
     1. **`failed_to_start`** — the child never ran, so nothing else can be true.
     2. **No artifact at all.** An explicit cancel wins; otherwise a live
        process is `running` (or `paused`), and a dead one is `interrupted` —
-       the run vanished without writing its record.
+       the run vanished without writing its record. A `meta.json` this build
+       cannot read is *not* evidence of life: it degrades to `interrupted`
+       rather than leaving a dead run spinning in the table forever.
     3. **A deliberate cancel outranks a parse failure.** "The operator stopped
        it" is the more useful fact about a half-written artifact than "this
        build cannot read it".
@@ -260,10 +271,18 @@ def derive_status(artifact: LoadedArtifact | None,
        Distinct from `invalid`: the run may have been perfectly fine.
     5. **`invalid`** — parsed, but the numbers mean nothing: a discover run
        whose eval itself failed (every counter is zero because nothing looked),
-       or a gate run with no gating probe to measure.
+       or a gate run with **no probes at all**, which measured nothing.
     6. **`gate_failed` / `passed`** — from the real `GateResult` when the caller
        has one (the detail endpoint), otherwise from `verdict_hint_of`, which
        is why the list can decide a status without a baseline read.
+
+    Ruling R4-17 fixes the order of 5 and 6: a **capability-only** run is
+    `passed`, not `invalid`. It measured exactly what it set out to measure and
+    `evaluate_gate` returns `exit_code=0` for it; that nothing was *gated* is
+    already carried losslessly by `verdict_hint=unknown`, so spending `invalid`
+    — which this module defines as "the numbers mean nothing" — on it would be
+    a false claim. `invalid` is therefore reserved for an empty `probes[]`, and
+    a real `GateResult` is consulted before the hint is ever inspected.
     """
     side = sidecar if sidecar is not None else SidecarState()
 
@@ -274,7 +293,11 @@ def derive_status(artifact: LoadedArtifact | None,
         if side.control is ControlAction.cancel:
             return RunStatus.cancelled
         if side.present and side.exit_code is None:
-            return (RunStatus.paused if side.control is ControlAction.pause
+            if side.control is ControlAction.pause:
+                # positive evidence from a second, readable file: the operator
+                # asked for this, so say so even if `meta.json` is unreadable
+                return RunStatus.paused
+            return (RunStatus.interrupted if side.schema_unrecognised
                     else RunStatus.running)
         return RunStatus.interrupted
 
@@ -289,12 +312,12 @@ def derive_status(artifact: LoadedArtifact | None,
     if isinstance(typed, CompareArtifact):
         return RunStatus.passed
 
-    hint = verdict_hint_of(typed)
-    if hint is VerdictHint.unknown:
+    if not typed.probes:
         return RunStatus.invalid
     if gate_result is not None:
         return RunStatus.gate_failed if gate_result.exit_code else RunStatus.passed
-    return RunStatus.gate_failed if hint is VerdictHint.failed else RunStatus.passed
+    return (RunStatus.gate_failed if verdict_hint_of(typed) is VerdictHint.failed
+            else RunStatus.passed)
 
 
 # --------------------------------------------------------------------------
@@ -466,10 +489,13 @@ class RunIndex:
         """Read `.evalyn-ui/<run_id>/meta.json` and the control file, if any.
 
         One `is_dir()` short-circuits the whole thing for a `runs/` this cockpit
-        never launched into, which is the common case and must stay free. Every
-        read is defensive: Task 19/20 own `meta.json`'s schema, and a shape this
-        build does not recognise must degrade to "no process facts", never to an
-        exception on the listing path.
+        never launched into, which is the common case and must stay free.
+
+        The file's name and its two keys come from `ui.paths`, so the launcher
+        that writes them (Task 19) and this reader import the *same* constants
+        rather than agreeing by convention. A shape this build still does not
+        recognise degrades to "no process facts" — never to an exception on the
+        listing path, and never to a silent `running`.
         """
         if not (self.runs_dir / SIDECAR_DIR_NAME).is_dir():
             return SidecarState()
@@ -480,16 +506,23 @@ class RunIndex:
         if not meta_dir.is_dir():
             return SidecarState()
 
-        launched, exit_code = True, None
+        launched, exit_code, unrecognised = True, None, True
         try:
-            meta = json.loads((meta_dir / "meta.json").read_text(encoding="utf-8"))
-            if isinstance(meta, dict):
-                launched = bool(meta.get("launched", True))
-                exit_code = meta.get("exit_code")
-                if not isinstance(exit_code, int) or isinstance(exit_code, bool):
-                    exit_code = None
+            meta = json.loads(
+                meta_path(self.runs_dir, run_id).read_text(encoding="utf-8"))
         except Exception:
-            pass
+            # Failing loudly is not an option: this runs inside `list()`, which
+            # must never raise. Failing *silently* is the trap — it would look
+            # exactly like a healthy live run. So the reader records that it
+            # understood nothing and lets `derive_status` refuse to claim life.
+            meta = None
+        if isinstance(meta, dict):
+            known = {META_LAUNCHED_KEY, META_EXIT_CODE_KEY} & set(meta)
+            unrecognised = not known
+            launched = bool(meta.get(META_LAUNCHED_KEY, True))
+            exit_code = meta.get(META_EXIT_CODE_KEY)
+            if not isinstance(exit_code, int) or isinstance(exit_code, bool):
+                exit_code = None
 
         control = None
         try:
@@ -501,7 +534,8 @@ class RunIndex:
 
         events = path.with_name(f"{path.stem}.events.jsonl").exists()
         return SidecarState(present=True, launched=launched, control=control,
-                            exit_code=exit_code, events=events)
+                            exit_code=exit_code, events=events,
+                            schema_unrecognised=unrecognised)
 
     # -- rows --------------------------------------------------------------
 
