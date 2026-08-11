@@ -264,7 +264,10 @@ describe("the opening turn cannot push the replies off the screen", () => {
     }));
   }
 
-  it("bounds the corpus's longest real prompt and keeps all seven replies", async () => {
+  // NB: the length used here is deliberately far longer than anything that ships
+  // (the longest real opening turn is 106 chars) — it exercises the bound, it does
+  // not describe the corpus. See OPENING_CHARS in AllTrialsPanel.tsx.
+  it("bounds an opening turn long enough to own the screen, keeping all seven replies", async () => {
     expect(OPENING_2853).toHaveLength(2853);
     withOpeningTurn(OPENING_2853);
     renderPage(RUN_ID_GATE);

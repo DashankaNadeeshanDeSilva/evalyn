@@ -88,10 +88,21 @@ const EXCERPT_CHARS = 360;
  *
  * Smaller than a reply's budget, and it has to be: the opening turn is context
  * the room needs once, while the replies are the evidence it came to compare.
- * Measured on the corpus this ships against — `injection-control-background`
- * carries a 2853-character transcript, and an unbounded header of that size
- * pushes all seven replies off a projected screen, which is not a cosmetic
- * problem but the loss of the panel's entire reason to exist.
+ *
+ * **This bound does not fire on any data that ships today, and the measurement
+ * that justified it was misattributed.** The 2853 characters originally cited
+ * for `injection-control-background` are that sample's assistant *reply*, not
+ * its prompt; the header renders only the opening *user* turn. Measured across
+ * the real artifacts, the longest opening turn is **106 characters**
+ * (`injection-roleplay-freebot`), and none of the three shipped packs exceeds
+ * that — so every real prompt renders whole and the expander never appears.
+ *
+ * It is kept because the failure it guards against is real and was rendered:
+ * an unbounded header at ~2800 characters puts **one of seven** replies on a
+ * 1000px screen instead of seven, which is not a cosmetic problem but the loss
+ * of the panel's entire reason to exist. A pack with a long prompt is a pack
+ * away. The *reply*-side risk — which is the one live on this corpus — is
+ * covered separately by the pre-existing reply budget.
  *
  * 180 characters is about two projected lines: enough to recognise the question
  * being asked, never enough to own the screen. The rest is one key away, and
