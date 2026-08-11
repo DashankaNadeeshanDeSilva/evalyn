@@ -133,6 +133,54 @@ describe("TranscriptViewer", () => {
     expect(screen.getByTestId("evidence-span").dataset["tone"]).toBe("fail");
   });
 
+  /**
+   * The wash is 1.27:1 against the face and the two tones' relative luminances
+   * differ by 0.003, so colour cannot carry either job: not "is this span
+   * marked at all", and not "is this the failing one". Each tone's rule differs
+   * in **weight and style** as well as hue, and those two survive greyscale.
+   *
+   * Asserting class tokens is ordinarily brittle. It is the right instrument
+   * here because jsdom has no layout or paint, so the rendered rule is not
+   * observable — and the invariant being protected is precisely that a later
+   * edit cannot quietly reduce the differentiator back to hue alone.
+   */
+  it("differentiates a marked span, and the two tones, by more than hue", () => {
+    render(
+      <TranscriptViewer
+        turns={TURNS}
+        annotations={[
+          FAILING,
+          {
+            id: "neutral-span",
+            turn: 1,
+            evidence: "BOUNDARIES.md file.",
+            label: "rubric:refusal-quality",
+            tone: "neutral",
+          },
+        ]}
+        emptyReason={EMPTY_REASON}
+      />,
+    );
+
+    const marks = screen.getAllByTestId("evidence-span");
+    const byTone = Object.fromEntries(
+      marks.map((m) => [m.dataset["tone"], m.className]),
+    );
+    expect(Object.keys(byTone).sort()).toEqual(["fail", "neutral"]);
+
+    // Existence: every mark carries a rule, whatever its tone.
+    for (const className of Object.values(byTone)) {
+      expect(className, "a marked span rests on its wash alone").toMatch(
+        /\bborder-b(-2)?\b/,
+      );
+    }
+    // Difference: weight and style, not only hue.
+    expect(byTone["fail"]).toContain("border-b-2");
+    expect(byTone["neutral"]).toContain("border-dashed");
+    expect(byTone["neutral"]).not.toContain("border-b-2");
+    expect(byTone["fail"]).not.toContain("border-dashed");
+  });
+
   it("marks only the turns whose redacted flag is set", () => {
     render(<TranscriptViewer turns={TURNS} emptyReason={EMPTY_REASON} />);
 

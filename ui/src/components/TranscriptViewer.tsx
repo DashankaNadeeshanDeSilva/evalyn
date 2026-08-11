@@ -26,19 +26,41 @@ import { RedactedChip } from "./RedactedChip";
  * highlight placed on an approximate match is a fabricated claim about evidence
  * on the screen that will be projected when a guardrail failed.
  *
- * That is not a hypothetical strictness. In every artifact in `runs/` today,
- * `checks[].turn` is `null` and `checks[].evidence` is a *description* of what
- * was missing ("missing 'I'm here to help with…'") rather than a quotable span,
- * so nothing places and the whole set lands in the unplaced list. Which is the
- * point: an annotation that cannot be placed is **reported, never dropped**.
- * Silently discarding a check's evidence is the exact failure this component
- * exists to prevent, and it would be invisible.
+ * That is not a hypothetical strictness, and the corpus is more interesting than
+ * a first reading suggests. Measured across all 84 artifacts in `runs/`:
+ *
+ * - **1809 of 1839 checks carry `turn: null`** and an `evidence` that is a
+ *   *description* of what was missing ("missing 'I'm here to help with…'")
+ *   rather than a quotable span. Every twincore run — including the demo's
+ *   `injection-exfil-boundaries` failure — is in this group, so nothing places
+ *   there.
+ * - **30 checks in 15 legacy artifacts do carry a turn index**, with `evidence`
+ *   of `"SYSTEM PROMPT"` or `"Internal path"` — genuinely quotable spans. Two of
+ *   those artifacts also carry `trial_records`, so they reach this component.
+ *
+ * They still do not place, and the reason is worth knowing before anyone
+ * "fixes" it: in `20260803T174149220841-76e25fee-example`, the check says
+ * `turn: 1` while `"Internal path"` lives in flattened turn **4**. So
+ * `CheckView.turn` is not a 1-based index into the turn array this component
+ * renders — it indexes something else (a sample, or a message pair). Matching
+ * the evidence anywhere in the transcript would "work" on that artifact and
+ * would be exactly the fabricated placement this component refuses; the index
+ * has to be reconciled server-side first (Task 7 deferral items 6 and 9).
+ *
+ * Which is the point: an annotation that cannot be placed is **reported, never
+ * dropped**. Silently discarding a check's evidence is the exact failure this
+ * component exists to prevent, and it would be invisible.
  *
  * ## Colour is never load-bearing here
  *
  * The marked span carries a tone-keyed ground, and the check's own name is
  * printed beneath the turn in words. Strip every colour and the turn still says
  * which check pointed at it and whether that check failed.
+ *
+ * The marked span's own differentiator is a **rule under it**, not its wash —
+ * the wash measures 1.27:1 and cannot carry the job alone. The four figures
+ * behind that are measured at the call site, because the guard cannot see a
+ * `border-*` colour.
  *
  * Measured contrast — this file establishes two grounds beyond the page face,
  * and both inks clear AA on all three:
@@ -124,11 +146,34 @@ function segments(text: string, placements: Placement[]): ReactNode[] {
          * The user agent's own `mark` is a yellow fill this palette does not
          * define, and Tailwind's preflight does not reset it — so both the
          * ground and the ink are stated here rather than inherited.
+         *
+         * ## The rule under the span, not the wash, is what says "marked"
+         *
+         * Measured: the failure wash is `#f1dcdd` and the neutral ground is
+         * `#dde1e4`, which against the face `#fafbfc` come to **1.265:1** and
+         * **1.270:1**. Both are at or below the threshold of perception on a
+         * projector, and their relative luminances differ by 0.003 — so a wash
+         * alone would make the *existence* of a highlight nearly invisible and
+         * would leave `fail` and `neutral` separated by hue at equal luminance.
+         * That is unacceptable for the payload's one visual affordance, and it
+         * is worse for a component three later tasks inherit.
+         *
+         * So each tone carries a rule under the span, and the two tones differ
+         * in **weight and style as well as hue** — both of which survive
+         * greyscale and a colourblind reading:
+         *
+         *   tone      rule                       width  style    on its own ground / on the face
+         *   fail      status-gate_failed         2px    solid    4.94 / 6.24
+         *   neutral   chassis-700                1px    dashed   6.85 / 8.70
+         *
+         * Hand-measured on purpose: the contrast guard scans `text-` and `bg-`
+         * prefixes only and is blind to `border-*` (ruling R4-24), so nothing in
+         * the suite can check these four figures. Re-measure if a hex moves.
          */
         className={
           annotation.tone === "fail"
-            ? "bg-status-gate_failed/[0.14] text-chassis-900"
-            : "bg-chassis-200 text-chassis-900"
+            ? "border-b-2 border-status-gate_failed bg-status-gate_failed/[0.14] text-chassis-900"
+            : "border-b border-dashed border-chassis-700 bg-chassis-200 text-chassis-900"
         }
       >
         {text.slice(start, end)}
