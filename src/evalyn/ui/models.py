@@ -836,8 +836,8 @@ class TrustReport(_Model):
 class PackRow(_Model):
     """One entry of `GET /api/packs`.
 
-    The list **is** the allowlist built from `evalyn ui --target <path>` at
-    start: it is the complete set of packs a browser is allowed to name.
+    The list **is** the start-time allowlist built from
+    `evalyn ui --target <path>` — the complete set of packs a browser may name.
     """
 
     #: An **index into that allowlist, never a path**. It is the only pack

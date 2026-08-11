@@ -469,6 +469,18 @@ export interface FindingDetail extends FindingRow {
   replay: ReplayView | null;
 }
 
+/**
+ * `GET /api/discoveries` — the staged findings, enveloped like `RunListPage`.
+ *
+ * An **envelope, not a bare array**: a frozen top-level array can never grow a
+ * field. `?objective=` filters the rows; `next_cursor` is the same opaque
+ * `(created_at, run_id)` composite, and `null` means the end.
+ */
+export interface DiscoveryListPage {
+  items: FindingRow[];
+  next_cursor: string | null;
+}
+
 // ---------------------------------------------------------------------------
 // 8. Compare, trends, judge trust
 // ---------------------------------------------------------------------------
@@ -571,7 +583,78 @@ export interface TrustReport {
 }
 
 // ---------------------------------------------------------------------------
-// 9. Write side — request bodies, so defaulted fields are genuinely optional
+// 8a. Packs — the start-time allowlist, and what a launch may select from
+// ---------------------------------------------------------------------------
+
+/**
+ * One entry of `GET /api/packs`.
+ *
+ * The list **is** the allowlist built from `evalyn ui --target <path>`: it is
+ * the complete set of packs a browser is allowed to name.
+ */
+export interface PackRow {
+  /**
+   * An **index into that allowlist, never a path** — the only pack identifier
+   * a request may carry, which is what stops a body from pointing the engine at
+   * an arbitrary file.
+   */
+  id: string;
+  /** What `LaunchRequest.confirm` must echo — the type-to-confirm interlock. */
+  name: string;
+  /**
+   * A **display-safe label**, `~`-collapsed like `MetaResponse.packs`, and like
+   * those no longer a usable filesystem path. Never send it back to the server:
+   * `id` is the only thing that names a pack on the wire.
+   */
+  path: string;
+  version: string | null;
+  probe_count: number;
+  has_calibration: boolean;
+}
+
+/**
+ * `GET /api/packs` — the allowlist, enveloped like `RunListPage`.
+ *
+ * The allowlist is small enough that `next_cursor` is `null` in practice. The
+ * envelope is here anyway because a bare top-level array can never gain a field.
+ */
+export interface PackListPage {
+  items: PackRow[];
+  next_cursor: string | null;
+}
+
+/**
+ * `POST /api/packs/{pack_id}/validate`.
+ *
+ * **Not a mirror of the engine's `ValidationReport`**, which carries only
+ * `ok`/`errors`/`warnings`. `pack_id` is echoed back on purpose so a response
+ * can be attributed to the request that asked for it.
+ */
+export interface ValidationReport {
+  pack_id: string;
+  ok: boolean;
+  errors: string[];
+  warnings: string[];
+}
+
+/** `GET /api/packs/{pack_id}/axes` — what a `discover` launch may select. */
+export interface PackAxes {
+  pack_id: string;
+  objectives: string[];
+  personas: string[];
+  playbooks: string[];
+  /**
+   * The pack's own per-run ceiling on Evalyn's judge-model spend — a plain
+   * number with a server default of 5.0, **never null**. Metered post-hoc, so a
+   * run can overshoot it, and `0` disables the check rather than forbidding all
+   * spend. A launch is clamped down to it, never up.
+   */
+  max_usd_per_run: number;
+}
+
+// ---------------------------------------------------------------------------
+// 9. Write side — request bodies (defaulted fields genuinely optional), and
+//    the 202 responses that acknowledge them (plain response models, no `?`)
 // ---------------------------------------------------------------------------
 
 /**
@@ -607,6 +690,18 @@ export interface LaunchRequest {
 }
 
 /**
+ * `POST /api/runs` on success — a 202, nothing has run yet.
+ *
+ * `run_id` is minted **before** the process starts, so the SPA can subscribe to
+ * `/api/runs/{id}/events` immediately instead of polling `runs/` for a file. It
+ * is the stem of the artifact that later appears — the same string — which is
+ * what makes that subscription valid before the artifact exists.
+ */
+export interface LaunchResponse {
+  run_id: RunId;
+}
+
+/**
  * `POST /api/runs/{id}/control`.
  *
  * The corresponding `control.*` SSE event **is** the ack — do not treat the
@@ -615,6 +710,19 @@ export interface LaunchRequest {
  */
 export interface ControlRequest {
   action: ControlAction;
+}
+
+/**
+ * `POST /api/runs/{id}/control` on success.
+ *
+ * **This 202 is not the acknowledgement.** `accepted: true` says only that the
+ * request was well-formed and the control file was written; the matching
+ * `control.*` SSE event is what says the run actually paused, resumed or
+ * cancelled. Do not flip the UI to "paused" off this response.
+ */
+export interface ControlResponse {
+  run_id: RunId;
+  accepted: boolean;
 }
 
 // ---------------------------------------------------------------------------
