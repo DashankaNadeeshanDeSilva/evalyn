@@ -64,6 +64,8 @@ CHECKRESULT_KEYS = {"check", "tier", "required", "weight", "passed", "score",
 # Plan #4 Task 22 (this epoch's own CheckResults, which the cockpit's per-trial
 # drill-down serves); the set stays EXACT so a sixth key has to be argued for
 # here rather than appearing.
+# REVERTING Task 22's `05d51d6`? Drop `"checks"` from this set too — the two
+# were one change, split only because the branch could not be rebased.
 TRIAL_RECORD_KEYS = {"epoch", "transcript", "checks", "session_seconds",
                      "invariant_failures"}
 
