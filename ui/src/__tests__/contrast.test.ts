@@ -18,16 +18,40 @@ import tailwindConfig from "../../tailwind.config";
  *
  * 1. **Measures the palette.** Every number the config claims is recomputed
  *    from the hex values. If someone re-hues a step, the claim moves with it.
- * 2. **Inventories every ink/ground pairing on the surface.** `INK_USAGE` below
+ * 2. **Inventories every ink/ground pairing on the surface.** `SURFACES` below
  *    is the complete, reviewed list of which colour tokens each component puts
  *    on which ground. The test asserts the inventory is *exhaustive* — a
  *    component using a token nobody declared fails — and then asserts each
  *    declared pairing against the threshold for its role.
  *
- * The exhaustiveness half is the point. Tasks 9, 15, 16, 17 and 21 cannot add a
- * colour to a page without coming here and stating, in one line, what ground it
- * sits on and whether it is text. That is a thirty-second cost that catches the
- * failure this project has now made three times.
+ * ## What this guard enforces, exactly — and what it does not
+ *
+ * It reasons **per file**. For each source file it reads the `text-*` and `bg-*`
+ * tokens that file contains, holds them against the inventory, and measures
+ * every ink the file uses against every ground that **same file** establishes.
+ * So within a file, an undeclared ink fails, an undeclared ground fails, and no
+ * ink can be exempted from a ground its own file sets.
+ *
+ * **It does not see composition across files.** `inherits` is hand-written, and
+ * no file's grounds are ever applied to the components it renders. Verified by
+ * probe: a new page whose own ground is `chassis-900`, rendering
+ * `<RunStatusChip>`, passes the whole suite — the chip declares
+ * `inherits: "chassis-25"`,
+ * nothing re-checks it against the dark ground it was actually dropped onto, and
+ * `status-passed` on `chassis-900` measures 3.38:1. Near-black on near-black,
+ * certified. That gap is parked deliberately (ruling R4-24): closing it means
+ * either host declarations in `SURFACES` or rendering-based measurement, and
+ * that is a design decision with real cost.
+ *
+ * **So Task 21 must verify its inherited inks by hand.** Its live view is built
+ * on the `inset` family — the one dark ground on the surface, where every
+ * light-ground rule inverts — and any component it renders inside that ground
+ * was written against `chassis-25` and is still measured against `chassis-25`
+ * here. This file will not catch it.
+ *
+ * What the guard *is* worth: the failure it was built for is a component
+ * quietly using an ink nobody measured, and that class it does catch, in every
+ * `.ts` and `.tsx` under `src/`.
  */
 
 // ---------------------------------------------------------------------------
@@ -84,10 +108,20 @@ function over(top: string, bottom: string, alpha: number): string {
   return `#${hex(mix(16))}${hex(mix(8))}${hex(mix(0))}`;
 }
 
-/** `"chassis-600"` / `"status-passed"` / `"degraded"` -> its hex. */
+/** `"chassis-600"` / `"status-passed"` / `"inset"` / `"degraded"` -> its hex. */
 function hexFor(token: string): string {
   const direct = colors[token];
   if (typeof direct === "string") return direct;
+  // The bare family name is what Tailwind emits for `inset.DEFAULT`, and a
+  // background written that way is exactly what Task 21 will write. Without
+  // this line it threw "no such colour token: inset" — fail-closed, so safe,
+  // but Task 21 met a crash where it should have met a contrast number.
+  //
+  // (The class itself is deliberately not spelled out anywhere in this file:
+  // Tailwind scans `src/**/*.{ts,tsx}` and does not strip comments, so naming
+  // an unused utility here emits dead CSS into the shipped bundle. Measured —
+  // an earlier draft of this comment added two rules to the wheel.)
+  if (direct && typeof direct["DEFAULT"] === "string") return direct["DEFAULT"];
 
   const at = token.lastIndexOf("-");
   const family = colors[token.slice(0, at)];
@@ -155,17 +189,22 @@ interface Surface {
  * `hover:bg-chassis-50`, nothing read `bg-*`, and the inventory said
  * `chassis-25` because a human wrote `chassis-25`.
  *
- * **There is deliberately no way to narrow an ink to a subset of its file's
- * grounds.** A first attempt at this guard offered exactly that escape hatch,
- * with a `note` required to use it — and it reproduced the original bug on the
- * first probe, because the note said "the header row carries no status ink"
- * and a `hover:` fill on a *data* row is invisible at file granularity.
+ * **Within a file there is deliberately no way to narrow an ink to a subset of
+ * that file's grounds.** A first attempt at this guard offered exactly that
+ * escape hatch, with a `note` required to use it — and it reproduced the
+ * original bug on the first probe, because the note said "the header row
+ * carries no status ink" and a `hover:` fill on a *data* row is invisible at
+ * file granularity. So the rule is unconditional inside the file: every ink is
+ * checked against every ground its file establishes. When that is too strict,
+ * the answer is to change the code — drop the second ground, or split the
+ * component so each file has one — and both of those made the design better
+ * here.
  *
- * So the rule is unconditional: every ink is checked against every ground its
- * file establishes. When that is too strict, the answer is to change the code
- * — drop the second ground, or split the component so each file has one — and
- * both of those made the design better here. An exception mechanism would only
- * have made the guard agreeable.
+ * **The file boundary is itself a narrowing, though, and this is the guard's
+ * real limit.** `inherits` states the ground a component expects to be rendered
+ * inside; nothing verifies it against the ground the rendering page actually
+ * establishes. An ink is never measured against a ground some *other* file puts
+ * behind it. See the module docstring and ruling R4-24.
  */
 const SURFACES: Record<string, Surface> = {
   "components/AppShell.tsx": {
@@ -435,6 +474,13 @@ describe("the palette measures what the config says it measures", () => {
     expect(
       contrast(hexFor("inset-ink"), hexFor("inset-DEFAULT")),
       "inset-ink on the inset window",
+    ).toBeGreaterThanOrEqual(AA_TEXT);
+    // The same window named the way Task 21 will name it — the bare family,
+    // which is what a `DEFAULT` key renders as. Without the fallback in
+    // `hexFor` this throws instead of measuring.
+    expect(
+      contrast(hexFor("inset-ink"), hexFor("inset")),
+      "inset-ink on the bare `inset` token, which is inset.DEFAULT",
     ).toBeGreaterThanOrEqual(AA_TEXT);
     expect(
       contrast(hexFor("safety-ink"), hexFor("safety-DEFAULT")),

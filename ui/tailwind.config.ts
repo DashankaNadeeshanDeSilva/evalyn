@@ -27,9 +27,12 @@ import type { Config } from "tailwindcss";
  *   Secondary prose uses `chassis-600` (5.98). 400/500 are for rules, icons and
  *   disabled affordances only.
  * - **Status text may only sit on `chassis-25`.** `status-unreadable` drops to
- *   4.34 on `chassis-50`, so table rows keep the lightest ground and the tinted
- *   `chassis-50` is reserved for the legend strip and column headers, which
- *   carry no status ink.
+ *   4.34 on `chassis-50`, so every surface that carries status ink keeps the
+ *   lightest ground. The runs table therefore has no tinted grounds at all: the
+ *   column headers lost their `chassis-50` band and row hover deepens the
+ *   engraved rule instead of filling the row. `chassis-50` survives only where
+ *   no status ink can reach it — the legend strip, and the loading skeleton's
+ *   bars, which carry no text.
  *
  * ## Cool, and provably so
  *
