@@ -682,6 +682,46 @@ def discover(
     raise typer.Exit(0)
 
 
+@app.command()
+def ui(
+    port: int = typer.Option(8765, "--port", help="Loopback port to serve on."),
+    runs_dir: str = typer.Option("runs", "--runs-dir",
+                                 help="Directory of run artifacts to serve."),
+    target: list[str] = typer.Option(
+        None, "--target",
+        help="Pack the cockpit may launch runs against. Repeatable."),
+    allow_discover: bool = typer.Option(
+        False, "--allow-discover",
+        help="Permit `discover` launches, which spend real money."),
+    no_open: bool = typer.Option(False, "--no-open",
+                                 help="Do not open a browser on start."),
+):
+    """Serve the local cockpit over `runs/` on 127.0.0.1.
+
+    The import is inside the body on purpose. `evalyn.ui.server` is the only
+    module that touches FastAPI, and keeping it out of this file's import graph
+    is what lets `evalyn gate` run on a machine that never installed the `[ui]`
+    extra — and what makes the missing-extra case a sentence a human reads
+    rather than an `ImportError` raised three modules away at start-up.
+    """
+    try:
+        from evalyn.ui.server import serve
+    except ImportError:
+        typer.echo("evalyn ui: setup error: the UI extra is not installed. "
+                   "Install it with: pip install 'evalyn[ui]'", err=True)
+        raise typer.Exit(2)
+
+    try:
+        serve(runs_dir=Path(runs_dir), packs=[Path(t) for t in target or []],
+              port=port, allow_discover=allow_discover, open_browser=not no_open)
+    except (PackError, AllowlistError) as e:
+        # Fail closed: a pack that does not load is a pack whose `not_contains`
+        # secrets never reached the redactor. Refusing to start beats serving
+        # with a hole in the one control that is supposed to be structural.
+        typer.echo(f"evalyn ui: setup error: {e}", err=True)
+        raise typer.Exit(2)
+
+
 @app.command("validate-pack")
 def validate_pack_cmd(pack: str = typer.Argument(..., help="Path to a target pack directory.")):
     """Task-health check: schema, solvability, category balance."""
