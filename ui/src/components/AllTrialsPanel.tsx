@@ -169,8 +169,17 @@ const MARK_REASON: Record<TrialMark, string> = {
     "this trial record carries no per-check result, so nothing is claimed about it",
 };
 
-function Mark({ mark }: { mark: TrialMark }) {
+function Mark({ mark, amongMarked }: { mark: TrialMark; amongMarked: boolean }) {
   if (mark === "unmarked") {
+    /*
+     * `unmarked` is worth saying **in a set where other trials are marked** —
+     * there it distinguishes "this one did not fail" from "nobody looked at
+     * this one". When no trial in the set is marked, which is every artifact in
+     * `runs/` today, seven identical flat lines say nothing the panel's own
+     * tally has not already said in a sentence, and they cost a column of ink
+     * on a projector. Seen on the built page, not reasoned about.
+     */
+    if (!amongMarked) return null;
     return (
       <Flatline
         word="unmarked"
@@ -203,7 +212,14 @@ function ReplyBody({ text }: { text: string }) {
     <>
       <p
         data-testid="trial-reply"
-        className="whitespace-pre-wrap break-words text-readout text-chassis-900"
+        /*
+         * A measure, not the full panel width. Seven replies are read as one
+         * comparison, and a 180-character line makes the eye traverse rather
+         * than compare — the same reason prose has a measure at all. 78ch of
+         * this mono stack is ~660px, so six identical answers still wrap
+         * identically and the odd one out still breaks the shape.
+         */
+        className="max-w-[78ch] whitespace-pre-wrap break-words text-readout text-chassis-900"
       >
         {open || cut.hidden === 0 ? text : `${cut.shown}…`}
       </p>
@@ -232,11 +248,14 @@ function TrialRow({
   runId,
   probeId,
   epoch,
+  amongMarked,
   query,
 }: {
   runId: string;
   probeId: string;
   epoch: number;
+  /** Some other trial in this set carries a verdict, so silence is ambiguous. */
+  amongMarked: boolean;
   query: {
     isPending: boolean;
     isError: boolean;
@@ -264,7 +283,9 @@ function TrialRow({
           {`trial ${epoch}`}
         </p>
         <div className="sm:mt-1">
-          {query.isPending || query.isError ? null : <Mark mark={mark} />}
+          {query.isPending || query.isError ? null : (
+            <Mark mark={mark} amongMarked={amongMarked} />
+          )}
         </div>
       </div>
 
@@ -408,6 +429,9 @@ export function AllTrialsPanel({
   });
 
   const loaded = queries.flatMap((q) => (q.data ? [q.data] : []));
+  const amongMarked = loaded.some(
+    (trial) => markOf(trial.checks) !== "unmarked",
+  );
   const unread = queries.filter((q) => q.isError).length;
   const opening = loaded
     .map((trial) => ({
@@ -474,6 +498,7 @@ export function AllTrialsPanel({
             runId={runId}
             probeId={probe.id}
             epoch={epoch}
+            amongMarked={amongMarked}
             query={queries[index]!}
           />
         ))}

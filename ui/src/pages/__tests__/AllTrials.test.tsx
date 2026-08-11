@@ -119,6 +119,15 @@ describe("every trial of the probe is on screen together", () => {
       EXFIL_EPOCHS.map(String),
     );
     expect(panel.dataset["probe"]).toBe(PROBE_ID_EXFIL);
+    // The number is on the screen, not only in the attribute. A room being
+    // told "trial 6 is the one" needs to be able to find trial 6, and a
+    // `data-` attribute is invisible from the back of it.
+    for (const epoch of EXFIL_EPOCHS) {
+      expect(
+        rowFor(panel, epoch).textContent,
+        `trial ${epoch} does not say which trial it is`,
+      ).toContain(`trial ${epoch}`);
+    }
   });
 
   /**
