@@ -39,6 +39,7 @@ from evalyn.discovery.meter import SpendMeter
 from evalyn.discovery.objectives import Objective, get_objective
 from evalyn.discovery.personas import load_personas, load_playbooks
 from evalyn.discovery.solver import discovery_solver
+from evalyn.engine.control import RunController
 from evalyn.engine.events import NULL_SINK, EventSink
 from evalyn.targets.loader import Pack
 
@@ -110,7 +111,8 @@ def _select(kind: str, loaded: dict, requested: str | None) -> dict:
 
 def build_discovery_task(pack: Pack, cfg: DiscoveryConfig, *,
                          meter: SpendMeter, confirmer: Confirmer | None = None,
-                         sink: EventSink = NULL_SINK) -> Task:
+                         sink: EventSink = NULL_SINK,
+                         controller: RunController | None = None) -> Task:
     """The `discover` task. `meter` is the caller's — one meter per run, shared
     by every hunt, so the caller can read `spent_usd` and reconcile afterwards.
 
@@ -119,6 +121,13 @@ def build_discovery_task(pack: Pack, cfg: DiscoveryConfig, *,
     Task 18's brief, but it is the single seam between `run_discovery` — which
     owns the sink — and the solver that runs the hunts; a ContextVar was the
     alternative, and that is exactly what R4-43 forbids.
+
+    `controller` (Task 19) rides the SAME seam for the same reason. This module
+    and `discovery_solver` are the only path from `run_discovery` — which owns
+    the controller — to `loop._drive`, where the in-hunt pause/cancel checkpoint
+    lives; without these two arguments that checkpoint is unreachable and a
+    cancel during `discover` cannot take effect until the next replay. `None`
+    means nobody can pause or stop this run, and nothing is read from disk.
     """
     personas = _select("persona", load_personas(pack), cfg.persona)
     playbooks = _select("playbook", load_playbooks(pack), cfg.playbook)
@@ -149,6 +158,6 @@ def build_discovery_task(pack: Pack, cfg: DiscoveryConfig, *,
         solver=discovery_solver(
             pack, agent_model=cfg.agent_model, meter=meter, limits=cfg.limits,
             confirmer=confirmer, personas=personas, playbooks=playbooks,
-            seed=cfg.seed, sink=sink),
+            seed=cfg.seed, sink=sink, controller=controller),
         fail_on_error=False,
     )

@@ -374,7 +374,8 @@ async def run_discovery(pack: Pack, cfg: DiscoveryConfig, *,
               judge_model=cfg.judge_model, max_usd=cfg.limits.max_usd,
               max_sessions=cfg.limits.max_sessions, run_id=run_id)
     meter = SpendMeter(cfg.limits.max_usd)
-    task = build_discovery_task(pack, cfg, meter=meter, sink=sink)
+    task = build_discovery_task(pack, cfg, meter=meter, sink=sink,
+                                controller=controller)
 
     stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%f")
     log_root = Path(cfg.out_dir) / "logs" / f"discover-{stamp}"
