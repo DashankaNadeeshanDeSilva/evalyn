@@ -27,14 +27,6 @@ function stateWith(patch: Partial<RunEventsState>): RunEventsState {
   return { ...initialRunEventsState, ...patch };
 }
 
-/** Every `class` attribute in the subtree, SVG elements included. */
-function classesIn(root: Element): string[] {
-  return [...root.querySelectorAll("*")].flatMap((node) => {
-    const value = node.getAttribute("class");
-    return value === null ? [] : [value];
-  });
-}
-
 describe("the live readout window", () => {
   it("says the phase with a glyph and a word, never a colour alone", () => {
     for (const [phase, word] of [
@@ -145,34 +137,256 @@ describe("the live readout window", () => {
     expect(notice.textContent).toContain("run itself is unaffected");
   });
 
-  /**
-   * The guard the contrast test cannot be (ruling R4-24).
-   *
-   * On this ground chassis-600 measures 2.92:1, chassis-500 4.33:1 and every
-   * status hue is below AA — `status-passed`, the best of them, is 3.60:1. The
-   * contrast guard measures each of those files against `chassis-25` and
-   * certifies them, so dropping `CostChip`, `Flatline`, `RunStatusChip` or
-   * `VerdictBadge` in here would ship unreadable text with a green suite.
-   */
-  it("puts no pale-chassis ink on the dark ground", () => {
+  it("states the pack ceiling beside the spend, and says so when it has none", () => {
+    const view = render(
+      <LiveBanner
+        state={stateWith({ phase: "running", judgeUsd: 0.5 })}
+        ceiling={2}
+        ceilingSettled
+      />,
+    );
+    // `$0.5000` means nothing until you know the ceiling is $2 and not 2 cents,
+    // and this is the readout an operator decides to cancel from.
+    expect(screen.getByTestId("live-window").textContent).toContain("of $2.0000");
+    expect(screen.getByTestId("live-window").textContent).toContain("25.0% used");
+    view.unmount();
+
+    const unknown = render(
+      <LiveBanner
+        state={stateWith({ phase: "running", judgeUsd: 0.5 })}
+        ceiling={null}
+        ceilingSettled
+      />,
+    );
+    // Never a default: the run's pack may not be on this server's allowlist.
+    expect(screen.getByTestId("live-window").textContent).toContain(
+      "pack ceiling unknown",
+    );
+    unknown.unmount();
+
+    render(
+      <LiveBanner state={stateWith({ phase: "running", judgeUsd: 0.5 })} />,
+    );
+    // Still reading is not the same claim as "there is no ceiling".
+    expect(screen.getByTestId("live-window").textContent).not.toContain(
+      "ceiling",
+    );
+  });
+});
+
+/**
+ * The guard the contrast test cannot be (ruling R4-24), applied to **every
+ * state the window can actually be in**.
+ *
+ * The first version of this rendered one state — `running`, no gap, no exit
+ * code, resting controls — and scanned `text-` only. Review reproduced the
+ * consequence: a `<Flatline>` inserted into the **exit-code** branch left the
+ * whole suite green, because that branch renders only when a run has finished.
+ * A control that fires in one of eleven states is not a control.
+ *
+ * So the inventory below is an **allowlist**, not a denylist, and every state
+ * is rendered against it. Adding a token to it means measuring it first:
+ *
+ *   text-inset-ink                     15.21:1  readings, alarms, key labels
+ *   text-chassis-400                    7.58:1  legends and secondary prose
+ *   bg-inset                                    the window's own ground
+ *   bg-safety                           6.44:1  the orange key's edge (1.4.11)
+ *   text-safety-ink                     6.05:1  on the orange it always sits on
+ *   outline-safety-ink                  6.05:1  that key's hover edge
+ *   [--rule:theme(colors.chassis.400)]  7.58:1  a secondary key's engraved edge
+ *   [--rule:theme(colors.inset.ink)]   15.21:1  the same edge, hovered
+ *
+ * Everything else in the palette is refused here, and the refusals are the
+ * point: chassis-600 — the pale face's own secondary prose — measures 2.92:1,
+ * chassis-500 4.33:1, and every status hue is below AA (status-passed, the best
+ * of them, is 3.60:1). The per-file contrast guard measures each of those files
+ * against `chassis-25` and certifies them, so `Flatline`, `CostChip`,
+ * `RunStatusChip` or `VerdictBadge` dropped in here would ship unreadable text
+ * with a green suite and a passing guard.
+ */
+const MEASURED_ON_THE_INSET_GROUND = new Set([
+  "text-inset-ink",
+  "text-chassis-400",
+  "bg-inset",
+  "bg-safety",
+  "text-safety-ink",
+  "outline-safety-ink",
+  "[--rule:theme(colors.chassis.400)]",
+  "[--rule:theme(colors.inset.ink)]",
+]);
+
+/** Anything naming a palette family, in any utility and behind any variant. */
+const PALETTE = /(chassis|inset|safety|status|degraded)/;
+
+/**
+ * Every colour-bearing class in the subtree, variants stripped.
+ *
+ * Not `text-` and `bg-` only: this codebase identifies **every control edge**
+ * with `[--rule:theme(...)]` and the safety key's hover edge with an outline,
+ * and both were invisible to the first version of this check.
+ */
+function unmeasuredInk(root: Element): string[] {
+  const found = new Set<string>();
+  for (const node of [root, ...root.querySelectorAll("*")]) {
+    const value = node.getAttribute("class");
+    if (value === null) continue;
+    for (const raw of value.split(/\s+/)) {
+      // `hover:[--rule:theme(...)]` -> `[--rule:theme(...)]`. The arbitrary
+      // value's own colons are safe: they sit inside brackets, which the
+      // variant pattern cannot cross.
+      const token = raw.replace(/^(?:[a-z-]+:)+(?=\[|[a-z])/, "");
+      if (token === "" || !PALETTE.test(token)) continue;
+      if (!MEASURED_ON_THE_INSET_GROUND.has(token)) found.add(token);
+    }
+  }
+  return [...found].sort();
+}
+
+function expectMeasured(where: string) {
+  expect(
+    unmeasuredInk(screen.getByTestId("live-window")),
+    `${where}: this ink has never been measured against the inset window`,
+  ).toEqual([]);
+}
+
+const WINDOW_STATES: [string, RunEventsState][] = [
+  ["connecting", stateWith({ phase: "connecting" })],
+  ["running", stateWith({ phase: "running", judgeUsd: 0.0138, trials: 2 })],
+  ["running with no spend reported", stateWith({ phase: "running" })],
+  ["paused", stateWith({ phase: "paused", judgeUsd: 0.5 })],
+  ["cancelling", stateWith({ phase: "cancelling" })],
+  ["finished with an exit code", stateWith({ phase: "finished", exitCode: 1 })],
+  [
+    "finished with no exit code",
+    stateWith({ phase: "finished", exitCode: null, connection: "closed" }),
+  ],
+  [
+    "reconnecting after a gap",
+    stateWith({ phase: "running", connection: "reconnecting", missedEvents: 4 }),
+  ],
+  [
+    "recovered, but events were lost",
+    stateWith({ phase: "running", connection: "open", missedEvents: 2 }),
+  ],
+  [
+    "stalled before the run finished",
+    stateWith({ phase: "running", connection: "closed" }),
+  ],
+];
+
+type ControlProps = Parameters<typeof ControlButtons>[0];
+
+const CONTROL_STATES: [string, ControlProps][] = [
+  [
+    "resting keys",
+    { phase: "running", requested: null, error: null, onAction: () => {} },
+  ],
+  [
+    "resume in place of pause",
+    { phase: "paused", requested: null, error: null, onAction: () => {} },
+  ],
+  [
+    "waiting on an acknowledgement",
+    { phase: "running", requested: "cancel", error: null, onAction: () => {} },
+  ],
+  [
+    "winding down after a cancel ack",
+    { phase: "cancelling", requested: null, error: null, onAction: () => {} },
+  ],
+  [
+    "nothing heard from the run yet",
+    { phase: "connecting", requested: null, error: "refused", onAction: () => {} },
+  ],
+  [
+    "a refused control request",
+    {
+      phase: "running",
+      requested: null,
+      error: "cancel refused — busy",
+      onAction: () => {},
+    },
+  ],
+];
+
+describe("every ink the dark window can render was measured against it", () => {
+  it.each(WINDOW_STATES)("the window, %s", (name, state) => {
+    render(<LiveBanner state={state} />);
+    expectMeasured(name);
+  });
+
+  it.each([
+    ["a ceiling to compare against", 2 as number | null],
+    ["no ceiling available", null as number | null],
+  ])("the window, spend with %s", (name, ceiling) => {
+    render(
+      <LiveBanner
+        state={stateWith({ phase: "running", judgeUsd: 0.5 })}
+        ceiling={ceiling}
+        ceilingSettled
+      />,
+    );
+    expectMeasured(name);
+  });
+
+  it.each(CONTROL_STATES)("the controls, %s", (name, props) => {
+    render(
+      <LiveBanner state={stateWith({ phase: props.phase })}>
+        <ControlButtons {...props} />
+      </LiveBanner>,
+    );
+    expectMeasured(name);
+  });
+
+  it("the controls, armed for a cancel", async () => {
+    const user = userEvent.setup();
     render(
       <LiveBanner state={stateWith({ phase: "running" })}>
         <ControlButtons
           phase="running"
           requested={null}
-          error="a refusal, so the alarm ink is on screen too"
+          error={null}
           onAction={() => {}}
         />
       </LiveBanner>,
     );
 
-    const offending = classesIn(screen.getByTestId("live-window")).filter(
-      (value) => /\btext-(chassis-(500|600|700|800|900)|status-|degraded)/.test(value),
+    await user.click(screen.getByRole("button", { name: /Cancel run/ }));
+    expect(screen.getByTestId("cancel-confirm")).toBeInTheDocument();
+    expectMeasured("armed for a cancel");
+  });
+
+  it("the controls, the orange key hovered", async () => {
+    const user = userEvent.setup();
+    render(
+      <LiveBanner state={stateWith({ phase: "running" })}>
+        <ControlButtons
+          phase="running"
+          requested={null}
+          error={null}
+          onAction={() => {}}
+        />
+      </LiveBanner>,
     );
-    expect(
-      offending,
-      "these inks were measured against the pale face and fail on the inset window",
-    ).toEqual([]);
+
+    await user.hover(screen.getByTestId("safety-key"));
+    expectMeasured("the orange key hovered");
+  });
+
+  /**
+   * The control's own discriminating red, kept as a test rather than a claim:
+   * the scanner must reject an ink that is genuinely wrong here. `chassis-600`
+   * is the exact ink `Flatline` and `CostChip` carry, at 2.92:1 on this ground.
+   */
+  it("rejects an ink that was measured against the pale face", () => {
+    render(
+      <LiveBanner state={stateWith({ phase: "running" })}>
+        <span className="text-chassis-600">unrecorded</span>
+      </LiveBanner>,
+    );
+
+    expect(unmeasuredInk(screen.getByTestId("live-window"))).toEqual([
+      "text-chassis-600",
+    ]);
   });
 });
 
