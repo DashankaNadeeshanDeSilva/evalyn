@@ -265,6 +265,86 @@ def test_build_argv_produces_only_strings(mode):
 
 
 # --------------------------------------------------------------------------
+# 2b. T-A1 — which judge the cockpit's child scores with
+# --------------------------------------------------------------------------
+#
+# `evalyn ui` had no judge option at all, so every browser-launched run fell to
+# `cli.py`'s `mockllm/model` default — and against a mock judge every
+# `classifier` check fails closed and is scored UNSURE (`cli.py:176-179`). A
+# pack with classifier checks therefore could not produce the same numbers from
+# the cockpit that it produces from a terminal, which is the drift this whole
+# group of fixes exists to close.
+#
+# **Nothing here spends.** The value below is a model name no provider serves,
+# and every assertion is on argv — the flag's plumbing is proved by reading the
+# command line, never by running it.
+
+FAKE_JUDGE = "fake-provider/not-a-real-judge"
+
+
+def cli_option_default(mode: str, option: str):
+    """The default `evalyn <mode>` applies when *option* is absent from argv.
+
+    Read off the CLI for the same reason `cli_option_names` is: a test that
+    claims "omitting the flag leaves the child on the free mock judge" must not
+    be able to pass while that default is something that bills.
+    """
+    import typer.main
+
+    from evalyn.cli import app as cli_app
+
+    command = typer.main.get_command(cli_app).commands[mode]
+    return next(param.default for param in command.params if option in param.opts)
+
+
+@pytest.mark.parametrize("mode", ["gate", "discover"])
+def test_build_argv_passes_the_operators_judge_to_the_child(mode):
+    argv = build_argv(request_for(mode), pack_path=EXAMPLE_PACK,
+                      runs_dir=Path("/runs"), judge_model=FAKE_JUDGE)
+    assert argv[argv.index("--judge-model") + 1] == FAKE_JUDGE
+    assert "--judge-model" in cli_option_names(mode), "the spelling the child accepts"
+
+
+@pytest.mark.parametrize("mode", ["gate", "compare", "discover"])
+def test_build_argv_names_no_judge_when_the_operator_named_none(mode):
+    """**The free path, and it is load-bearing.**
+
+    An unset `--judge-model` must leave argv exactly as it was before the flag
+    existed, so the child falls to its own `mockllm/model` default. That is how
+    this project exercises the cockpit end to end without spending a cent, and
+    a default that quietly named a real provider would turn every debugging
+    launch into a bill.
+    """
+    argv = build_argv(request_for(mode, run_id_a="20260101T000000000000-aaaaaaaa-example",
+                                  run_id_b="20260101T000000000001-bbbbbbbb-example"),
+                      pack_path=EXAMPLE_PACK, runs_dir=Path("/runs"),
+                      judge_model=None)
+    assert "--judge-model" not in argv
+
+
+@pytest.mark.parametrize("mode", ["gate", "discover"])
+def test_the_judge_an_unflagged_child_falls_to_is_the_free_mock_one(mode):
+    """The other half of the pair above: "no flag" is only safe while the
+    default on the other side is the mock. Read off the CLI rather than
+    asserted from memory."""
+    assert cli_option_default(mode, "--judge-model") == "mockllm/model"
+
+
+def test_build_argv_never_offers_a_judge_to_compare():
+    """`evalyn compare` has no `--judge-model` — it judges pairs through
+    `--rubric-judge-model` — so passing one would not configure a judge, it
+    would kill the child with a usage error before it evaluated anything."""
+    argv = build_argv(request_for("compare",
+                                  run_id_a="20260101T000000000000-aaaaaaaa-example",
+                                  run_id_b="20260101T000000000001-bbbbbbbb-example"),
+                      pack_path=EXAMPLE_PACK, runs_dir=Path("/runs"),
+                      judge_model=FAKE_JUDGE)
+    assert "--judge-model" not in argv
+    assert "--judge-model" not in cli_option_names("compare"), \
+        "the reason: the child would refuse the flag outright"
+
+
+# --------------------------------------------------------------------------
 # 3. The clamp — down, never up, and `0` means opposite things on each side
 # --------------------------------------------------------------------------
 
@@ -937,11 +1017,12 @@ def test_the_sidecar_files_are_written_by_rename_never_in_place(tmp_path, pack):
 # `POST /api/runs`, because the production seam would start a paid evaluation.
 
 def cockpit(runs_dir: Path, *, allow_discover: bool = False,
-            child: list[str] | None = None):
+            child: list[str] | None = None, judge_model: str | None = None):
     """The real app over the real `packs/example`, with an inert child."""
     from evalyn.ui.server import create_app
 
-    app = create_app(runs_dir, [EXAMPLE_PACK], allow_discover=allow_discover)
+    app = create_app(runs_dir, [EXAMPLE_PACK], allow_discover=allow_discover,
+                     judge_model=judge_model)
     spawned: list[dict] = []
 
     def spawn(argv, *, env, stderr, cwd=None):
@@ -1829,3 +1910,40 @@ async def test_a_run_that_finishes_DURING_the_write_has_its_file_removed(
         "the file written inside the race window was left on disk"
     assert detail.json()["status"] == "passed"
     assert detail.json()["cancelled"] is False
+
+
+# --------------------------------------------------------------------------
+# 16. T-A1 — the judge reaches the child that the browser started
+# --------------------------------------------------------------------------
+#
+# The pure coverage is in section 2b; these two are the same claim asserted
+# where it has to hold — through `create_app`, the launcher and the real spawn
+# seam, on the path a Launch click takes. Still no spend: the model name is a
+# fake and the child is inert.
+
+async def test_a_cockpit_started_with_a_judge_hands_it_to_the_child(
+        tmp_path, asgi_client):
+    app = cockpit(tmp_path, judge_model=FAKE_JUDGE)
+    async with asgi_client(app) as client:
+        response = await client.post("/api/runs", json=launch_body())
+    reap_app(app)
+
+    assert response.status_code == 202
+    argv = app.state.spawned[0]["argv"]
+    assert argv[argv.index("--judge-model") + 1] == FAKE_JUDGE
+
+
+async def test_a_cockpit_started_without_a_judge_leaves_the_child_free(
+        tmp_path, asgi_client):
+    """The free path, end to end. A cockpit started with no `--judge-model` must
+    spawn exactly the command it spawned before the flag existed, so that
+    debugging the UI against the toy target still costs nothing."""
+    app = cockpit(tmp_path)
+    async with asgi_client(app) as client:
+        response = await client.post("/api/runs", json=launch_body())
+    reap_app(app)
+
+    assert response.status_code == 202
+    assert "--judge-model" not in app.state.spawned[0]["argv"]
+    assert cli_option_default("gate", "--judge-model") == "mockllm/model", \
+        "which is what makes an unflagged child free"

@@ -231,12 +231,18 @@ def build_redactor(packs: list[Path]) -> Redactor:
 
 
 def create_app(runs_dir: Path, packs: list[Path], *,
-               allow_discover: bool = False) -> FastAPI:
+               allow_discover: bool = False,
+               judge_model: str | None = None) -> FastAPI:
     """Build the cockpit app over one `runs/` directory and one pack allowlist.
 
     `allow_discover` is a *start-time* decision, not a request-time one: the
     launcher (Task 19) refuses a `discover` request unless the operator asked
     for it on the command line, because discover spends real money.
+
+    `judge_model` is start-time for the same reason and one more: it is what
+    turns a launch into a *billed* launch, so it belongs on the command line
+    the operator typed and nowhere near a request body. `None` — the default —
+    leaves every child on the CLI's own `mockllm/model`, which costs nothing.
     """
     from fastapi import APIRouter, FastAPI, HTTPException
     from fastapi.responses import (
@@ -283,7 +289,7 @@ def create_app(runs_dir: Path, packs: list[Path], *,
         pack_id_for(loaded.spec.name): (loaded, path)
         for loaded, path in ((load_pack(p), p) for p in packs)
     }
-    app.state.launcher = RunLauncher(runs_dir)
+    app.state.launcher = RunLauncher(runs_dir, judge_model=judge_model)
     #: Overridable so a test need not wait out the production backstop; the
     #: stream's other two stops are what end a subscription in practice.
     app.state.sse_idle_timeout = DEFAULT_IDLE_TIMEOUT
@@ -941,7 +947,7 @@ def create_app(runs_dir: Path, packs: list[Path], *,
 
 def serve(*, runs_dir: Path, packs: list[Path], port: int = DEFAULT_PORT,
           host: str = LOOPBACK_HOST, allow_discover: bool = False,
-          open_browser: bool = True) -> None:
+          open_browser: bool = True, judge_model: str | None = None) -> None:
     """Build the app and serve it on loopback until interrupted.
 
     `host` exists to be **refused**. It is a parameter rather than a constant so
@@ -957,7 +963,7 @@ def serve(*, runs_dir: Path, packs: list[Path], port: int = DEFAULT_PORT,
             f"belongs on a network interface")
 
     app = create_app(Path(runs_dir), [Path(p) for p in packs],
-                     allow_discover=allow_discover)
+                     allow_discover=allow_discover, judge_model=judge_model)
 
     url = f"http://{host}:{port}/"
     print(f"evalyn ui: serving {display_path(str(Path(runs_dir).resolve()))} "

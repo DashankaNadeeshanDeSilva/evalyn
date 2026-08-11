@@ -489,6 +489,7 @@ def test_the_ui_command_passes_its_flags_through_to_serve(runs_dir, tmp_path,
     result = CliRunner().invoke(app, [
         "ui", "--port", "9999", "--runs-dir", str(runs_dir),
         "--target", str(pack), "--allow-discover", "--no-open",
+        "--judge-model", "fake-provider/not-a-real-judge",
     ])
 
     assert result.exit_code == 0, result.output
@@ -497,6 +498,33 @@ def test_the_ui_command_passes_its_flags_through_to_serve(runs_dir, tmp_path,
     assert [Path(p) for p in seen["packs"]] == [pack]
     assert seen["allow_discover"] is True
     assert seen["open_browser"] is False
+    assert seen["judge_model"] == "fake-provider/not-a-real-judge"
+
+
+def test_the_ui_command_leaves_the_judge_unset_unless_it_is_asked_for(
+        runs_dir, tmp_path, monkeypatch):
+    """T-A1's free path, at the flag.
+
+    Unset must reach `serve` as `None`, because `None` is what makes the
+    launcher omit `--judge-model` from the child's argv and leaves it on the
+    CLI's own `mockllm/model` — the judge that costs nothing and the only
+    reason this cockpit can be exercised end to end without a bill. A default
+    of any real provider here would bill on every debugging launch.
+    """
+    from tests.cli_runner import CliRunner
+
+    from evalyn.cli import app
+    from evalyn.ui import server as server_module
+
+    seen: dict = {}
+    monkeypatch.setattr(server_module, "serve", lambda **kw: seen.update(kw))
+
+    result = CliRunner().invoke(app, [
+        "ui", "--runs-dir", str(runs_dir), "--no-open",
+    ])
+
+    assert result.exit_code == 0, result.output
+    assert seen["judge_model"] is None
 
 
 def test_the_ui_command_reports_an_unloadable_pack_as_a_setup_error(
@@ -526,7 +554,8 @@ def test_the_ui_help_lists_every_flag_the_plan_promised():
     from evalyn.cli import app
 
     out = CliRunner().invoke(app, ["ui", "--help"]).output
-    for flag in ("--port", "--runs-dir", "--target", "--allow-discover", "--no-open"):
+    for flag in ("--port", "--runs-dir", "--target", "--allow-discover",
+                 "--no-open", "--judge-model"):
         assert flag in out, out
 
 

@@ -238,12 +238,24 @@ def refusal_for(request: LaunchRequest, *, pack: Pack | None,
 # --------------------------------------------------------------------------
 
 def build_argv(request: LaunchRequest, *, pack_path: Path, runs_dir: Path,
-               max_usd: float | None = None) -> list[str]:
+               max_usd: float | None = None,
+               judge_model: str | None = None) -> list[str]:
     """The child's argv. Pure — no filesystem, no process, no clock.
 
     *max_usd* is the **already-clamped** ceiling and is passed in rather than
     read off *request*, so the clamp cannot be skipped by a caller who forgot
     it: this function has no way to reach the browser's raw figure.
+
+    *judge_model* is the operator's `evalyn ui --judge-model`, and it is
+    likewise passed in rather than read off *request*: the browser has no say
+    in which judge a run bills against.
+
+    **`None` must stay silent.** Omitting the flag is not the same as passing
+    an empty one — the child's own default is `mockllm/model`, which costs
+    nothing and scores `classifier` checks UNSURE, and that free path is how
+    this cockpit is exercised end to end without spending. Only `gate` and
+    `discover` accept `--judge-model`; `compare` does not, so handing it one
+    would kill the child with a usage error rather than configure a judge.
 
     `--events` is not optional. Without it `_open_sink` constructs no sink and
     writes no file (`cli.py:52-78`), and the cockpit's live panel would tail
@@ -272,6 +284,8 @@ def build_argv(request: LaunchRequest, *, pack_path: Path, runs_dir: Path,
         argv.append("--allow-uncalibrated")
 
     if mode == RunMode.gate.value:
+        if judge_model:
+            argv += ["--judge-model", judge_model]
         # Omitted rather than passed empty: the CLI's own default is
         # `runs/baseline.json`, and `--baseline ""` would defeat it.
         if request.baseline_run_id:
@@ -280,6 +294,8 @@ def build_argv(request: LaunchRequest, *, pack_path: Path, runs_dir: Path,
         argv += ["--a", str(Path(runs_dir) / f"{request.run_id_a}.json"),
                  "--b", str(Path(runs_dir) / f"{request.run_id_b}.json")]
     elif mode == RunMode.discover.value:
+        if judge_model:
+            argv += ["--judge-model", judge_model]
         # One flag per objective: `--objective` is `list[str]` on the CLI, so a
         # comma-joined value would be read as one objective named "a,b" and
         # refused by `DiscoveryConfig`'s known-objective check.
@@ -319,9 +335,14 @@ def spawn_child(argv: list[str], *, env: dict, stderr, cwd=None) -> subprocess.P
 class RunLauncher:
     """Owns the single child process this server may have running."""
 
-    def __init__(self, runs_dir: Path, *, spawn=spawn_child) -> None:
+    def __init__(self, runs_dir: Path, *, spawn=spawn_child,
+                 judge_model: str | None = None) -> None:
         self.runs_dir = Path(runs_dir)
         self._spawn = spawn
+        #: The operator's `evalyn ui --judge-model`, or `None` for the child's
+        #: own free `mockllm/model`. Start-time, never request-time: a browser
+        #: cannot choose what a run bills against.
+        self.judge_model = judge_model
         #: `None` when nothing is in flight. See the module docstring for why
         #: this is in memory and not on disk.
         self.live: LiveRun | None = None
@@ -349,7 +370,7 @@ class RunLauncher:
         run_id = engine_run_id + _MODE_SUFFIX[RunMode(request.mode).value]
         max_usd = clamp_max_usd(request.max_usd, pack.spec.budget.max_usd_per_run)
         argv = build_argv(request, pack_path=pack_path, runs_dir=self.runs_dir,
-                          max_usd=max_usd)
+                          max_usd=max_usd, judge_model=self.judge_model)
 
         directory = sidecar_dir(self.runs_dir, run_id)
         directory.mkdir(parents=True, exist_ok=True)

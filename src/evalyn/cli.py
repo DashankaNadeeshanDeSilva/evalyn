@@ -888,6 +888,11 @@ def ui(
         help="Permit `discover` launches, which spend real money."),
     no_open: bool = typer.Option(False, "--no-open",
                                  help="Do not open a browser on start."),
+    judge_model: str = typer.Option(
+        None, "--judge-model",
+        help="Judge model for runs this cockpit launches. Unset (the default) "
+             "leaves each child on its own free `mockllm/model`, which scores "
+             "classifier checks UNSURE; naming a real model spends money."),
 ):
     """Serve the local cockpit over `runs/` on 127.0.0.1.
 
@@ -906,7 +911,8 @@ def ui(
 
     try:
         serve(runs_dir=Path(runs_dir), packs=[Path(t) for t in target or []],
-              port=port, allow_discover=allow_discover, open_browser=not no_open)
+              port=port, allow_discover=allow_discover, open_browser=not no_open,
+              judge_model=judge_model)
     except (PackError, AllowlistError) as e:
         # Fail closed: a pack that does not load is a pack whose `not_contains`
         # secrets never reached the redactor. Refusing to start beats serving
