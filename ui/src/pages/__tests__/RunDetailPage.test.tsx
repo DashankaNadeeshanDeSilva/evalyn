@@ -125,6 +125,25 @@ describe("a run that is still on the air", () => {
     ).toBe(false);
   });
 
+  /**
+   * Read off the screen during the wiring pass, one line under
+   * `gate-banner-pending`'s "the artifact … is written when the run ends":
+   * **"This artifact records no probe rows."** Technically true and completely
+   * misleading — the artifact does not exist yet, so it records nothing at all,
+   * and the sentence invites the operator to conclude the run found nothing.
+   */
+  it("does not tell a running run that its artifact records no probe rows", async () => {
+    renderPage(RUN_ID_RUNNING);
+    await screen.findByTestId("live-window");
+
+    // The artifact-is-empty claim is a claim about a file that exists.
+    expect(screen.queryByTestId("scenario-empty")).toBeNull();
+    expect(document.body.textContent).not.toContain("records no probe rows");
+    expect(screen.getByTestId("scenario-pending").textContent).toContain(
+      "No probe rows yet",
+    );
+  });
+
   it("keeps one spend readout on screen, not two that disagree", async () => {
     renderPage(RUN_ID_RUNNING);
 
