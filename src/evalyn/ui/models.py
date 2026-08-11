@@ -857,6 +857,15 @@ class PackRow(_Model):
     probe_count: int = 0
     has_calibration: bool = False
 
+    @field_validator("path")
+    @classmethod
+    def _path_is_display_safe(cls, value: str) -> str:
+        # Collapsed *here*, exactly as `MetaResponse` does it, so a later task
+        # cannot forget. The redaction chokepoint would stop the leak, but it
+        # would stop it by writing `«redacted:home_path»` into the pack picker
+        # — a marker where the contract promised a readable label.
+        return display_path(value)
+
 
 class PackListPage(_Model):
     """`GET /api/packs` — the allowlist, enveloped like `RunListPage`.

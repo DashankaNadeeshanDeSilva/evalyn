@@ -619,6 +619,19 @@ def test_pack_row_carries_an_allowlist_index_and_a_display_safe_label():
         == "example"
 
 
+def test_pack_row_path_is_made_display_safe_at_validation_time(monkeypatch):
+    """Like `MetaResponse.runs_dir`/`.packs` (R4-14), and for the same reason:
+    the guarantee is in the docstring, so it has to be in the model. Left to a
+    later task, the chokepoint turns the leak into `«redacted:home_path»` in the
+    pack picker — a marker where a readable label was promised."""
+    monkeypatch.setenv("HOME", "/Users/alice")
+    assert _pack_row(path="/Users/alice/Drive/packs/example").path \
+        == "~/Drive/packs/example"
+    # Idempotent, and a path outside home is left alone rather than mislabelled.
+    assert _pack_row(path="~/Drive/packs/example").path == "~/Drive/packs/example"
+    assert _pack_row(path="/opt/packs/example").path == "/opt/packs/example"
+
+
 def test_pack_list_page_items_are_pack_rows():
     page = m.PackListPage(items=[_pack_row()])
     assert page.items[0].name == "example"
