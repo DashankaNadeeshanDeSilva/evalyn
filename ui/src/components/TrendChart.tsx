@@ -75,6 +75,37 @@ function tickDate(t: number): string {
   return formatUtc(new Date(t).toISOString()).slice(5, 16);
 }
 
+/**
+ * A legend swatch, and deliberately **not** a member of the cockpit's icon
+ * family.
+ *
+ * `InstrumentIcon` is one grid, one 1.5 stroke, always `currentColor` — a UI
+ * mark. These two are the opposite thing: a key that reproduces the chart's own
+ * marks at their own weight and their own ink, which is the only way a legend
+ * can key to what is drawn. A `currentColor` glyph at a uniform weight could
+ * not show the 2.5px-against-1px distinction the chart uses to separate the
+ * selected channel from the rest — the distinction would be stated in the
+ * legend and absent from the legend's own sample.
+ *
+ * Both are `aria-hidden`: the word beside each is the accessible content, so
+ * nothing here is carried by the mark alone.
+ */
+function KeyStroke({ width, ink }: { width: number; ink: string }) {
+  return (
+    <svg width="24" height="8" aria-hidden="true" focusable="false">
+      <line x1="0" y1="4" x2="24" y2="4" stroke={ink} strokeWidth={width} />
+    </svg>
+  );
+}
+
+function KeyMark() {
+  return (
+    <svg width="10" height="10" aria-hidden="true" focusable="false">
+      <rect x="1" y="1" width="8" height="8" fill={CHART_INK.failed} />
+    </svg>
+  );
+}
+
 function Note({ children }: { children: React.ReactNode }) {
   return (
     <p className="px-4 py-10 text-readout text-chassis-600 sm:px-6">{children}</p>
@@ -263,8 +294,8 @@ export function TrendChart({ series, metric, selectedProbeId }: TrendChartProps)
 
       <figcaption className="mt-3 flex flex-wrap items-center gap-x-6 gap-y-1 text-legend text-chassis-600">
         {selected && selected.trendable ? (
-          <span className="text-chassis-900">
-            <span aria-hidden="true">▬▬ </span>
+          <span className="flex items-center gap-2 text-chassis-900">
+            <KeyStroke width={2.5} ink={CHART_INK.focal} />
             {selected.probeId}
           </span>
         ) : selected && selected.readings === 1 ? (
@@ -274,15 +305,15 @@ export function TrendChart({ series, metric, selectedProbeId }: TrendChartProps)
         ) : null}
 
         {contextCount > 0 ? (
-          <span>
-            <span aria-hidden="true">— </span>
+          <span className="flex items-center gap-2">
+            <KeyStroke width={1} ink={CHART_INK.context} />
             {contextCount} other {contextCount === 1 ? "probe" : "probes"}
           </span>
         ) : null}
 
         {facts.passLine === null ? null : (
-          <span>
-            <span aria-hidden="true">▪ </span>
+          <span className="flex items-center gap-2">
+            <KeyMark />
             did not reach {facts.format(facts.passLine)}
           </span>
         )}

@@ -479,6 +479,25 @@ const SURFACES: Record<string, Surface> = {
       { ink: "chassis-600", role: "text" },
     ],
   },
+  /**
+   * The chart's record in text. No tinted grounds, for the same reason
+   * `RunsTable` has none — one ground means every ink here is measured against
+   * the one surface it can sit on.
+   *
+   * **No status ink enters this file, deliberately.** The change column reports
+   * a direction, and a direction is not a verdict: a rise is good on `pass^k`
+   * and bad on `judge_usd`, so hueing it would state a judgement the data does
+   * not carry. The sign does the work, and the sign is text.
+   */
+  "components/TrendChannels.tsx": {
+    inherits: "chassis-25",
+    sets: [],
+    inks: [
+      { ink: "chassis-900", role: "text" },
+      { ink: "chassis-700", role: "text" },
+      { ink: "chassis-600", role: "text" },
+    ],
+  },
   "pages/Launch.tsx": {
     inherits: "chassis-25",
     // The two form fields, which carry the face's own colour rather than the
