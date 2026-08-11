@@ -588,6 +588,21 @@ def test_scrub_text_is_available_for_the_sse_tailer():
 #: redacting route needs nothing, which is the whole point of a chokepoint.
 NO_REDACT_ROUTES = {"/api/meta", "/api/health"}
 
+#: Task 7's read endpoints, named so the census's non-vacuity check is pinned
+#: to **them** as well as to the exempt pair. The walk below has already failed
+#: once by finding nothing and passing; a tripwire anchored only to the two
+#: routes that were there when it was written would not have noticed a whole
+#: router going missing. These are asserted to be present *and* — by the
+#: assertion that no `/api` route escapes `RedactingRoute` — to be scrubbed.
+#: They serve artifact content, so `@no_redact` on any of them is a leak.
+READ_ROUTES = {
+    "/api/runs",
+    "/api/runs/{run_id}",
+    "/api/runs/{run_id}/gate",
+    "/api/runs/{run_id}/report",
+    "/api/runs/{run_id}/trials/{probe_id}/{epoch}",
+}
+
 
 def _cockpit_app(runs_dir: Path):
     from evalyn.ui.server import create_app
@@ -655,7 +670,7 @@ def test_every_api_route_is_redacting_and_exactly_two_are_exempt(tmp_path):
     api_routes = _api_routes(_cockpit_app(tmp_path))
     # Non-vacuity, and the tripwire for the next FastAPI that moves the route
     # table again: if the walk stops finding these, it is finding nothing.
-    assert NO_REDACT_ROUTES <= {path for path, _ in api_routes}
+    assert NO_REDACT_ROUTES | READ_ROUTES <= {path for path, _ in api_routes}
 
     unprotected = sorted(path for path, route in api_routes
                          if not isinstance(route, RedactingRoute))

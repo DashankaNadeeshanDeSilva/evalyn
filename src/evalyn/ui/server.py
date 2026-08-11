@@ -48,14 +48,31 @@ from typing import TYPE_CHECKING
 
 import evalyn
 from evalyn.targets.loader import load_pack
-from evalyn.ui.models import HealthResponse, MetaResponse, RedactionMeta, display_path
+from evalyn.ui.models import (
+    GateVerdict,
+    HealthResponse,
+    MetaResponse,
+    RedactionMeta,
+    RunDetail,
+    RunListPage,
+    RunMode,
+    RunStatus,
+    TranscriptTurn,
+    TrialView,
+    TurnRole,
+    display_path,
+    is_run_id,
+    make_cursor,
+    parse_cursor,
+)
 from evalyn.ui.redact import Redactor, RedactingRoute, no_redact, redacting_exception_handlers
 
 if TYPE_CHECKING:                       # pragma: no cover - typing only
     from fastapi import FastAPI
 
-__all__ = ["create_app", "serve", "build_redactor", "STATIC_DIR", "INDEX_HTML",
-           "DEFAULT_PORT", "LOOPBACK_HOST"]
+__all__ = ["create_app", "serve", "build_redactor", "split_transcript", "STATIC_DIR",
+           "INDEX_HTML", "DEFAULT_PORT", "LOOPBACK_HOST", "DEFAULT_PAGE_SIZE",
+           "MAX_PAGE_SIZE", "BASELINE_FILENAME"]
 
 #: The committed Vite bundle, shipped inside the wheel by hatchling.
 STATIC_DIR = Path(__file__).resolve().parent / "static"
@@ -70,6 +87,73 @@ DEFAULT_PORT = 8765
 LOOPBACK_HOST = "127.0.0.1"
 
 _API_PREFIX = "/api"
+
+#: One page of `GET /api/runs`. The SPA never sends `?limit=`; it exists so a
+#: `curl` against a large corpus is not a whole-directory parse, and it is
+#: clamped rather than refused — a bad page size is not worth an error page.
+DEFAULT_PAGE_SIZE = 50
+MAX_PAGE_SIZE = 500
+
+#: The blessed baseline, named exactly as `evalyn gate --baseline` defaults it.
+#: The cockpit never writes it.
+BASELINE_FILENAME = "baseline.json"
+
+#: `trial_records[].transcript` is ONE string in the labelled form the Tier-2/3
+#: judges saw. These are the only two roles `TurnRole` admits, and the markers
+#: are recognised at the start of a line only — `SYSTEM: …` inside a fenced
+#: injection payload is a real line of a real user turn, not a new turn.
+_TURN_MARKERS: tuple[tuple[str, TurnRole], ...] = (
+    ("User: ", TurnRole.user),
+    ("Assistant: ", TurnRole.assistant),
+)
+
+
+def split_transcript(transcript: object) -> list[TranscriptTurn]:
+    """The artifact's single transcript string as `TranscriptTurn[]` (R4-41).
+
+    Splitting is the **server's** job: the artifact stores one string, the SPA
+    renders a role-labelled conversation, and a client-side split would have to
+    re-derive a format it does not own. The rules, and each one is a measured
+    failure it prevents:
+
+    * **Markers only at the start of a line.** 90 transcripts in the corpus
+      carry a fenced payload whose interior lines contain colons; matching
+      anywhere would shatter one user turn into several.
+    * **An unmarked line belongs to the turn already open**, newline preserved.
+      A multi-line assistant answer is one turn, not N.
+    * **Text is never dropped.** Anything before the first marker joins the
+      first turn, and a string with no marker at all comes back as a single
+      `user` turn — every transcript opens with the probe's prompt, which is
+      the user's, and `TurnRole` admits no third role to invent. Joining a
+      preamble onto a first turn that happens to be the assistant's would
+      mis-attribute it; that is the lesser evil against losing it entirely, and
+      no artifact in the corpus takes that path (0 of 737 transcripts).
+    * **An empty or absent transcript is `[]`**, which the SPA reads as "not
+      captured" rather than "the model said nothing".
+
+    `tests/ui/test_read_endpoints.py` holds the round-trip invariant over every
+    transcript in `runs/`: re-joining the turns with their own markers must
+    reproduce the artifact's string exactly.
+    """
+    if not isinstance(transcript, str) or not transcript:
+        return []
+
+    turns: list[tuple[TurnRole, list[str]]] = []
+    preamble: list[str] = []
+    for line in transcript.split("\n"):
+        for marker, role in _TURN_MARKERS:
+            if line.startswith(marker):
+                turns.append((role, [line[len(marker):]]))
+                break
+        else:
+            (turns[-1][1] if turns else preamble).append(line)
+
+    if not turns:
+        return [TranscriptTurn(role=TurnRole.user, text=transcript)]
+    if preamble:
+        turns[0][1][:0] = preamble
+    return [TranscriptTurn(role=role, text="\n".join(lines))
+            for role, lines in turns]
 
 
 def build_redactor(packs: list[Path]) -> Redactor:
@@ -102,13 +186,17 @@ def create_app(runs_dir: Path, packs: list[Path], *,
     for it on the command line, because discover spends real money.
     """
     from fastapi import APIRouter, FastAPI, HTTPException
-    from fastapi.responses import FileResponse
+    from fastapi.responses import FileResponse, PlainTextResponse
     from starlette.staticfiles import StaticFiles
 
     # Imported HERE, not at module scope: `index` pulls starlette in through
     # `engine.run -> inspect_ai`, and the CLI's import-isolation guard holds
     # only while nothing on that path imports it eagerly (C-T7b).
-    from evalyn.ui.index import RunIndex
+    #
+    # `_check_view` is the ONE artifact-check mapper (it is what applies the
+    # `Tier` validator that turns the artifact's `"tier": 1` into the wire's
+    # `"1"`); a second one here would be the drift `models.py` exists to stop.
+    from evalyn.ui.index import RunIndex, _check_view, mode_of
 
     runs_dir = Path(runs_dir).resolve()
     packs = [Path(p).resolve() for p in packs]
@@ -162,6 +250,273 @@ def create_app(runs_dir: Path, packs: list[Path], *,
     async def health() -> HealthResponse:
         """The other exempt route. Carries no run content at all."""
         return HealthResponse(ok=True, version=evalyn.__version__)
+
+    # ----------------------------------------------------------------------
+    # Task 7 — the read endpoints. Five routes over one `runs/` directory.
+    # ----------------------------------------------------------------------
+
+    def _resolved_artifact(run_id: str) -> Path:
+        """`runs/<run_id>.json`, or a 404 — belt AND braces (R4-7).
+
+        **Belt:** the frozen grammar, checked *first*, before anything touches
+        the filesystem. `RUN_ID_PATTERN`'s character class admits no `/`, so a
+        value that passes cannot traverse; a value that fails never reaches a
+        `stat`. There is exactly one spelling of that grammar and this imports
+        it rather than retyping it.
+
+        **Braces:** the resolved path is checked against the runs directory.
+        Traversal is impossible through the *id*, but a **symlink** inside
+        `runs/` escapes without one, and `RunIndex` deliberately indexes
+        symlinks (a broken one must degrade into a row, not vanish). So the
+        containment check lives here, where a body is about to be served from
+        the file, rather than in the index, where the job is to list.
+
+        The refusal is `not_found` and not a 403: whether a path exists outside
+        the runs directory is not something this server answers.
+        """
+        if not is_run_id(run_id):
+            # NOT echoed. A rejected id is arbitrary client input, and
+            # reflecting it into a body is a gift to whoever is probing.
+            raise HTTPException(status_code=404, detail="no such run")
+        path = app.state.index.artifact_path(run_id)
+        if path is None:
+            raise HTTPException(status_code=404, detail=f"no such run: {run_id}")
+        resolved = path.resolve()
+        if not resolved.is_relative_to(runs_dir):
+            raise HTTPException(status_code=404, detail=f"no such run: {run_id}")
+        return resolved
+
+    def _typed_or_refuse(run_id: str, path: Path, mode: RunMode):
+        """The parsed artifact, or a 500 saying this build cannot read it.
+
+        A verdict or a report computed from an artifact this build could not
+        parse would be a **fabricated** one, so the endpoints that need the
+        typed object refuse instead. The list and the detail page keep
+        degrading — a greyed row with a reason is the contract there (R4-5's
+        "degradation, not failure"), and it is the *detail* page that has
+        somewhere to put the explanation.
+
+        `RunIndex._load` rather than a second `json.loads`: it is the
+        cache-aware read (keyed on `(path, mtime, size)`), and re-parsing a
+        multi-megabyte artifact on every gate request would make the cockpit's
+        one expensive route its slowest by an order of magnitude. Reaching for
+        an underscore-prefixed sibling is deliberate and narrow — the index
+        owns loading, this module owns serving, and duplicating the load here
+        would duplicate the salvage policy with it.
+        """
+        loaded = app.state.index._load(path, run_id, mode)
+        if loaded.typed is None:
+            raise HTTPException(
+                status_code=500,
+                detail=f"this artifact could not be read: {loaded.error}")
+        return loaded.typed
+
+    def _blessed_baseline(artifact):
+        """The baseline `evaluate_gate` should diff against, and its name.
+
+        Resolved exactly where `evalyn gate --baseline` defaults it, and used
+        **only when its `pack_hash` matches the run's**. `evaluate_gate` pairs
+        baseline probes by *id*, so a baseline blessed from a different pack
+        revision silently compares two means that never measured the same
+        thing — and `GateVerdict` has no field in which to say so. The CLI can
+        print a "may be stale" warning; a JSON response cannot, so the only
+        non-lying option is to refuse the diff and report no baseline, which
+        the SPA renders as "capability checks are advisory".
+
+        Returns `(None, None)` for every failure mode — absent, unreadable,
+        escaping the runs directory, or blessed from another pack. A corrupt
+        baseline must not turn a readable run's verdict into an error page.
+        """
+        from evalyn.engine.baseline import load_baseline
+
+        try:
+            resolved = (runs_dir / BASELINE_FILENAME).resolve()
+            if not resolved.is_relative_to(runs_dir) or not resolved.is_file():
+                return None, None
+            baseline = load_baseline(str(resolved))
+        except (OSError, RuntimeError, ValueError):
+            return None, None
+        if baseline is None or baseline.pack_hash != artifact.pack_hash:
+            return None, None
+        # The artifacts carry no run id of their own, which is why
+        # `GateVerdict.baseline_run_id` is `str | None` where
+        # `LaunchRequest.baseline_run_id` is `RunId | None`. The stem is the
+        # only identifier the blessed file actually has.
+        return baseline, resolved.stem
+
+    def _gate_result(run_id: str, path: Path):
+        """`evaluate_gate` on one artifact — **called here, lazily**.
+
+        Never on the listing path: it reads a baseline off disk and renders
+        markdown, and paying that per row is what `verdict_hint` exists to
+        avoid. The import is inside the function for the same reason the whole
+        `index` import is inside `create_app` (C-T7b).
+        """
+        from evalyn.engine.gate import evaluate_gate
+
+        artifact = _typed_or_refuse(run_id, path, RunMode.gate)
+        baseline, baseline_id = _blessed_baseline(artifact)
+        return evaluate_gate(artifact, baseline), baseline_id
+
+    @api.get("/runs", response_model=RunListPage)
+    async def list_runs(mode: RunMode | None = None, pack: str | None = None,
+                        status: RunStatus | None = None,
+                        limit: int = DEFAULT_PAGE_SIZE,
+                        before: str | None = None) -> RunListPage:
+        """One page of the runs table — the **envelope**, never a bare array.
+
+        `next_cursor` is the opaque `(created_at, run_id)` composite of the last
+        row, and it is present only when a further row actually exists: the
+        index is asked for one row more than the page and the extra is dropped.
+        Deriving it from "the page was full" would hand the SPA a cursor that
+        fetches nothing, and TanStack Query would render a phantom next page.
+        """
+        if before is not None:
+            try:
+                parse_cursor(before)
+            except ValueError:
+                # A rejected query parameter is `not_found`: the page cannot
+                # exist, and saying so leaks nothing about the filesystem.
+                raise HTTPException(
+                    status_code=404,
+                    detail="invalid cursor: ?before= must be the opaque "
+                           "'<created_at>|<run_id>' composite handed back as "
+                           "next_cursor — a bare timestamp is not tie-safe")
+        size = max(1, min(int(limit), MAX_PAGE_SIZE))
+        rows = app.state.index.list(mode=mode, pack=pack, status=status,
+                                    limit=size + 1, before=before)
+        items, more = rows[:size], len(rows) > size
+        cursor = (make_cursor(items[-1].created_at, items[-1].run_id)
+                  if more and items else None)
+        return RunListPage(items=items, next_cursor=cursor)
+
+    @api.get("/runs/{run_id}", response_model=RunDetail)
+    async def run_detail(run_id: str) -> RunDetail:
+        """The detail view. **Degrades rather than 404s.**
+
+        An artifact this build cannot parse is a greyed page with a reason, not
+        a missing resource — the run happened and the operator can see the file.
+        `RunNotFound` is the only 404, and `_resolved_artifact` has already
+        raised it by the time this line runs.
+        """
+        _resolved_artifact(run_id)
+        return app.state.index.get(run_id)
+
+    @api.get("/runs/{run_id}/gate", response_model=GateVerdict)
+    async def gate_verdict(run_id: str) -> GateVerdict:
+        """The **authoritative** verdict — the real `evaluate_gate`.
+
+        `RunSummary.verdict_hint` is the approximation the list can afford; it
+        omits REGRESSION because that needs a baseline read. This is the one
+        the banner may call a verdict, and the SPA reads `exit_code` — not
+        `len(failures)`, which is 0 for an incompleteness failure.
+        """
+        path = _resolved_artifact(run_id)
+        if mode_of(run_id) is not RunMode.gate:
+            raise HTTPException(
+                status_code=404,
+                detail=f"run {run_id} is not a gate run; there is no gate "
+                       f"verdict to evaluate")
+        result, baseline_id = _gate_result(run_id, path)
+        return GateVerdict(
+            run_id=run_id, exit_code=result.exit_code, failures=result.failures,
+            quarantined=result.quarantined, report_md=result.report_md,
+            baseline_run_id=baseline_id)
+
+    @api.get("/runs/{run_id}/report", response_class=PlainTextResponse)
+    async def run_report(run_id: str):
+        """The run's report as **markdown**, one renderer per mode.
+
+        `text/markdown`, not a JSON string: the SPA hands it to a renderer, and
+        a double-encoded body would display as a quoted blob. The redaction
+        chokepoint scrubs it as text — a content type it does not recognise is
+        never a silent opt-out, only `@no_redact` is, and this route is not.
+        """
+        path = _resolved_artifact(run_id)
+        mode = mode_of(run_id)
+        if mode is RunMode.gate:
+            report_md = _gate_result(run_id, path)[0].report_md
+        elif mode is RunMode.compare:
+            from evalyn.engine.compare import render_compare_report
+            report_md = render_compare_report(_typed_or_refuse(run_id, path, mode))
+        else:
+            from evalyn.discovery.run import render_discovery_report
+            report_md = render_discovery_report(_typed_or_refuse(run_id, path, mode))
+        return PlainTextResponse(report_md,
+                                 media_type="text/markdown; charset=utf-8")
+
+    @api.get("/runs/{run_id}/trials/{probe_id}/{epoch}", response_model=TrialView)
+    async def trial_view(run_id: str, probe_id: str, epoch: int) -> TrialView:
+        """One trial's conversation, split into turns by this server (R4-41).
+
+        **`checks[].turn` is the artifact's own field and is forwarded
+        unchanged (R4-40).** It is *not* an index into `turns` and is not
+        reconciled against one: measured on
+        `20260803T174149220841-76e25fee-example`, the
+        `invariant:no-internal-leak` check reports `turn: 1` while its evidence
+        lives in flattened turn 4. A viewer that reports such a check as
+        *unplaced* is behaving correctly; inventing an index that made it place
+        would be inventing evidence.
+
+        **`checks` comes off the trial record, so today it is empty.** The
+        artifact's `probes[].checks` are explicitly *representative* — one
+        epoch's results, carried for the report, with nothing recording which
+        epoch — so serving them here under the SPA's "Checks on this trial"
+        heading would attribute one trial's verdicts to all of them. The empty
+        list is the true answer ("this trial record carries no per-check
+        results"), and the read is written against the record so that it starts
+        carrying them the day the engine records them.
+
+        404s (never 200 with an empty conversation) when the artifact has no
+        trial records at all: the SPA gates the drill-down on
+        `capabilities.trial_records`, so arriving here is a bug in the caller,
+        and an empty `turns[]` would read as "the conversation was empty".
+
+        That 404 covers the **unreadable** artifact too, where `/gate` and
+        `/report` answer 500. The difference is what the caller can do about
+        it: a verdict has an artifact it must refuse to fabricate, while a
+        trial record either exists or does not, and an artifact this build
+        cannot parse has none by any reading. The *reason* it cannot be parsed
+        belongs on the detail page, which has `degraded_reason` to put it in.
+        """
+        path = _resolved_artifact(run_id)
+        no_records = HTTPException(
+            status_code=404,
+            detail="this artifact has no trial records; the drill-down should "
+                   "have been disabled by capabilities.trial_records")
+        if mode_of(run_id) is not RunMode.gate:
+            raise no_records
+        artifact = app.state.index._load(path, run_id, RunMode.gate).typed
+        if artifact is None:
+            raise HTTPException(
+                status_code=404,
+                detail="this artifact could not be read, so it has no trial "
+                       "records; capabilities.trial_records said so")
+        records = {(probe.id, record["epoch"]): (probe, record)
+                   for probe in artifact.probes
+                   for record in probe.trial_records
+                   if isinstance(record, dict) and "epoch" in record}
+        if not records:
+            raise no_records
+        found = records.get((probe_id, epoch))
+        if found is None:
+            # The probe id is client input; it is not echoed.
+            raise HTTPException(
+                status_code=404,
+                detail=f"no trial record for that probe at epoch {epoch}")
+        _, record = found
+        seconds = record.get("session_seconds")
+        failures = record.get("invariant_failures")
+        return TrialView(
+            run_id=run_id, probe_id=probe_id, epoch=epoch,
+            turns=split_transcript(record.get("transcript")),
+            session_seconds=(float(seconds)
+                             if isinstance(seconds, (int, float))
+                             and not isinstance(seconds, bool) else None),
+            invariant_failures=(failures if isinstance(failures, int)
+                                and not isinstance(failures, bool) else 0),
+            checks=[_check_view(check) for check in record.get("checks", [])
+                    if isinstance(check, dict)])
 
     app.include_router(api)
 
