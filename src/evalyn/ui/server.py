@@ -50,7 +50,6 @@ import evalyn
 from evalyn.targets.loader import load_pack
 from evalyn.ui.models import (
     Capabilities,
-    ControlAction,
     ControlRequest,
     ControlResponse,
     GateVerdict,
@@ -685,7 +684,11 @@ def create_app(runs_dir: Path, packs: list[Path], *,
         Returns `None` — and therefore a genuine 404 — for an id this cockpit
         never launched, so an arbitrary id is still "no such run".
         """
-        from evalyn.ui.index import created_at_from_run_id, derive_status
+        from evalyn.ui.index import (
+            cancelled_by,
+            created_at_from_run_id,
+            derive_status,
+        )
 
         if not is_run_id(run_id):
             return None
@@ -712,7 +715,19 @@ def create_app(runs_dir: Path, packs: list[Path], *,
             # these booleans rather than off truthiness.
             capabilities=Capabilities(transcripts=False, trial_records=False,
                                       hard_metrics=False),
-            cancelled=sidecar.control is ControlAction.cancel,
+            # No artifact exists here, so this is the one place `cancelled_by`
+            # can only answer off the control file — routed through it anyway
+            # so "who cancelled" is decided in exactly one function.
+            cancelled=cancelled_by(None, sidecar),
+            # A pending body has nothing sensitive in it yet, so the chokepoint
+            # changes nothing and leaves `redacted` at its `False` default —
+            # which reads as "this view was served unscrubbed" while the banner
+            # two inches above it says `REDACTION ON`. It flips to `True` on
+            # its own the moment an artifact lands and a `$HOME` path appears
+            # in `log_path`, so the field would announce a security feature
+            # switching itself on mid-run. Taken from the same `RedactionMeta`
+            # the banner is built from, so the two cannot disagree.
+            redacted=RedactionMeta().enabled,
         )
 
     @api.get("/packs", response_model=PackListPage)

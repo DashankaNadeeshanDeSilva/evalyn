@@ -1148,6 +1148,31 @@ async def test_a_launched_run_has_a_detail_before_any_artifact_exists(
         reap_app(app)
 
 
+async def test_a_pending_run_does_not_claim_it_was_served_unscrubbed(
+        tmp_path, asgi_client):
+    """Wiring-pass F3. `GET /api/meta` says redaction is enabled and the header
+    banner reads `REDACTION ON`, but the pending detail carried
+    `"redacted": false` until the artifact landed — a truth claim about
+    scrubbing that is briefly false on the one screen the audience is looking
+    at, and one any UI keying off `detail.redacted` would render as
+    "unscrubbed".
+
+    Asserted against `/api/meta` rather than against the literal `true`, so the
+    banner and the body cannot drift apart in either direction.
+    """
+    app = cockpit(tmp_path, child=INERT_SLEEPER)
+    async with asgi_client(app) as client:
+        run_id = (await client.post("/api/runs", json=launch_body())).json()["run_id"]
+        detail = (await client.get(f"/api/runs/{run_id}")).json()
+        meta = (await client.get("/api/meta")).json()
+    try:
+        assert not (tmp_path / f"{run_id}.json").exists(), "still pending"
+        assert detail["redacted"] is meta["redaction"]["enabled"]
+    finally:
+        app.state.launcher.live.process.kill()
+        reap_app(app)
+
+
 async def test_a_run_this_cockpit_never_launched_is_still_a_real_404(
         tmp_path, asgi_client):
     """The discriminator: the pending-detail fallback must not turn every
