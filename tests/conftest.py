@@ -38,17 +38,24 @@ def minimal_target_yaml(base_url: str = INERT_BASE_URL, *,
 def retarget_yaml(text: str, base_url: str) -> str:
     """Re-point a fixed-port pack's target.yaml at a live `toy_target` URL.
 
-    Only the port moves. **Both host spellings are kept distinct** — several
+    Only the port moves. **Both host spellings are kept distinct**: several
     packs list `http://localhost:8899` *and* `http://127.0.0.1:8899` in one
-    allowlist while resolving `base_url` to the 127.0.0.1 spelling, and a test
-    (`test_fingerprint_ignores_env_localhost_vs_127`) depends on the two being
-    separate entries. Collapsing them onto one host would also mean dialling
-    `localhost`, which on macOS can resolve to `::1` while the toy target binds
-    `127.0.0.1` only.
+    allowlist while resolving `base_url` to the 127.0.0.1 spelling, so mapping
+    both onto the fixture's URL would duplicate an allowlist entry and stop
+    mirroring the shape of the shipped packs. (Reaching a 127.0.0.1-only server
+    via the `localhost` spelling was measured to work here — httpx falls back
+    past `::1` — so that is not the reason.)
+
+    The rewrite must bite: a text with no `:8899` in it would sail through
+    unchanged and leave the pack pointed at a port nothing is listening on, so
+    the no-op is an error rather than a silent pass-through.
     """
     port = httpx.URL(base_url).port
-    return (text.replace("http://127.0.0.1:8899", f"http://127.0.0.1:{port}")
-                .replace("http://localhost:8899", f"http://localhost:{port}"))
+    out = (text.replace("http://127.0.0.1:8899", f"http://127.0.0.1:{port}")
+               .replace("http://localhost:8899", f"http://localhost:{port}"))
+    assert out != text, ("retarget_yaml found no :8899 to move — "
+                         "pack is not pointed at the live target")
+    return out
 
 
 @pytest.fixture
@@ -135,7 +142,7 @@ def live_pack_dir(tmp_path, toy_target):
     port 8899 in their allowlists; they are shipped artifacts, not test
     scaffolding, so tests take a retargeted copy rather than editing them.
     """
-    def _make(src: Path | str, *, name: str = "pack") -> Path:
+    def _make(src: Path | str, *, name: str = "live-pack") -> Path:
         root = tmp_path / name
         shutil.copytree(src, root)
         target = root / "target.yaml"
