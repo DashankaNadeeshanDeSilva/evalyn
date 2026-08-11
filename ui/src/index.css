@@ -59,6 +59,22 @@
     outline-offset: 2px;
   }
 
+  /**
+   * ...and its one inversion, on the one dark field.
+   *
+   * The chassis ink measures **1.06:1** on the inset readout window — an
+   * invisible focus ring, on the only region of the surface that carries a
+   * dangerous control. The window's own ink measures 15.21:1 there.
+   *
+   * Keyed to the region rather than to each control on purpose: a component
+   * dropped inside the window inherits the correct ring without knowing it is
+   * inside one, which is exactly the composition the per-file contrast guard
+   * cannot see (ruling R4-24).
+   */
+  [data-field="inset"] :focus-visible {
+    outline-color: theme("colors.inset.ink");
+  }
+
   ::selection {
     background: theme("colors.chassis.200");
   }

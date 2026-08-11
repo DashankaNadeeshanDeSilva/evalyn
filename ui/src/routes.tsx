@@ -1,6 +1,7 @@
 import { Link, Navigate, type RouteObject } from "react-router-dom";
 
 import { AppShell } from "./components/AppShell";
+import { Launch } from "./pages/Launch";
 import { RunDetailPage } from "./pages/RunDetailPage";
 import { RunsPage } from "./pages/RunsPage";
 
@@ -42,6 +43,7 @@ export const appRoutes: RouteObject[] = [
       { index: true, element: <Navigate to="/runs" replace /> },
       { path: "/runs", element: <RunsPage /> },
       { path: "/runs/:runId", element: <RunDetailPage /> },
+      { path: "/launch", element: <Launch /> },
       { path: "*", element: <NoSuchPage /> },
     ],
   },

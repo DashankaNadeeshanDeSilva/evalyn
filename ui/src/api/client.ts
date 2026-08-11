@@ -78,6 +78,31 @@ export async function apiGet<T>(path: string, init?: RequestInit): Promise<T> {
 }
 
 /**
+ * The write side. Two routes use it: launch and control.
+ *
+ * Both bodies are `extra="forbid"` server-side, which is a **safety guard**
+ * rather than tidiness — `LaunchRequest` has no field for a pack path, so a
+ * body carrying one is rejected rather than ignored. Nothing here adds a field
+ * of its own for that reason, and callers pass the frozen request models.
+ *
+ * A 202 from either route means "well-formed and written", never "done": the
+ * matching `control.*` event is the acknowledgement, and `LaunchResponse.run_id`
+ * names a run whose process has not started yet.
+ */
+export async function apiPost<T>(path: string, body: unknown): Promise<T> {
+  const res = await fetch(`${API_ROOT}${path}`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Accept: "application/json",
+    },
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) throw await toFailure(res);
+  return (await res.json()) as T;
+}
+
+/**
  * One client per app instance, never a module-level singleton — a shared cache
  * would leak state between tests and between mounts.
  *

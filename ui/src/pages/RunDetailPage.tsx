@@ -10,9 +10,17 @@ import {
   IconArrowLeft,
   IconFlatline,
 } from "../components/InstrumentIcon";
+import { LiveRunPanel } from "../components/LiveRunPanel";
 import { formatUtc } from "../format";
-import { isRunId, type Capabilities } from "../api/types";
+import { isRunId, type Capabilities, type RunStatus } from "../api/types";
 import { GateRunDetail } from "./GateRunDetail";
+
+/**
+ * The two statuses that mean a process is still attached. A run in either one
+ * has no finished artifact to read a verdict out of, so the page shows the
+ * stream instead of asking `evaluate_gate` a question it cannot answer yet.
+ */
+const LIVE_STATUSES: readonly RunStatus[] = ["running", "paused"];
 
 /**
  * A single run's identity panel.
@@ -93,10 +101,19 @@ export function RunDetailPage() {
 
   const run = detail.data;
   const caps = run.capabilities;
+  const live = LIVE_STATUSES.includes(run.status);
 
   return (
     <Shell
       runId={runId}
+      /*
+       * The one inset window, directly under the run's own identity: the
+       * hierarchy is live readout -> verdict -> evidence -> history, and the
+       * operator needs to know *which* run is on the air before they read what
+       * it is doing. The panel decides for itself whether there is anything to
+       * show, and renders nothing when there is not.
+       */
+      live={<LiveRunPanel runId={run.run_id} status={run.status} />}
       /*
        * The payload, for the one mode that has a gate verdict.
        *
@@ -111,7 +128,9 @@ export function RunDetailPage() {
        * panel is inset by the shell's gutter, the panel lines beneath it are
        * not.
        */
-      payload={run.mode === "gate" ? <GateRunDetail run={run} /> : null}
+      payload={
+        run.mode === "gate" ? <GateRunDetail run={run} live={live} /> : null
+      }
     >
       <dl className="grid grid-cols-1 gap-x-10 sm:grid-cols-2 lg:grid-cols-3">
         <Field label="Status">
@@ -173,10 +192,13 @@ export function RunDetailPage() {
 function Shell({
   runId,
   children,
+  live = null,
   payload = null,
 }: {
   runId: string;
   children: ReactNode;
+  /** The inset readout window, full-bleed. Absent unless a run is on the air. */
+  live?: ReactNode;
   /** Full-bleed, so its panel lines span the face rather than the gutter. */
   payload?: ReactNode;
 }) {
@@ -196,6 +218,7 @@ function Shell({
           {runId}
         </h1>
       </div>
+      {live}
       <div className="px-4 py-2 sm:px-6">{children}</div>
       {payload}
     </section>

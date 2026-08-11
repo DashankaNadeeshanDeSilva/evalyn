@@ -45,10 +45,19 @@ import {
  * the normal case and not an edge one. Saying nothing there would let a green
  * banner imply a comparison that never happened.
  *
- * ## No SSE, no polling
+ * ## No SSE, no polling — and the live variant that follows from that
  *
- * A finished artifact does not change. Task 21 owns the live view and the one
- * inset window that carries it; nothing here pretends to be live.
+ * A finished artifact does not change, so nothing here polls. The live view and
+ * the one inset window belong to `LiveRunPanel`, which the run detail page
+ * mounts above this payload.
+ *
+ * What this file owns is the **other** half of live: a run that is still on the
+ * air has no gate verdict to show. `evaluate_gate` reads the artifact, and the
+ * artifact is not written until the run ends — so `live` suppresses the verdict
+ * query entirely rather than asking a question whose only honest answers are a
+ * 404 or a verdict computed from a half-written file. The probe table below
+ * stays, because a running gate's `probes[]` is empty and the table already
+ * says so in words.
  */
 
 /**
@@ -272,17 +281,35 @@ function TrialPanel({
   );
 }
 
-export function GateRunDetail({ run }: { run: RunDetail }) {
+export function GateRunDetail({
+  run,
+  live = false,
+}: {
+  run: RunDetail;
+  /** A process is still attached: there is no artifact to evaluate a gate on. */
+  live?: boolean;
+}) {
   const [selected, setSelected] = useState<TrialSelection | null>(null);
   const gate = useQuery({
     queryKey: ["gate", run.run_id],
+    enabled: !live,
     queryFn: () =>
       apiGet<GateVerdict>(`/runs/${encodeURIComponent(run.run_id)}/gate`),
   });
 
   return (
     <div className="mt-4">
-      {gate.isPending ? (
+      {live ? (
+        <p
+          data-testid="gate-banner-pending"
+          className="engrave-t px-4 py-4 text-readout text-chassis-600 sm:px-6"
+        >
+          {/* Not a spinner: the verdict is genuinely absent, not slow. The
+              readout window above says what the run is doing meanwhile. */}
+          No verdict yet — this run is still on the air. The gate is evaluated
+          from the artifact, which is written when the run ends.
+        </p>
+      ) : gate.isPending ? (
         <p className="engrave-t px-4 py-4 text-readout text-chassis-600 sm:px-6">
           Evaluating the gate…
         </p>
