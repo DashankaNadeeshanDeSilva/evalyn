@@ -21,7 +21,6 @@ spy, and the only network is the bundled toy target.
 from __future__ import annotations
 
 import json
-import shutil
 import warnings
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -124,12 +123,10 @@ def _limits(**kw) -> Limits:
 
 
 @pytest.fixture
-def live_pack(tmp_path, monkeypatch, toy_target):
+def live_pack(monkeypatch, toy_target, live_pack_dir):
     """A writable copy of the minipack, pointed at the live toy target."""
     monkeypatch.setenv("EVALYN_TARGET_URL", toy_target)
-    root = tmp_path / "pack"
-    shutil.copytree(MINIPACK, root)
-    return load_pack(root)
+    return load_pack(live_pack_dir(MINIPACK))
 
 
 def _state(objective_id: str = INJECTION, **metadata) -> TaskState:

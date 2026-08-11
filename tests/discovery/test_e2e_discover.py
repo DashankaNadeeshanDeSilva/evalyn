@@ -218,7 +218,7 @@ def _adaptive_brain(monkeypatch):
 # --------------------------------------------------------------------------
 
 @pytest.fixture
-def live_example_pack(tmp_path, monkeypatch, toy_target):
+def live_example_pack(monkeypatch, toy_target, live_pack_dir):
     """A writable copy of the REAL `packs/example`, pointed at the live toy.
 
     Copied, never loaded in place: `packs/example/discoveries/` is tracked
@@ -228,9 +228,7 @@ def live_example_pack(tmp_path, monkeypatch, toy_target):
     monkeypatch.setattr("examples.toy_target.LEAK_PROBABILITY", 0.0)
     monkeypatch.setenv("TOY_DISCOVERY_WEAKNESSES", "1")
     monkeypatch.setenv("EVALYN_TARGET_URL", toy_target)
-    root = tmp_path / "example"
-    shutil.copytree(EXAMPLE_PACK, root)
-    return load_pack(root)
+    return load_pack(live_pack_dir(EXAMPLE_PACK, name="example"))
 
 
 # --------------------------------------------------------------------------
