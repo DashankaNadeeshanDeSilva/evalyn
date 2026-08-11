@@ -603,6 +603,25 @@ READ_ROUTES = {
     "/api/runs/{run_id}/trials/{probe_id}/{epoch}",
 }
 
+#: Task 20's control surface, held to the same standard as the read routes and
+#: named separately only because the argument for them differs.
+#:
+#: Two of these are the reason the split matters. `/events` is the one route
+#: whose body the chokepoint **cannot** scrub — `_scrub_response` returns a
+#: streaming response untouched ("streaming, file, or empty: not ours"), so
+#: `RedactingRoute` being on it buys nothing and `evalyn.ui.stream` scrubs each
+#: frame itself. `/stderr` is the opposite: it renders a body, so the
+#: chokepoint does cover it, and it carries whatever the engine printed —
+#: including a pack path under `$HOME` in a setup error. Neither may ever
+#: acquire `@no_redact`, which the exempt-set equality below already enforces.
+WRITE_ROUTES = {
+    "/api/packs",
+    "/api/packs/{pack_id}/axes",
+    "/api/runs/{run_id}/control",
+    "/api/runs/{run_id}/events",
+    "/api/runs/{run_id}/stderr",
+}
+
 
 def _cockpit_app(runs_dir: Path):
     from evalyn.ui.server import create_app
@@ -670,7 +689,8 @@ def test_every_api_route_is_redacting_and_exactly_two_are_exempt(tmp_path):
     api_routes = _api_routes(_cockpit_app(tmp_path))
     # Non-vacuity, and the tripwire for the next FastAPI that moves the route
     # table again: if the walk stops finding these, it is finding nothing.
-    assert NO_REDACT_ROUTES | READ_ROUTES <= {path for path, _ in api_routes}
+    assert (NO_REDACT_ROUTES | READ_ROUTES | WRITE_ROUTES
+            <= {path for path, _ in api_routes})
 
     unprotected = sorted(path for path, route in api_routes
                          if not isinstance(route, RedactingRoute))

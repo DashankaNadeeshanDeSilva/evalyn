@@ -980,9 +980,12 @@ class LaunchResponse(_Model):
 class ControlRequest(_Model):
     """`POST /api/runs/{id}/control`.
 
-    The corresponding `control.*` SSE event **is** the ack. If none lands
-    within 60 s the server escalates to `SIGTERM` on the process group, after
-    writing to the control file — never `SIGKILL`, which loses the Inspect log.
+    The corresponding `control.*` SSE event **is** the ack. Writing the control
+    file is the server's **only** mechanism — it never signals the child, at
+    any delay. An action the run never acknowledges leaves an honest
+    `interrupted` run that names the pid, so a human can decide in their own
+    terminal. Signalling the child was measured and retracted: it strands a
+    completed, already-paid-for sample outside the log.
     """
 
     action: ControlAction
@@ -995,8 +998,8 @@ class ControlResponse(_Model):
     the request was well-formed and the control file was written; the matching
     `control.*` SSE event is what says the run actually paused, resumed or
     cancelled. A UI that flips to "paused" off this response is asserting
-    something no one has confirmed — and if no event lands within 60 s the
-    server escalates to `SIGTERM`, which is a different outcome entirely.
+    something no one has confirmed — and a run that never acknowledges ends as
+    an `interrupted` run naming its pid, which is a different outcome entirely.
     """
 
     run_id: RunId
