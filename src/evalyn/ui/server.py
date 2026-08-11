@@ -82,7 +82,7 @@ from evalyn.ui.launcher import (
     pack_rows,
     refusal_for,
 )
-from evalyn.ui.paths import events_path, sidecar_dir
+from evalyn.ui.paths import control_path, events_path, sidecar_dir
 from evalyn.ui.redact import Redactor, RedactingRoute, no_redact, redacting_exception_handlers
 from evalyn.ui.stream import DEFAULT_IDLE_TIMEOUT, event_stream
 
@@ -107,6 +107,16 @@ if TYPE_CHECKING:                       # pragma: no cover - typing only
 __all__ = ["create_app", "serve", "build_redactor", "split_transcript", "STATIC_DIR",
            "INDEX_HTML", "DEFAULT_PORT", "LOOPBACK_HOST", "DEFAULT_PAGE_SIZE",
            "MAX_PAGE_SIZE", "BASELINE_FILENAME"]
+
+#: Refusal for a control action aimed at a run that is no longer in flight.
+#:
+#: A 409, which `redact.py:689` already maps to the frozen `busy` code — the
+#: request conflicts with the resource's state, which is exactly what 409 is
+#: for. No new `ErrorCode` member: that enum is frozen in six coordinated
+#: places, and this refusal does not need one to be legible. The **message** is
+#: what the operator reads, so it says what happened rather than naming a code.
+_NOT_LIVE = ("this run is no longer in flight, so it takes no more control "
+             "actions — its result is final and will not be rewritten")
 
 #: The committed Vite bundle, shipped inside the wheel by hatchling.
 STATIC_DIR = Path(__file__).resolve().parent / "static"
@@ -466,6 +476,21 @@ def create_app(runs_dir: Path, packs: list[Path], *,
         try:
             _resolved_artifact(run_id)
         except HTTPException:
+            # ONLY "there is no artifact" falls through to the pending view.
+            # `_resolved_artifact` also 404s when a symlink inside `runs/`
+            # resolves outside it, and that arm is a containment control
+            # (R4-7's braces), not a convenience — a security check must not
+            # sit behind a fallback that answers for the same id. Discriminate
+            # on the artifact's absence so the containment refusal still wins.
+            #
+            # The grammar check comes FIRST, before anything asks the index a
+            # question. R4-7's belt is that an invalid id is refused without a
+            # single filesystem touch, and `test_read_endpoints.py`'s
+            # `_ExplodingIndex` enforces that by raising on *any* attribute
+            # access — so reaching `artifact_path` here, even though it would
+            # itself return `None` safely, breaks the belt.
+            if not is_run_id(run_id) or app.state.index.artifact_path(run_id) is not None:
+                raise
             pending = _pending_detail(run_id)
             if pending is None:
                 raise
@@ -596,6 +621,31 @@ def create_app(runs_dir: Path, packs: list[Path], *,
     # registered after it and would otherwise shadow every one of these.
     # ----------------------------------------------------------------------
 
+    def _run_is_live(run_id: str) -> bool:
+        """Can this run still act on a control file?
+
+        Two facts each mean **no**, and either is enough:
+
+        * **an artifact exists** — the run wrote its record, so it is over;
+        * **`meta.json` records an `exit_code`** — the child has exited.
+
+        This is the guard that stops a `cancel` arriving a moment late from
+        **rewriting a finished run's verdict**. `derive_status` puts
+        `control is cancel` *above* the artifact, so a control file written
+        after a run passed relabels it `cancelled` — in the detail view, in the
+        list, and on disk. A completed evaluation's result must not be
+        changeable by a UI click.
+
+        A run this cockpit did not launch, with no artifact and no recorded
+        exit code, is treated as live: it may genuinely be running in another
+        process, and the control file is the only way to reach it. Nothing is
+        at risk in that case, because there is no result yet to overwrite.
+        """
+        if app.state.index.artifact_path(run_id) is not None:
+            return False
+        sidecar = app.state.index._sidecar(run_id, runs_dir / f"{run_id}.json")
+        return sidecar.exit_code is None
+
     def _pack_or_404(pack_id: str):
         found = app.state.packs_by_id.get(pack_id)
         if found is None:
@@ -722,7 +772,21 @@ def create_app(runs_dir: Path, packs: list[Path], *,
                  or sidecar_dir(runs_dir, run_id).is_dir())
         if not known:
             raise HTTPException(status_code=404, detail=f"no such run: {run_id}")
+        if not _run_is_live(run_id):
+            raise HTTPException(status_code=409, detail=_NOT_LIVE)
+
         app.state.launcher.control(run_id, request.action)
+
+        # Checked again, AFTER the write, because the run can finish in the
+        # window between the two. The second check is what makes this
+        # self-healing rather than merely narrow: if the run finished while we
+        # were writing, the file we just wrote is the one that would rewrite
+        # its verdict, so it is removed again and the caller is told the truth.
+        # The window is narrowed, not closed — but anything that lands inside
+        # it is now undone rather than left on disk.
+        if not _run_is_live(run_id):
+            control_path(runs_dir / f"{run_id}.json").unlink(missing_ok=True)
+            raise HTTPException(status_code=409, detail=_NOT_LIVE)
         return ControlResponse(run_id=run_id, accepted=True)
 
     @api.get("/runs/{run_id}/events")
