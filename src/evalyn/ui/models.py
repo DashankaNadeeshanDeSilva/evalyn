@@ -462,7 +462,13 @@ class CheckView(_Model):
     #: `None` when the check abstained (see `unsure`) — not `False`.
     passed: bool | None = None
     score: float | None = None
-    #: 1-based turn index the evidence came from; `None` for whole-session checks.
+    #: The artifact's own `turn` field, forwarded **unchanged** (R4-40). It is
+    #: **not** an index into `TrialView.turns`, and this is measured rather than
+    #: feared: in `20260803T174149220841-76e25fee-example` the
+    #: `invariant:no-internal-leak` check reports `turn: 1` while its evidence
+    #: ("Internal path") lives in flattened turn 4. `None` for whole-session
+    #: checks. A viewer that reports such a check as *unplaced* is behaving
+    #: correctly; reconciling the two is a new design, not a mapping detail.
     turn: int | None = None
     evidence: str = ""
     unsure: bool = False
