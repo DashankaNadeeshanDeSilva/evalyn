@@ -1826,3 +1826,35 @@ future CI audience than to the maintainer on their own machine. The engine-side 
 Task 21 steps 4–7: the Playwright smoke test, the CI `ui-e2e` job, the docs + `v0.5.0` version bump,
 and the wheel test. **Task 21 step 6 must not run until the plan actually finishes** — it would
 claim a release that does not exist.
+
+## Deferred: the control endpoint's residual race (Plan #4 Task 20, 2026-08-11)
+
+**Registered here rather than left in a review file**, because it is a real product limitation that
+outlives the plan workspace.
+
+`POST /api/runs/{id}/control` refuses to act on a run that has already finished — a cancel can no
+longer rewrite a completed run's verdict from `passed` to `cancelled` in the detail view, the run
+list, or on disk. That defect is fixed and tested.
+
+**The fix narrows a race; it does not close it.** The liveness check runs twice around the write and
+unlinks any control file that lands inside that window. The residual exposure was **measured, not
+reasoned about**: cancel a genuinely-live run, let it finish one instant *after* the endpoint
+returns, and the control file survives on disk with the verdict reading `cancelled`. So the window
+is the whole interval from "the second check said live" to "the run finishes" — the original
+scenario moved slightly earlier, not eliminated.
+
+**Closing it properly is structural** and was deliberately kept out of a fix round: the write and the
+liveness decision must become one atomic operation. Two candidate remedies, neither yet chosen:
+
+- an `O_EXCL` marker that makes the write fail if the run has completed, or
+- the **engine** ignoring any control file older than its own artifact.
+
+**Practical exposure is low**: the operator must press Cancel in the moments around a run finishing,
+and the consequence is a mislabelled verdict on an already-complete run, not lost data or spend.
+
+**Carry-forward:** `_run_is_live`'s docstring (`src/evalyn/ui/server.py`) currently reads as though
+the guard is complete — "the guard that stops a cancel arriving a moment late from rewriting a
+finished run's verdict" — and "a moment late" is precisely the case only partly stopped. The inline
+comment beside the write (`server.py:785-786`, "narrowed, not closed") is accurate. **Correct the
+docstring to match the comment.** Comments that overclaim are treated as first-class defects in this
+project; this is the eighth instance found in Plan #4.
