@@ -61,7 +61,14 @@ function pythonModels(source: string): Record<string, Model> {
   return out;
 }
 
-/** The same, over `types.ts`. Doc comments start with `/` or `*`, never a name. */
+/**
+ * The same, over `types.ts`. Doc comments start with `/` or `*`, never a name.
+ *
+ * The trailing `;` is **optional** in the pattern. TypeScript does not require
+ * it — `total?: number` with no semicolon is a legal member — and requiring it
+ * here made such a field invisible: a frozen response model could grow a
+ * phantom key with this suite and `tsc --noEmit` both green.
+ */
 function tsInterfaces(source: string): Record<string, Model> {
   const lines = source.split("\n");
   const out: Record<string, Model> = {};
@@ -71,7 +78,7 @@ function tsInterfaces(source: string): Record<string, Model> {
     const fields: string[] = [];
     for (const line of lines.slice(i + 1)) {
       if (line === "}") break;
-      const field = /^ {2}([a-z_][a-z0-9_]*)\??: .+;$/.exec(line);
+      const field = /^ {2}([a-z_][a-z0-9_]*)\??: .+;?$/.exec(line);
       if (field) fields.push(field[1]!);
     }
     out[header[1]!] = { extends: header[2] ?? null, fields };
@@ -147,11 +154,19 @@ describe("model fields match models.py verbatim", () => {
 });
 
 /**
- * Nullability, over response models only.
+ * Nullability, over response models only. **Two** assertions, not one.
  *
- * A Python `X | None` must be a TypeScript `X | null` — a required key holding
- * a nullable value. Getting this backwards is how "this run cannot tell you"
- * silently becomes "0".
+ * A Python `X | None` must be a TypeScript `X | null` — a *required key*
+ * holding a *nullable value*. Those are two independent claims, and folding
+ * them into one test is how this guard used to pass on the very fields it
+ * exists for: `version?: string` on `PackRow` was read as "nullable" and went
+ * green, as did `next_cursor?: string | null`. So the optional marker is now
+ * recorded separately and asserted to be absent, and `pythonNullable` compares
+ * only the value's nullability.
+ *
+ * The failure that motivates it: `next_cursor?: string | null` lets a page
+ * write `if (page.next_cursor)` and collapse absent, null and "" into one
+ * branch — the absent-vs-null distinction this contract is built on.
  *
  * Request models are exempt by design: `LaunchRequest.objectives` has a
  * non-null Python default (`[]`) but is genuinely optional for a browser to
@@ -176,24 +191,41 @@ describe("nullability matches models.py (response models)", () => {
     return out;
   }
 
-  function tsNullable(name: string): Record<string, boolean> {
+  /** The lines of one interface body, so the two readers cannot disagree. */
+  function tsBody(name: string): string[] {
     const lines = tsSource.split("\n");
     const start = lines.findIndex((l) =>
       new RegExp(`^export interface ${name}(?: extends \\w+)? \\{$`).test(l),
     );
+    const end = lines.slice(start + 1).findIndex((l) => l === "}");
+    return lines.slice(start + 1, start + 1 + end);
+  }
+
+  /** Value nullability only — the `?` marker is a separate claim, asserted below. */
+  function tsNullable(name: string): Record<string, boolean> {
     const out: Record<string, boolean> = {};
-    for (const line of lines.slice(start + 1)) {
-      if (line === "}") break;
-      const m = /^ {2}([a-z_][a-z0-9_]*)(\??): (.+);$/.exec(line);
-      if (m) out[m[1]!] = m[2] === "?" || /\| null/.test(m[3]!);
+    for (const line of tsBody(name)) {
+      const m = /^ {2}([a-z_][a-z0-9_]*)\??: (.+?);?$/.exec(line);
+      if (m) out[m[1]!] = /\| null/.test(m[2]!);
     }
     return out;
+  }
+
+  /** Keys declared `field?:` — none may exist on a response model. */
+  function tsOptionalKeys(name: string): string[] {
+    return tsBody(name)
+      .map((line) => /^ {2}([a-z_][a-z0-9_]*)\?: /.exec(line)?.[1])
+      .filter((f): f is string => f !== undefined);
   }
 
   for (const name of Object.keys(FROZEN)) {
     if (REQUEST_MODELS.has(name)) continue;
     it(`${name}: every '| None' is a '| null'`, () => {
       expect(tsNullable(name)).toEqual(pythonNullable(name));
+    });
+
+    it(`${name}: no optional key — FastAPI serialises defaults, so nothing is absent`, () => {
+      expect(tsOptionalKeys(name)).toEqual([]);
     });
   }
 });
