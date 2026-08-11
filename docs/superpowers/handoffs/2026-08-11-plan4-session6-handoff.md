@@ -318,13 +318,23 @@ pass^k because the twin improvises its own (good) refusal instead of the approve
 trial in seven. Nothing leaks — invariant_failures is 0 in all 21 trials. Never say "leak" or
 "exfiltration" about it. I have a recorded RED at ~/Desktop/evalyn-k7-RED-2026-08-11.mov.
 
+Before Task 20: `ui/src/api/types.ts:709` still documents cancel as escalating to SIGTERM after 60s,
+which contradicts R4-11 and `ControlButtons.tsx:29-32`. Two contract docs disagreeing is a trap —
+fix the stale docstring first.
+
+CLAUDE.md, docs/CONTEXT.md, ROADMAP.md and JOURNAL.md were all de-staled on 2026-08-11 and now point
+at the handoffs and the SDD ledger as the live record. The full Plan #4 journal entry is
+deliberately unwritten — it is Task 21 Step 6's job.
+
 Working agreements: `uv` only; suite green and warning-clean in BOTH colour modes with __pycache__
 DELETED; ALL subagents on Opus 5, set explicitly on every dispatch — including reviews and fix
 rounds (R4-39); TDD with a DISCRIMINATING red, and reviewers must REPRODUCE mutation evidence
-rather than trust it; every dispatch names its absolute worktree path and exact file globs; stage
-explicitly, never `git add .`; commits under my identity with no Claude trailer. Pushes are
+rather than trust it — twice this plan an agent reported a proof it had REASONED about rather than
+RUN, and was wrong both times; every dispatch names its absolute worktree path and exact file globs;
+stage explicitly, never `git add .`; commits under my identity with no Claude trailer. Pushes are
 pre-authorised — ASK before any worktree merge or PR. Use impeccable for UI work. Tell every
-implementer to commit each coherent piece as it finishes.
+implementer to commit each coherent piece as it finishes. Snapshot a worktree before dispatching a
+reviewer into it — they mutate source to test discrimination, and you want to prove they restored.
 
 Use superpowers:subagent-driven-development. Think hard, be careful, and ask me questions.
 ```
