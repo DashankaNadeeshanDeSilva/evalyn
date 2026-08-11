@@ -106,7 +106,9 @@ describe("VerdictBadge", () => {
     // Strip nothing, read the text: it has to say what happened on its own.
     expect(words(badge)).toContain("fail");
     expect(words(badge)).toContain("tier 1");
-    expect(within(badge).getByText(/fail/i)).toBeInTheDocument();
+    // The visible word plus the screen-reader sentence — both say "failed", and
+    // neither depends on the ink.
+    expect(within(badge).getAllByText(/fail/i).length).toBeGreaterThan(0);
   });
 });
 

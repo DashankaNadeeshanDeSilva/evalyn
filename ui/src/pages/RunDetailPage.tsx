@@ -2,6 +2,7 @@ import type { ReactNode } from "react";
 import { Link, useParams } from "react-router-dom";
 
 import { ApiFailure, useRunDetail } from "../api/client";
+import { CostChip } from "../components/CostChip";
 import { RunStatusChip } from "../components/RunStatusChip";
 import { Flatline } from "../components/Flatline";
 import {
@@ -9,8 +10,9 @@ import {
   IconArrowLeft,
   IconFlatline,
 } from "../components/InstrumentIcon";
-import { formatUsd, formatUtc } from "../format";
+import { formatUtc } from "../format";
 import { isRunId, type Capabilities } from "../api/types";
+import { GateRunDetail } from "./GateRunDetail";
 
 /**
  * A single run's identity panel.
@@ -93,7 +95,24 @@ export function RunDetailPage() {
   const caps = run.capabilities;
 
   return (
-    <Shell runId={runId}>
+    <Shell
+      runId={runId}
+      /*
+       * The payload, for the one mode that has a gate verdict.
+       *
+       * `mode` is classified lexically from the artifact's filename, so this is
+       * a fact about the run rather than a guess from its contents — and
+       * `/api/runs/{id}/gate` 404s for the other two, which makes asking the
+       * bug rather than the answer. Tasks 15 and 16 hang their own payloads
+       * here for `discover` and `compare`.
+       *
+       * It goes beside `children` rather than inside it because the payload's
+       * tables and transcript span the whole instrument face: the identity
+       * panel is inset by the shell's gutter, the panel lines beneath it are
+       * not.
+       */
+      payload={run.mode === "gate" ? <GateRunDetail run={run} /> : null}
+    >
       <dl className="grid grid-cols-1 gap-x-10 sm:grid-cols-2 lg:grid-cols-3">
         <Field label="Status">
           <RunStatusChip status={run.status} unverified={run.degraded} />
@@ -113,11 +132,11 @@ export function RunDetailPage() {
           )}
         </Field>
         <Field label="Judge USD">
-          {run.judge_usd === null ? (
-            <Flatline word="unrecorded" reason="judge spend was not recorded" />
-          ) : (
-            <span className="tabular-nums">{formatUsd(run.judge_usd)}</span>
-          )}
+          {/* One spend readout per screen. `CostChip` states the same figure
+              against the pack's own ceiling and handles the unrecorded case, so
+              a second bare number here would be the same fact rendered twice
+              with less of it. */}
+          <CostChip judgeUsd={run.judge_usd} packName={run.pack_name} />
         </Field>
         <Field label="Probes indexed">
           <span className="tabular-nums">{run.probes.length}</span>
@@ -154,9 +173,12 @@ export function RunDetailPage() {
 function Shell({
   runId,
   children,
+  payload = null,
 }: {
   runId: string;
   children: ReactNode;
+  /** Full-bleed, so its panel lines span the face rather than the gutter. */
+  payload?: ReactNode;
 }) {
   return (
     <section className="pb-16">
@@ -175,6 +197,7 @@ function Shell({
         </h1>
       </div>
       <div className="px-4 py-2 sm:px-6">{children}</div>
+      {payload}
     </section>
   );
 }

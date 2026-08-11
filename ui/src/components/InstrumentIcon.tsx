@@ -52,7 +52,7 @@ function Glyph({ title, children, ...rest }: IconProps & { children: ReactNode }
 }
 
 /** ✓ — the gate held. */
-function IconCheck(props: IconProps) {
+export function IconCheck(props: IconProps) {
   return (
     <Glyph {...props}>
       <path d="M3 8.4 6.2 11.6 13 4.6" />
@@ -61,7 +61,7 @@ function IconCheck(props: IconProps) {
 }
 
 /** ✗ — the gate failed. Deliberately the heaviest mark in the set. */
-function IconCross(props: IconProps) {
+export function IconCross(props: IconProps) {
   return (
     <Glyph {...props}>
       <path d="M4 4 12 12M12 4 4 12" />
@@ -197,8 +197,14 @@ export function IconNotApplicable({ title, ...rest }: IconProps) {
   );
 }
 
-/** An unresolved reading: the instrument has no answer, not a negative one. */
-function IconQuery(props: IconProps) {
+/**
+ * An unresolved reading: the instrument has no answer, not a negative one.
+ *
+ * Exported because it is the mark for both of `VerdictBadge`'s non-answers —
+ * `abstained` (the judge declined) and `unscored` (the check returned no
+ * score). Neither is a failure, and reusing the cross for them would say it was.
+ */
+export function IconQuery(props: IconProps) {
   return (
     <Glyph {...props}>
       <circle cx="8" cy="8" r="5.6" />
