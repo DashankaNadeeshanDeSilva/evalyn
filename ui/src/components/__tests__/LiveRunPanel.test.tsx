@@ -98,7 +98,7 @@ describe("the live run panel", () => {
     socket().emit(1, "run.started", { run_id: RUN_ID_GATE });
     expect(socket().closed).toBe(false);
 
-    socket().emit(2, "run.finished", { run_id: RUN_ID_GATE, exit_code: 1 });
+    socket().emit(2, "run.finished", { mode: "gate", status: "ok", judge_usd: 0.0138 });
 
     expect(socket().closed).toBe(true);
     expect(screen.getByTestId("live-window").getAttribute("data-phase")).toBe(
@@ -112,12 +112,12 @@ describe("the live run panel", () => {
    * "It appears only when something is actually running **or has just
    * finished**." The refetch fired on `artifact.written` flips the run's status
    * to a terminal one, and a window that re-read that status would vanish in
-   * the same frame the run ended — taking the exit code with it.
+   * the same frame the run ended — taking the run's outcome with it.
    */
   it("stays on screen after the run it was watching ends", () => {
     const view = renderPanel("running");
 
-    socket().emit(1, "run.finished", { run_id: RUN_ID_GATE, exit_code: 0 });
+    socket().emit(1, "run.finished", { mode: "gate", status: "ok", judge_usd: 0.0138 });
     view.rerender(
       <QueryClientProvider client={createQueryClient()}>
         {/* The page's own signal has flipped, exactly as the refetch flips it.

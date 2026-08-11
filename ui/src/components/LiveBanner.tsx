@@ -2,7 +2,11 @@ import type { ReactElement, ReactNode } from "react";
 
 import type { EventName } from "../api/types";
 import { formatUsd } from "../format";
-import type { RunEventsState, RunPhase } from "../hooks/useRunEvents";
+import type {
+  FinishStatus,
+  RunEventsState,
+  RunPhase,
+} from "../hooks/useRunEvents";
 import {
   IconAlert,
   IconBarred,
@@ -67,14 +71,22 @@ const PHASE_WORDS: Record<RunPhase, string> = {
 };
 
 /**
- * The mark for the phase. `finished` splits on the exit code, but **both
- * renditions say "finished"** — the verdict is the gate banner's job below, and
- * a cross up here would claim a gate failure for a run that exited 3 because
- * the operator cancelled it.
+ * The mark for the phase. `finished` splits on how the run **ended**, but
+ * **every rendition says "finished"** — the verdict is the gate banner's job
+ * below, and a cross up here would claim a gate failure for a run that was
+ * cancelled, or for a clean run whose gate simply went red.
+ *
+ * The check therefore says "this run completed", not "this run passed". It is
+ * `status: "ok"` off `run.finished` and nothing else. The alarm is reserved for
+ * `status: "error"` — a run that did not finish what it started — and a status
+ * the stream never sent draws the unresolved mark rather than either.
+ *
+ * Before the wiring pass this read `exit_code === 0`, a key `run.finished` has
+ * never carried, so **every** finished run drew the alarm.
  */
 function phaseMark(
   phase: RunPhase,
-  exitCode: number | null,
+  finishStatus: FinishStatus | null,
 ): (props: { className?: string }) => ReactElement {
   switch (phase) {
     case "connecting":
@@ -86,9 +98,24 @@ function phaseMark(
     case "cancelling":
       return IconBarred;
     case "finished":
-      return exitCode === 0 ? IconCheck : IconAlert;
+      switch (finishStatus) {
+        case "ok":
+          return IconCheck;
+        case "error":
+          return IconAlert;
+        case null:
+          return IconQuery;
+      }
   }
 }
+
+/** What the run's own ending was, in words rather than a code. */
+const OUTCOME_WORDS: Record<FinishStatus, string> = {
+  // Not "passed": the gate verdict is computed from the artifact afterwards and
+  // is stated, in its own words and its own colour, in the banner below.
+  ok: "completed",
+  error: "did not complete",
+};
 
 /** What the last frame was, in the surface's own words rather than its wire name. */
 const ACTIVITY_WORDS: Partial<Record<EventName, string>> = {
@@ -160,7 +187,7 @@ export function LiveBanner({
   /** The controls. Passed in so the rationed orange lives in its own file. */
   children?: ReactNode;
 }) {
-  const Mark = phaseMark(state.phase, state.exitCode);
+  const Mark = phaseMark(state.phase, state.finishStatus);
   const activity = state.activity;
   const stalled = state.connection === "closed" && state.phase !== "finished";
 
@@ -248,13 +275,20 @@ export function LiveBanner({
         </Reading>
 
         {state.phase === "finished" ? (
-          <Reading label="Exit code">
-            {state.exitCode === null ? (
+          /*
+           * **Not the exit code, and deliberately so.** `run.finished` carries
+           * `status`; the exit code is the CLI's, decided from the artifact
+           * after the run ends. This window used to promise one anyway and
+           * printed "not reported" for every run ever made, forty pixels above
+           * a gate block printing the real figure — two contradictory
+           * statements one screenful apart. The exit code is stated exactly
+           * once on this page now, by the component that can actually read it.
+           */
+          <Reading label="Run outcome" testId="live-outcome">
+            {state.finishStatus === null ? (
               <Unreported what="not reported" />
             ) : (
-              <span data-numeric="exit_code" className="tabular-nums">
-                {state.exitCode}
-              </span>
+              OUTCOME_WORDS[state.finishStatus]
             )}
           </Reading>
         ) : null}

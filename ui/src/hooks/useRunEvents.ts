@@ -59,7 +59,11 @@ import { EVENT_NAMES, type EventName, type RunId } from "../api/types";
  * 2. The `data:` payload keys this fold reads are the keys the emit sites
  *    actually write: `judge_usd` on `spend.updated`; `probe_id` and `pass_k` on
  *    `probe.scored`; `probe_id`/`epoch` on `trial.started`; `turn` on
- *    `turn.sent`/`turn.received`; `exit_code` on `run.finished`.
+ *    `turn.sent`/`turn.received`. **Answered for `run.finished`:** the wiring
+ *    pass read the real frame off a real server and it carries
+ *    `{mode, status, judge_usd, probes, total_unsure_trials}` — no `exit_code`,
+ *    which this fold had been reading since the day it was written because the
+ *    MSW handler invented one. `status` is what it reads now.
  * 3. A heartbeat every `MetaResponse.heartbeat_seconds` keeps the connection
  *    open through an idle run, and the `: idle-timeout` comment frame does not
  *    reach a named listener.
@@ -102,6 +106,24 @@ export const CONNECTION_STATES = [
 ] as const;
 export type ConnectionState = (typeof CONNECTION_STATES)[number];
 
+/**
+ * How the run itself ended, as `run.finished` reports it.
+ *
+ * **Not a verdict, and not an exit code.** The engine emits `status: "ok"` when
+ * the run completed and `status: "error"` (with an `error` string) when it did
+ * not — `engine/run.py`, `engine/compare.py` and `discovery/run.py` all emit
+ * the same two. A gate that ran perfectly and failed every probe is `"ok"`.
+ *
+ * The fold used to read `exit_code` off this frame instead, which no emit site
+ * has ever written: the exit code is the CLI's, decided from the artifact after
+ * the run ends, and it reaches the browser through `GET /api/runs/{id}/gate`.
+ * Reading a key that is never there made **every** finished run render
+ * "EXIT CODE not reported" under an alarm glyph, directly above a gate block
+ * printing the real exit code.
+ */
+export const FINISH_STATUSES = ["ok", "error"] as const;
+export type FinishStatus = (typeof FINISH_STATUSES)[number];
+
 /** One probe the stream has seen scored. `passK` is `null` when unknown. */
 export interface LiveProbe {
   readonly probeId: string;
@@ -127,8 +149,11 @@ export interface RunEventsState {
   readonly lastSeq: number;
   readonly connection: ConnectionState;
   readonly phase: RunPhase;
-  /** From `run.finished`. Never mapped to a `RunStatus` here — see `RUN_PHASES`. */
-  readonly exitCode: number | null;
+  /**
+   * From `run.finished`. `null` is "the stream did not say", never "it failed".
+   * Never mapped to a `RunStatus` here — see `RUN_PHASES`.
+   */
+  readonly finishStatus: FinishStatus | null;
   /** Evalyn's own judge spend so far. `null` = not reported, never `0`. */
   readonly judgeUsd: number | null;
   readonly probes: readonly LiveProbe[];
@@ -157,7 +182,7 @@ export const initialRunEventsState: RunEventsState = {
   lastSeq: 0,
   connection: "connecting",
   phase: "connecting",
-  exitCode: null,
+  finishStatus: null,
   judgeUsd: null,
   probes: [],
   trials: 0,
@@ -186,6 +211,19 @@ function num(data: unknown, key: string): number | null {
 function str(data: unknown, key: string): string | null {
   const value = field(data, key);
   return typeof value === "string" && value !== "" ? value : null;
+}
+
+/**
+ * The terminal status, and only the two words the engine actually emits.
+ *
+ * A closed set rather than the raw string: an unrecognised word would be
+ * rendered verbatim into the one readout beside the Cancel key, and "the stream
+ * said something this build does not understand" is honestly *unreported*
+ * rather than a third outcome invented on screen.
+ */
+function finishStatus(data: unknown): FinishStatus | null {
+  const value = str(data, "status");
+  return FINISH_STATUSES.find((member) => member === value) ?? null;
 }
 
 /**
@@ -282,7 +320,7 @@ export function runEventsReducer(
       next = {
         ...next,
         phase: "finished",
-        exitCode: num(data, "exit_code") ?? state.exitCode,
+        finishStatus: finishStatus(data) ?? state.finishStatus,
         // Terminal means done: the consumer closes the socket rather than
         // letting the browser reconnect into an endless replay of this run.
         connection: "closed",

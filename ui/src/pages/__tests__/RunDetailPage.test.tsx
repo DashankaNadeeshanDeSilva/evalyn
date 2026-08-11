@@ -20,6 +20,21 @@ import { RunDetailPage } from "../RunDetailPage";
 
 useFakeEventSource();
 
+/**
+ * The engine's own terminal frame, field for field (`engine/run.py`).
+ *
+ * There is **no `exit_code`** on it: the exit code is the CLI's, decided from
+ * the artifact after the run ends, and it reaches the browser through
+ * `GET /api/runs/{id}/gate` rather than through the stream.
+ */
+const FINISHED_OK = {
+  mode: "gate",
+  status: "ok",
+  judge_usd: 0.0138,
+  probes: 4,
+  total_unsure_trials: 2,
+};
+
 function renderPage(runId: string) {
   return render(
     <QueryClientProvider client={createQueryClient()}>
@@ -134,19 +149,41 @@ describe("a run that is still on the air", () => {
     renderPage(RUN_ID_RUNNING);
     await screen.findByTestId("live-window");
 
-    onlySocket().emit(1, "run.finished", {
-      run_id: RUN_ID_RUNNING,
-      exit_code: 3,
-    });
+    onlySocket().emit(1, "run.finished", FINISHED_OK);
 
-    // The window stays — "or has just finished" — and carries the exit code...
+    // The window stays — "or has just finished" — and carries the outcome...
     const window = screen.getByTestId("live-window");
     expect(window.getAttribute("data-phase")).toBe("finished");
-    expect(window.querySelector('[data-numeric="exit_code"]')?.textContent).toBe(
-      "3",
+    expect(screen.getByTestId("live-outcome").textContent).toContain(
+      "completed",
     );
     // ...and the socket is closed rather than left replaying the run forever.
     expect(onlySocket().closed).toBe(true);
+  });
+
+  /**
+   * The wiring pass drove a browser at the real server and read this off the
+   * screen: **`⚠ FINISHED … EXIT CODE not reported`**, forty pixels above a
+   * gate block reading `EXIT CODE 1`. The stream carries no exit code — the
+   * payload below is the engine's own, from `engine/run.py` — so a window that
+   * names one can only ever contradict the block beneath it.
+   */
+  it("never promises an exit code the real run.finished payload does not carry", async () => {
+    renderPage(RUN_ID_RUNNING);
+    await screen.findByTestId("live-window");
+
+    onlySocket().emit(1, "run.finished", FINISHED_OK);
+
+    const window = screen.getByTestId("live-window");
+    expect(window.textContent?.toLowerCase()).not.toContain("exit code");
+    expect(window.querySelector('[data-numeric="exit_code"]')).toBeNull();
+    // What it says instead is what the frame actually carried.
+    expect(screen.getByTestId("live-outcome").textContent).toContain(
+      "completed",
+    );
+    expect(screen.getByTestId("live-outcome").textContent).not.toContain(
+      "not reported",
+    );
   });
 });
 
@@ -211,10 +248,10 @@ describe("a run that finishes while the operator is watching", () => {
 
     // The artifact lands, and the refetch this panel fires brings it back.
     artifact.settle({ status: "gate_failed", judge_usd: 0.5137 });
-    onlySocket().emit(3, "run.finished", {
-      run_id: RUN_ID_RUNNING,
-      exit_code: 1,
-    });
+    // `status: "ok"` is the *run*, not the gate: a run that completed cleanly
+    // and failed its gate emits exactly this, which is why the verdict is read
+    // from the artifact below rather than inferred here.
+    onlySocket().emit(3, "run.finished", { ...FINISHED_OK, judge_usd: 0.5137 });
 
     await waitFor(() => expect(screen.getByTestId("cost-chip")).toBeInTheDocument());
     // Still exactly one, and now it is the authoritative figure rather than the
@@ -223,12 +260,12 @@ describe("a run that finishes while the operator is watching", () => {
     expect(screen.getByTestId("cost-chip").textContent).toContain("$0.5137");
     expect(screen.getByTestId("cost-chip").textContent).toContain("$2.0000");
 
-    // ...and the window survived the transition with its exit code, which is
+    // ...and the window survived the transition with its outcome, which is
     // the whole reason the presence decision is latched separately.
     const window = screen.getByTestId("live-window");
     expect(window.getAttribute("data-phase")).toBe("finished");
-    expect(window.querySelector('[data-numeric="exit_code"]')?.textContent).toBe(
-      "1",
+    expect(screen.getByTestId("live-outcome").textContent).toContain(
+      "completed",
     );
   });
 
@@ -244,10 +281,7 @@ describe("a run that finishes while the operator is watching", () => {
 
     onlySocket().emit(1, "spend.updated", { judge_usd: 0.5 });
     artifact.settle({ status: "gate_failed", judge_usd: null });
-    onlySocket().emit(2, "run.finished", {
-      run_id: RUN_ID_RUNNING,
-      exit_code: 1,
-    });
+    onlySocket().emit(2, "run.finished", FINISHED_OK);
 
     await waitFor(() => expect(screen.getByTestId("cost-chip")).toBeInTheDocument());
     expect(spendReporters()).toHaveLength(1);

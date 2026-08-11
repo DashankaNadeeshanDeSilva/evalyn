@@ -233,8 +233,35 @@ export const handlers = [
       ["turn.received", { probe_id: "grounding-work-history", epoch: 1, turn: 1 }],
       ["probe.scored", { probe_id: "grounding-work-history", pass_k: 1.0 }],
       ["spend.updated", { judge_usd: 0.01377 }],
-      ["artifact.written", { run_id: RUN_ID_GATE }],
-      ["run.finished", { run_id: RUN_ID_GATE, exit_code: 1 }],
+      // `path`, not `run_id`: `engine/run.py` emits `sink.emit("artifact.written",
+      // path=str(written))`. Nothing in the SPA reads the body — the event's
+      // arrival is the whole signal — but a mock that carries the wrong key is
+      // how the next reader learns the wrong contract.
+      [
+        "artifact.written",
+        { path: `~/Drive/Projects/evalyn/runs/${RUN_ID_GATE}.json` },
+      ],
+      /*
+       * The engine's own terminal frame, field for field (`engine/run.py`).
+       *
+       * This used to read `{run_id, exit_code: 1}`, and that invention is why
+       * the live window shipped promising an exit code: **no emit site has ever
+       * written one**. The exit code is the CLI's, decided from the artifact
+       * after the run ends, and it reaches the browser through
+       * `GET /api/runs/{id}/gate`. `status` is the run's own ending — `"ok"`
+       * here means this scripted run completed, not that its gate passed; the
+       * fixture's gate verdict exits 1.
+       */
+      [
+        "run.finished",
+        {
+          mode: "gate",
+          status: "ok",
+          judge_usd: 0.01377,
+          probes: 1,
+          total_unsure_trials: 0,
+        },
+      ],
     ];
     const encoder = new TextEncoder();
     const stream = new ReadableStream({

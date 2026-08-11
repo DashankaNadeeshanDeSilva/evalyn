@@ -3,6 +3,7 @@ import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 
 import { ControlButtons } from "../ControlButtons";
+import { IconAlert, IconCheck, IconQuery } from "../InstrumentIcon";
 import { LiveBanner } from "../LiveBanner";
 import {
   initialRunEventsState,
@@ -25,6 +26,19 @@ import {
 
 function stateWith(patch: Partial<RunEventsState>): RunEventsState {
   return { ...initialRunEventsState, ...patch };
+}
+
+/**
+ * The shapes a mark is drawn from, joined — the family shares one viewBox,
+ * stroke and colour, and carries no identity attribute, so the geometry is the
+ * only thing that tells one glyph from another.
+ */
+function shapesOf(root: Element | null): string {
+  if (root === null) return "";
+  const svg = root.tagName.toLowerCase() === "svg" ? root : root.querySelector("svg");
+  return [...(svg?.querySelectorAll("path, circle") ?? [])]
+    .map((node) => node.getAttribute("d") ?? node.outerHTML)
+    .join("|");
 }
 
 describe("the live readout window", () => {
@@ -89,21 +103,107 @@ describe("the live readout window", () => {
     }
   });
 
-  it("shows the exit code only once there is one", () => {
+  /**
+   * The wiring pass's demo bug, pinned.
+   *
+   * `run.finished` carries `status`, never `exit_code` — the exit code is the
+   * CLI's, decided after the artifact is written. The window read one anyway,
+   * so a clean run rendered "EXIT CODE not reported" forty pixels above a gate
+   * block rendering "EXIT CODE 1": two contradictory statements, one screenful
+   * apart, on the projector.
+   */
+  it("reports the outcome the stream carries, and never an exit code it does not", () => {
     const view = render(<LiveBanner state={stateWith({ phase: "running" })} />);
-    expect(screen.getByTestId("live-window").textContent).not.toContain(
-      "Exit code",
-    );
+    // Nothing has ended, so there is no outcome to state.
+    expect(screen.queryByTestId("live-outcome")).toBeNull();
     view.unmount();
 
     render(
-      <LiveBanner state={stateWith({ phase: "finished", exitCode: 3 })} />,
+      <LiveBanner
+        state={stateWith({ phase: "finished", finishStatus: "ok" })}
+      />,
     );
     const window = screen.getByTestId("live-window");
-    expect(window.textContent).toContain("Exit code");
-    expect(window.querySelector('[data-numeric="exit_code"]')?.textContent).toBe(
-      "3",
+    expect(screen.getByTestId("live-outcome").textContent).toContain(
+      "completed",
     );
+    // The exit code is not this window's to report, in any rendition.
+    expect(window.textContent?.toLowerCase()).not.toContain("exit code");
+    // And a run that told us how it ended is not an unreported anything. (The
+    // spend reading's own "not reported yet" is a different, honest, absence.)
+    expect(screen.getByTestId("live-outcome").textContent).not.toContain(
+      "not reported",
+    );
+  });
+
+  it("says a run that did not complete did not complete, and says nothing when the stream did not say", () => {
+    const errored = render(
+      <LiveBanner
+        state={stateWith({ phase: "finished", finishStatus: "error" })}
+      />,
+    );
+    expect(screen.getByTestId("live-outcome").textContent).toContain(
+      "did not complete",
+    );
+    errored.unmount();
+
+    render(
+      <LiveBanner
+        state={stateWith({ phase: "finished", finishStatus: null })}
+      />,
+    );
+    // Absent is unreported, never "failed": a status the stream never sent is
+    // not a run that went wrong.
+    expect(screen.getByTestId("live-outcome").textContent).toContain(
+      "not reported",
+    );
+  });
+
+  /**
+   * The alarm was the visible half of the bug: with no exit code on the wire,
+   * `exitCode === 0` was false for every run that ever finished, so **every**
+   * finished run drew the alarm glyph. Marks are compared by the shapes they
+   * are drawn from, since the family carries no identity attribute.
+   */
+  it("marks a completed run with the check, not the alarm", () => {
+    const reference = render(
+      <div>
+        <div data-testid="ref-check">
+          <IconCheck />
+        </div>
+        <div data-testid="ref-alert">
+          <IconAlert />
+        </div>
+        <div data-testid="ref-query">
+          <IconQuery />
+        </div>
+      </div>,
+    );
+    const check = shapesOf(screen.getByTestId("ref-check"));
+    const alert = shapesOf(screen.getByTestId("ref-alert"));
+    const query = shapesOf(screen.getByTestId("ref-query"));
+    reference.unmount();
+    expect(new Set([check, alert, query]).size).toBe(3);
+
+    for (const [status, expected] of [
+      ["ok", check],
+      ["error", alert],
+      [null, query],
+    ] as const) {
+      const view = render(
+        <LiveBanner
+          state={stateWith({ phase: "finished", finishStatus: status })}
+        />,
+      );
+      expect(
+        shapesOf(screen.getByTestId("live-phase").querySelector("svg")),
+        `a run that finished with status ${String(status)} carries the wrong mark`,
+      ).toBe(expected);
+      // Both renditions still say "finished": the verdict is the gate banner's
+      // job, and a cross here would claim a gate failure for a cancelled run.
+      expect(screen.getByTestId("live-phase").textContent).toContain("finished");
+      view.unmount();
+    }
   });
 
   it("says frames were lost rather than reporting a thinner run", () => {
@@ -178,9 +278,9 @@ describe("the live readout window", () => {
  * The guard the contrast test cannot be (ruling R4-24), applied to **every
  * state the window can actually be in**.
  *
- * The first version of this rendered one state — `running`, no gap, no exit
- * code, resting controls — and scanned `text-` only. Review reproduced the
- * consequence: a `<Flatline>` inserted into the **exit-code** branch left the
+ * The first version of this rendered one state — `running`, no gap, no
+ * outcome, resting controls — and scanned `text-` only. Review reproduced the
+ * consequence: a `<Flatline>` inserted into the **terminal** branch left the
  * whole suite green, because that branch renders only when a run has finished.
  * A control that fires in one of eleven states is not a control.
  *
@@ -255,10 +355,17 @@ const WINDOW_STATES: [string, RunEventsState][] = [
   ["running with no spend reported", stateWith({ phase: "running" })],
   ["paused", stateWith({ phase: "paused", judgeUsd: 0.5 })],
   ["cancelling", stateWith({ phase: "cancelling" })],
-  ["finished with an exit code", stateWith({ phase: "finished", exitCode: 1 })],
   [
-    "finished with no exit code",
-    stateWith({ phase: "finished", exitCode: null, connection: "closed" }),
+    "finished, completed",
+    stateWith({ phase: "finished", finishStatus: "ok" }),
+  ],
+  [
+    "finished, did not complete",
+    stateWith({ phase: "finished", finishStatus: "error" }),
+  ],
+  [
+    "finished with no status reported",
+    stateWith({ phase: "finished", finishStatus: null, connection: "closed" }),
   ],
   [
     "reconnecting after a gap",
