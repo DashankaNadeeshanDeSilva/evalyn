@@ -139,7 +139,10 @@ def create_app(runs_dir: Path, packs: list[Path], *,
 
     api = APIRouter(prefix=_API_PREFIX, route_class=RedactingRoute)
 
-    @api.get("/meta", response_model=MetaResponse)
+    # `api_route(methods=["GET", "HEAD"])` rather than `@api.get`: FastAPI's
+    # `get` does NOT add HEAD the way Starlette's bare `Route` does, and
+    # `curl -I` is the "is it up" check somebody runs mid-demo.
+    @api.api_route("/meta", methods=["GET", "HEAD"], response_model=MetaResponse)
     @no_redact
     async def meta() -> MetaResponse:
         """One of exactly two redaction-exempt routes. Exempt, not unexamined:
@@ -153,7 +156,8 @@ def create_app(runs_dir: Path, packs: list[Path], *,
             redaction=RedactionMeta(),
         )
 
-    @api.get("/health", response_model=HealthResponse)
+    @api.api_route("/health", methods=["GET", "HEAD"],
+                   response_model=HealthResponse)
     @no_redact
     async def health() -> HealthResponse:
         """The other exempt route. Carries no run content at all."""
@@ -166,8 +170,14 @@ def create_app(runs_dir: Path, packs: list[Path], *,
     # exist. Without it an unknown `/api/...` would fall through to the SPA
     # history fallback below and a client would get HTML, or a 405, instead of
     # an envelope.
+    #
+    # HEAD and OPTIONS are in the list for the same reason every other method
+    # is: a 405 on an unknown path tells a prober the path exists, which is the
+    # signal this route exists to suppress. Answering 404 for all of them says
+    # nothing either way.
     @app.api_route("/api/{unmatched:path}", include_in_schema=False,
-                   methods=["GET", "POST", "PUT", "PATCH", "DELETE"])
+                   methods=["GET", "HEAD", "OPTIONS", "POST", "PUT", "PATCH",
+                            "DELETE"])
     async def api_not_found(unmatched: str):
         # `unmatched` is deliberately NOT echoed: reflecting a client-supplied
         # path into a body is a needless gift to anyone probing the server.
@@ -178,7 +188,8 @@ def create_app(runs_dir: Path, packs: list[Path], *,
         # references these as `./assets/...` (vite `base: "./"`).
         app.mount("/assets", StaticFiles(directory=ASSETS_DIR), name="assets")
 
-    @app.get("/{spa_path:path}", include_in_schema=False)
+    @app.api_route("/{spa_path:path}", methods=["GET", "HEAD"],
+                   include_in_schema=False)
     async def spa(spa_path: str):
         """The SPA's history fallback — `BrowserRouter` owns `/runs/<id>`.
 

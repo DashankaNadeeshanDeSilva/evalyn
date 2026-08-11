@@ -182,6 +182,26 @@ async def test_an_unknown_api_path_is_the_envelope_under_a_write_method_too(
     assert response.json()["error"]["code"] == "not_found"
 
 
+async def test_an_unknown_api_path_is_404_under_head_and_options_too(
+        runs_dir, asgi_client):
+    """A 405 tells a prober the path exists — the one thing this catch-all is
+    for. FastAPI's `@app.get` does not add HEAD, so both had to be named."""
+    async with asgi_client(_app(runs_dir)) as client:
+        assert (await client.head("/api/does-not-exist")).status_code == 404
+        response = await client.options("/api/does-not-exist")
+    assert response.status_code == 404
+    assert response.json()["error"]["code"] == "not_found"
+
+
+async def test_head_answers_on_the_root_and_on_health(runs_dir, asgi_client):
+    """`curl -I http://127.0.0.1:8765/` is the "is it up" check someone runs
+    mid-demo, and it 405'd."""
+    async with asgi_client(_app(runs_dir)) as client:
+        assert (await client.head("/")).status_code == 200
+        assert (await client.head("/api/health")).status_code == 200
+        assert (await client.head("/api/meta")).status_code == 200
+
+
 async def test_the_app_mounts_every_handler_that_renders_above_the_route(runs_dir):
     """C-T6b, structurally. `route_class=RedactingRoute` is not sufficient."""
     from fastapi.exceptions import RequestValidationError
@@ -215,6 +235,34 @@ async def test_an_httpexception_detail_is_scrubbed_by_the_real_app(
     assert HOME_RUNS not in response.text
     assert "alice" not in response.text
     assert redaction_marker("path") in response.json()["error"]["message"]
+
+
+async def test_the_shipped_app_scrubs_a_success_body_too(runs_dir, asgi_client):
+    """The 200 half of the chokepoint, on the real app rather than a lookalike.
+
+    Both routes `create_app` mounts today are `@no_redact`, so it is tempting
+    to defer this to whichever task adds the first body-returning endpoint. It
+    does not need deferring: `add_api_route` inherits `app.router.route_class`,
+    so a route added to the shipped app is a `RedactingRoute` on the shipped
+    app's stack. Without this, "a successful response is scrubbed" rests on
+    composition — an `isinstance` census plus a lookalike app in
+    `test_redact.py` — and not on anything executed here.
+    """
+    app = _app(runs_dir)
+
+    async def leaky():
+        return {"log_path": f"{HOME_RUNS}/x.json", "note": "hello"}
+
+    _ahead_of_the_catch_all(app, "/api/leaky", leaky)
+    async with asgi_client(app) as client:
+        response = await client.get("/api/leaky")
+
+    assert response.status_code == 200
+    assert HOME_RUNS not in response.text
+    assert response.json()["log_path"] == redaction_marker("path")
+    # ...and only the leak was rewritten. A scrubber that flattened the whole
+    # body would pass the assertion above and be useless.
+    assert response.json()["note"] == "hello"
 
 
 async def test_an_unhandled_exception_is_a_500_envelope_and_never_a_traceback(
