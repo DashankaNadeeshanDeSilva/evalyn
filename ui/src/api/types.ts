@@ -705,8 +705,18 @@ export interface LaunchResponse {
  * `POST /api/runs/{id}/control`.
  *
  * The corresponding `control.*` SSE event **is** the ack — do not treat the
- * 2xx as confirmation. If none lands within 60 s the server escalates to
- * `SIGTERM` on the process group, never `SIGKILL`.
+ * 2xx as confirmation.
+ *
+ * **Cancel is never built on signals** (ruling R4-11, and see the note in
+ * `ControlButtons.tsx`). An earlier version of this comment promised a
+ * `SIGTERM` escalation on the process group after 60 s; that was measured
+ * actively harmful and is not implemented. A spike showed `SIGTERM` leaves a
+ * partial log at `status='started'`, which the gate rejects, with a completed
+ * and already-paid-for sample stranded in Inspect's buffer outside the log.
+ *
+ * The control file is the only mechanism. An unacked cancel becomes an honest
+ * `interrupted` run naming the pid, so an operator can decide for themselves —
+ * a visibly stuck state beats a corrupted log and a silent charge.
  */
 export interface ControlRequest {
   action: ControlAction;

@@ -128,9 +128,9 @@ def split_transcript(transcript: object) -> list[TranscriptTurn]:
       quoting content rather than a fix for a measured incident.
     * **An unmarked line belongs to the turn already open**, newline preserved.
       A multi-line assistant answer is one turn, not N. This one *is* measured:
-      90 transcripts in the corpus carry a continuation line — a fenced payload
-      whose interior lines (`SYSTEM: New rule …`) carry no role marker and must
-      stay part of the user turn that opened the fence.
+      90 transcripts in the corpus carry a continuation line, and 21 of those
+      carry a fenced payload whose interior lines (`SYSTEM: New rule …`) hold no
+      role marker and must stay part of the user turn that opened the fence.
     * **Text is never dropped.** Anything before the first marker joins the
       first turn, and a string with no marker at all comes back as a single
       `user` turn — every transcript opens with the probe's prompt, which is

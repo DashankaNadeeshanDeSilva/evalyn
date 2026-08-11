@@ -611,8 +611,21 @@ class RunIndex:
         separator sorts after the character that would have decided it, so a
         string comparison of the joined form can invert the order.
 
-        Raises only for a caller error — a malformed cursor. Nothing the
-        *directory* contains can raise.
+        Raises for a caller error — a malformed cursor — and, today, for one
+        class of directory content too. **The stronger claim this docstring
+        used to make is false and was measured false**: a readable artifact
+        whose `trial_records` holds a non-dict entry reaches `capabilities_of`,
+        where `hard_metrics` calls `rec.get(...)` over the unfiltered list and
+        raises `AttributeError`. Unlike `get`, `list` has no per-row guard, so
+        that single file 500s the **whole** listing rather than degrading one
+        row.
+
+        Not reachable from engine output — `run.py` always appends a dict, and
+        0 of 737 records across 87 real artifacts are non-dict — but the surface
+        is "any JSON in `runs/`", not "anything Evalyn wrote". Parked
+        deliberately: the honest fix is a per-row guard in `list`, mirroring the
+        one `get` already has, and that is structural work this task's review
+        budget excluded rather than work anyone judged unnecessary.
         """
         cursor = parse_cursor(before) if before is not None else None
 

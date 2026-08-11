@@ -57,11 +57,14 @@ import { RunDetailPage } from "../RunDetailPage";
  *    feared**: in `20260803T174149220841-76e25fee-example`, the
  *    `invariant:no-internal-leak` check says `turn: 1` while its evidence
  *    `"Internal path"` lives in flattened turn 4 — so `turn` currently indexes
- *    something else (a sample, or a message pair). Task 7 must either
- *    reconcile the index against the turn array it emits, or state that the
- *    field is not a turn index; the viewer will keep reporting these as
- *    unplaced until it does, which is the correct behaviour but not the useful
- *    one.
+ *    something else (a sample, or a message pair).
+ *
+ *    **SETTLED by Task 7 under ruling R4-40 — nothing further is owed here.**
+ *    The field is forwarded unchanged and is *not* an index into
+ *    `TrialView.turns`. Reconciling it was refused, as was fuzzy-matching the
+ *    evidence text to guess a turn. So this viewer reporting such a check as
+ *    unplaced is the correct behaviour and is now the intended one; the
+ *    contract comment on `CheckView.turn` in `models.py` says the same.
  * 9. `place()` matches the **first** occurrence of an evidence string in a
  *    turn. When a span repeats, the mark can land on the wrong instance. This
  *    is not closable client-side — it needs server-supplied character offsets
