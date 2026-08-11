@@ -39,10 +39,12 @@ import {
   type ValidationReport,
 } from "../api/types";
 import {
+  EXFIL_TRIALS,
   FINDING_DETAIL,
   FINDING_DETAIL_REVEALED,
   FINDING_ROWS,
   GATE_VERDICT,
+  PROBE_ID_EXFIL,
   HEALTH,
   META,
   PACK_AXES,
@@ -201,11 +203,20 @@ export const handlers = [
         "capabilities.trial_records is false — the drill-down should be disabled",
       );
     }
+    const probeId = String(params["probeId"]);
+    const epoch = Number(params["epoch"]);
+    // One probe answers per epoch rather than with a single stand-in body,
+    // because the "all trials at a glance" panel's whole claim is that the
+    // trials differ from one another. A handler that returns the same trial
+    // seven times cannot disprove a panel that renders the first one seven
+    // times.
+    const perEpoch = probeId === PROBE_ID_EXFIL ? EXFIL_TRIALS[epoch] : undefined;
+    if (perEpoch) return HttpResponse.json({ ...perEpoch, run_id: runId });
     return HttpResponse.json({
       ...TRIAL_VIEW,
       run_id: runId,
-      probe_id: String(params["probeId"]),
-      epoch: Number(params["epoch"]),
+      probe_id: probeId,
+      epoch,
     });
   }),
 
