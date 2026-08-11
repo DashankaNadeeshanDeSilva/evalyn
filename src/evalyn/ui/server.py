@@ -638,15 +638,21 @@ def create_app(runs_dir: Path, packs: list[Path], *,
         deferred finding in `docs/JOURNAL.md` (`be9ab3a`), and it is the exact
         shape the two orphan control files from the wiring pass were left in.
 
-        It is **not** what protects a finished run's verdict. `derive_status`
-        no longer puts `control is cancel` above the artifact: once an artifact
-        exists, `index.cancelled_by` reads `RunArtifact.cancelled` — the flag
-        the engine itself wrote when it honoured the cancel — and an orphan
-        file cannot relabel a run that ran to completion. That is the defence
-        this guard now stands in front of rather than the one it provides, and
-        the two are deliberately independent: a control file left inside the
-        residual window is harmless because of `cancelled_by`, and a request
-        for a finished run is refused here so it never reaches disk at all.
+        It is **not**, on its own, what protects a finished run's verdict.
+        `derive_status` no longer puts `control is cancel` above the artifact:
+        `index.cancelled_by` reads `RunArtifact.cancelled` — the flag the
+        engine itself wrote when it honoured the cancel — wherever there is
+        one. That is the defence this guard now stands in front of rather than
+        the one it provides.
+
+        **And it covers `gate` only.** `RunArtifact` is the sole artifact with
+        a `cancelled` field; a completed `compare` or `discover` beside a stale
+        cancel file still derives `cancelled`, because there is no
+        artifact-side answer to prefer (see `index.cancelled_by`; pinned by
+        `test_index.py::test_a_stale_cancel_still_relabels_compare_and_discover`).
+        For those two modes
+        this guard is not defence in depth — it is the only defence there is,
+        and its residual window is a real hole rather than a covered one.
 
         A run this cockpit did not launch, with no artifact and no recorded
         exit code, is treated as live: it may genuinely be running in another
@@ -810,9 +816,12 @@ def create_app(runs_dir: Path, packs: list[Path], *,
         # has just ended is a request nothing will ever act on, so it is
         # removed again and the caller is told the truth instead of a 202 it
         # would read as an acknowledgement. The window is narrowed, not closed
-        # — anything landing inside it is still left on disk, which is
-        # survivable only because `index.cancelled_by` reads the verdict off
-        # the artifact and not off this file.
+        # — anything landing inside it is still left on disk. For `gate` that
+        # is survivable, because `index.cancelled_by` reads the verdict off
+        # `RunArtifact.cancelled` and not off this file; for `compare` and
+        # `discover`, whose artifacts have no such field, a file left inside
+        # the window does still relabel the run. That is a recorded
+        # limitation, not a covered case.
         if not _run_is_live(run_id):
             control_path(runs_dir / f"{run_id}.json").unlink(missing_ok=True)
             raise HTTPException(status_code=409, detail=_NOT_LIVE)

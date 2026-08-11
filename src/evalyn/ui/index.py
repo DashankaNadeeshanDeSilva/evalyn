@@ -543,11 +543,24 @@ class RunIndex:
         sidecar directory is the only record that exists in the meantime.
 
         Sourced from `runs/.evalyn-ui/`, so a `runs/` this cockpit never
-        launched into costs one failed `iterdir` and nothing else. An entry is
-        a run only if its name satisfies the frozen grammar — that directory is
-        on a real filesystem and can hold anything — and only while there is no
-        artifact, so no run is ever listed twice and the artifact row, which
-        knows strictly more, always wins.
+        launched into costs one failed `iterdir` and nothing else.
+
+        Four tests in order, cheapest and most structural first, because each
+        one is a claim the next would otherwise have to make on worse evidence:
+
+        1. **the name is a run id** — free, no syscall, and that directory is on
+           a real filesystem, so it can hold a `README` as easily as a run;
+        2. **the mode matches** — lexical, derived from the id alone;
+        3. **the entry is a directory** — the launcher writes a *directory* per
+           run (`sidecar_dir`), so a plain file wearing a run id's name is not
+           a launched run. Load-bearing rather than tidy: `_sidecar` short-
+           circuits on `meta_dir.is_dir()` and would hand back a bare
+           `SidecarState()`, whose `present=False` and `launched=True` defaults
+           `derive_status` reads as `interrupted` — a row invented out of a
+           file nobody wrote as a run;
+        4. **no artifact exists yet** — the only one that has to go looking
+           elsewhere in `runs/`, so it goes last. It is what stops a run being
+           listed twice; the artifact row knows strictly more and always wins.
         """
         try:
             entries = list((self.runs_dir / SIDECAR_DIR_NAME).iterdir())
@@ -560,9 +573,9 @@ class RunIndex:
                 continue
             if mode is not None and mode_of(run_id) is not mode:
                 continue
-            if self.artifact_path(run_id) is not None:
-                continue
             if not entry.is_dir():
+                continue
+            if self.artifact_path(run_id) is not None:
                 continue
             found.append(run_id)
         return found

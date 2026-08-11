@@ -686,6 +686,19 @@ def test_the_reader_recovers_the_mode_from_the_id_the_launcher_minted(
 # The launcher introduces a second way to reach a partial row: a child that
 # dies before writing an artifact leaves a `meta.json` and nothing else. Each
 # case below is a state this launcher can genuinely produce.
+#
+# **"still LIST" means "`list()` must not 500", not "this run must appear as a
+# row"** — the preamble's own definition, and three of the tests below
+# originally asserted `list() == []` under it (`991dc85`, one of them carrying
+# the comment `# no artifact, so no row — and no crash`). They were consistent
+# with their names; a later reading of them as self-contradictory was wrong and
+# is corrected here.
+#
+# They were, however, **vacuous**: `_candidates` globbed `runs/*.json` and never
+# read the sidecar directory, so `== []` was true no matter what the launcher
+# had left behind. F5 made the sidecar directory a source of rows, which is
+# what gives these cases something to assert — `(row,) = _list_rows(runs)` is
+# strictly stronger than `== []` and still proves `list()` did not raise.
 
 def _list_ids(runs: Path) -> list[str]:
     from evalyn.ui.index import RunIndex
@@ -699,8 +712,10 @@ def _list_rows(runs: Path):
 
 def test_r4_46_a_child_that_never_started_still_lists(tmp_path, pack):
     """`failed_to_start` is a row, not a disappearance. The operator pressed
-    Launch and something has to say what came of it — before F5 was fixed this
-    run had no row at all and the click left no trace anywhere in the table.
+    Launch and something has to say what came of it — before F5 this run had no
+    row at all and the click left no trace anywhere in the table. Strengthened
+    from `== []`, which this file could not have failed before F5; see the
+    section preamble for why that assertion was vacuous rather than wrong.
     """
     runs = tmp_path / "runs"
     runs.mkdir()
@@ -761,14 +776,12 @@ def test_r4_46_an_events_file_with_no_artifact_still_lists(tmp_path, pack):
     made = launcher_spawning(INERT, runs)
     run_id = made.launch(request_for("gate"), pack=pack, pack_path=EXAMPLE_PACK)
     made.live.process.wait(timeout=60)
+    made.reap()                       # what the launcher does on every path
     (runs / f"{run_id}.events.jsonl").write_text(
         '{"seq": 1, "type": "run.started", "data": {}}\n', encoding="utf-8")
     (row,) = _list_rows(runs)
     assert row.run_id == run_id
-    # Nothing reaped this child, so no exit code was ever recorded — which
-    # `index.py` says outright is indistinguishable from a live run. The point
-    # here is the row, not the verdict on it.
-    assert row.status is RunStatus.running
+    assert row.status is RunStatus.interrupted
 
 
 #: The five fields `ProbeResult` requires (`engine/run.py:33-38`). Named here
@@ -1188,8 +1201,120 @@ async def test_a_live_run_is_in_the_runs_table_before_its_artifact_lands(
         reap_app(app)
 
 
-async def test_a_pending_run_does_not_claim_it_was_served_unscrubbed(
+async def test_a_child_that_exited_unreaped_is_a_phantom_running_row(
         tmp_path, asgi_client):
+    """**A recorded limitation, not a desired behaviour.**
+
+    Making a launched run visible in the table (F5) also made this visible: a
+    child that has exited but that nothing has reaped keeps `exit_code: null`
+    in `meta.json`, and `derive_status` documents outright that an unrecorded
+    exit code is indistinguishable from a live one. So the row reads `running`
+    and the control endpoint answers `202 accepted: true` for a process that no
+    longer exists — the T20-d(a) shape, surfacing one layer up.
+
+    **Why it is not fixed here.** Telling the two apart needs evidence that
+    does not exist: `meta.json` carries only `launched` and `exit_code`
+    (`ui/paths.py`), never a pid, and `RunIndex` holds no reference to the
+    launcher. Adding a pid plus a liveness probe means a schema change and
+    `os.kill`, which R4-11 forbids anywhere in this repository; a reaper or a
+    heartbeat is new infrastructure, which R4-27 forbids in a fix; and having
+    `list()` reap would make a `GET` write. Reporting these rows as
+    `interrupted` instead is not available either — it would relabel a
+    genuinely live run, which is the whole thing F5 exists to show, and for a
+    run left behind by a *previous* server `running` may be perfectly true:
+    `start_new_session=True` means the child outlives its parent, and
+    `launcher.py` already documents on-disk `running` as **advisory** for
+    exactly that reason.
+
+    Two runs, identical except for the reap, so it cannot go vacuous and the
+    cost of the missing step is the only thing that differs between them. They
+    have to be two: the phantom's 202 writes a control file, and with no
+    artifact that file is then the only evidence the run leaves — so the same
+    run could not afterwards demonstrate the honest arm.
+    """
+    app = cockpit(tmp_path, child=INERT)
+
+    def status_of(items, run_id):
+        return next(row["status"] for row in items if row["run_id"] == run_id)
+
+    async with asgi_client(app) as client:
+        unreaped = (await client.post("/api/runs",
+                                      json=launch_body())).json()["run_id"]
+        app.state.launcher.live.process.wait(timeout=60)     # dead, NOT reaped
+        # Neither `GET /api/runs` nor the control endpoint reaps, so nothing
+        # here ever records the exit code.
+        phantom = (await client.get("/api/runs")).json()["items"]
+        still_accepted = await client.post(f"/api/runs/{unreaped}/control",
+                                           json={"action": "cancel"})
+        app.state.launcher.reap()                # only to free the slot below
+
+        reaped = (await client.post("/api/runs",
+                                    json=launch_body())).json()["run_id"]
+        app.state.launcher.live.process.wait(timeout=60)
+        app.state.launcher.reap()                            # the missing step
+        honest = (await client.get("/api/runs")).json()["items"]
+        refused = await client.post(f"/api/runs/{reaped}/control",
+                                    json={"action": "cancel"})
+
+    assert status_of(phantom, unreaped) == "running", "the limitation"
+    assert still_accepted.status_code == 202, "202 for a process that is gone"
+    assert control_path(tmp_path / f"{unreaped}.json").exists(), \
+        "and an orphan control file with nothing alive to read it"
+
+    assert status_of(honest, reaped) == "interrupted", "once reaped, honest"
+    assert refused.status_code == 409
+    assert refused.json()["error"]["code"] == "busy"
+    assert not control_path(tmp_path / f"{reaped}.json").exists()
+
+
+async def test_the_pending_details_cancelled_flag_tracks_the_operators_click(
+        tmp_path, asgi_client):
+    """The flag the SPA reads during the seconds between Cancel and the
+    artifact — i.e. the whole on-stage cancel window, where `RunDetail.cancelled`
+    is the *only* record that exists, because there is no artifact yet to carry
+    `RunArtifact.cancelled`.
+
+    Both arms, before and after the click on the same run, so a flag wired to a
+    constant fails whichever constant it was wired to.
+    """
+    app = cockpit(tmp_path, child=INERT_SLEEPER)
+    async with asgi_client(app) as client:
+        run_id = (await client.post("/api/runs", json=launch_body())).json()["run_id"]
+        before = (await client.get(f"/api/runs/{run_id}")).json()
+        accepted = await client.post(f"/api/runs/{run_id}/control",
+                                     json={"action": "cancel"})
+        after = (await client.get(f"/api/runs/{run_id}")).json()
+    try:
+        assert not (tmp_path / f"{run_id}.json").exists(), "still pending, both times"
+        assert accepted.status_code == 202
+        assert before["cancelled"] is False
+        assert after["cancelled"] is True
+        assert after["status"] == "cancelled"
+    finally:
+        app.state.launcher.live.process.kill()
+        reap_app(app)
+
+
+async def test_a_pending_runs_pause_is_not_read_as_a_cancel(
+        tmp_path, asgi_client):
+    """The flag is cancel-specific: a paused run is still running, and a
+    cockpit that greyed it out as cancelled would be lying about a run that is
+    still spending (R4-12 — in-flight trials finish and keep billing)."""
+    app = cockpit(tmp_path, child=INERT_SLEEPER)
+    async with asgi_client(app) as client:
+        run_id = (await client.post("/api/runs", json=launch_body())).json()["run_id"]
+        await client.post(f"/api/runs/{run_id}/control", json={"action": "pause"})
+        detail = (await client.get(f"/api/runs/{run_id}")).json()
+    try:
+        assert detail["cancelled"] is False
+        assert detail["status"] == "paused"
+    finally:
+        app.state.launcher.live.process.kill()
+        reap_app(app)
+
+
+async def test_a_pending_run_does_not_claim_it_was_served_unscrubbed(
+        tmp_path, asgi_client, monkeypatch):
     """Wiring-pass F3. `GET /api/meta` says redaction is enabled and the header
     banner reads `REDACTION ON`, but the pending detail carried
     `"redacted": false` until the artifact landed — a truth claim about
@@ -1198,16 +1323,35 @@ async def test_a_pending_run_does_not_claim_it_was_served_unscrubbed(
     "unscrubbed".
 
     Asserted against `/api/meta` rather than against the literal `true`, so the
-    banner and the body cannot drift apart in either direction.
+    banner and the body cannot drift apart in either direction — and the second
+    arm is what makes that assertion mean something. With redaction reporting
+    *off*, a `redacted` field wired to a hardcoded `True` keeps claiming the
+    body was scrubbed while the banner says it was not, which is the same lie
+    pointing the other way. Both arms read the pair, never one of them.
     """
     app = cockpit(tmp_path, child=INERT_SLEEPER)
     async with asgi_client(app) as client:
         run_id = (await client.post("/api/runs", json=launch_body())).json()["run_id"]
         detail = (await client.get(f"/api/runs/{run_id}")).json()
         meta = (await client.get("/api/meta")).json()
+
+        # Same server, same run, with the one source both of them read moved
+        # underneath them. Patched on the module the routes resolve it from.
+        import evalyn.ui.server as server_module
+
+        class _RedactionOff(server_module.RedactionMeta):
+            enabled: bool = False
+
+        monkeypatch.setattr(server_module, "RedactionMeta", _RedactionOff)
+        off_detail = (await client.get(f"/api/runs/{run_id}")).json()
+        off_meta = (await client.get("/api/meta")).json()
     try:
         assert not (tmp_path / f"{run_id}.json").exists(), "still pending"
+        assert meta["redaction"]["enabled"] is True, "the shipped default"
         assert detail["redacted"] is meta["redaction"]["enabled"]
+
+        assert off_meta["redaction"]["enabled"] is False, "the patch took"
+        assert off_detail["redacted"] is off_meta["redaction"]["enabled"]
     finally:
         app.state.launcher.live.process.kill()
         reap_app(app)

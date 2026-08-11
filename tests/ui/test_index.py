@@ -439,6 +439,68 @@ def test_a_completed_run_is_not_relabelled_cancelled_by_a_stale_control_file():
         is m.RunStatus.gate_failed
 
 
+_COMPARE_OK = CompareArtifact(
+    pack_name="example", pack_hash="0" * 64, judge_model="mockllm/model",
+    created_at="2026-08-06T09:10:11+00:00", label_a="a", label_b="b",
+    source_a="runs/a.json", source_b="runs/b.json",
+    created_at_a="2026-08-06T08:00:00+00:00",
+    created_at_b="2026-08-06T08:30:00+00:00",
+    categories={}, probes=[], hard_metrics={}, excluded_pairs=0)
+_DISCOVER_OK = DiscoveryArtifact(
+    pack_name="example", pack_hash="0" * 64, agent_model="m", judge_model="m",
+    rubric_judge_model=None, created_at="2026-08-05T10:11:12+00:00", findings=[],
+    error_count=0, sessions_total=1, confirmed_count=0, live_spend_usd=0.0,
+    reconciled_spend_usd=0.0, budget_exhausted=False, partial=False, objectives=[],
+    log_path="logs/x", eval_status="success")
+
+
+@pytest.mark.parametrize("typed,mode,without", [
+    pytest.param(_COMPARE_OK, m.RunMode.compare, m.RunStatus.passed, id="compare"),
+    pytest.param(_DISCOVER_OK, m.RunMode.discover, m.RunStatus.passed, id="discover"),
+])
+def test_a_stale_cancel_still_relabels_compare_and_discover(typed, mode, without):
+    """**A recorded limitation, not a desired behaviour.**
+
+    `cancelled_by` prefers the artifact only where the artifact can answer,
+    and `RunArtifact` is the only one carrying a `cancelled` field. So for
+    these two modes a stale `{"action": "cancel"}` left inside the control
+    endpoint's residual window (`docs/JOURNAL.md`, `be9ab3a`) still rewrites a
+    completed run's status — exactly the T20-d(b) defect, surviving in the two
+    modes the fix could not reach.
+
+    Not fixed here on purpose: a cancelled `compare` writes **no** artifact
+    (`compare.py:250-256`), so the file is the only evidence it ever leaves,
+    and a cancelled `discover` writes `_build_artifact(aborted=True)`, which
+    would then read as `passed`/`invalid` — calling an operator's deliberate
+    stop `invalid` is a worse lie than the one being fixed. The honest fix is
+    a `cancelled` field on both artifacts, which is engine work.
+
+    **This test is written to fail the day that lands**, so the limitation
+    cannot be quietly resolved without the ledger being updated.
+
+    Two arms, so it cannot go vacuous: the same artifact must reach `without`
+    when the file is absent and `cancelled` when it is present. A version that
+    only asserted the second would also pass if the artifact stopped loading
+    at all, since `unreadable` also yields to a cancel.
+    """
+    loaded = _loaded(typed, run_id=GATE_ID, mode=mode)
+    assert loaded.typed is not None, "not the unreadable path"
+
+    clean = SidecarState(present=True, exit_code=0)
+    stale = SidecarState(present=True, control=m.ControlAction.cancel, exit_code=0)
+    assert derive_status(loaded, clean, None) is without
+    assert derive_status(loaded, stale, None) is m.RunStatus.cancelled
+
+
+def test_the_mode_that_can_answer_for_itself_is_exactly_the_one_with_the_field():
+    """The discriminator for the test above: it must be pinning a *gap*, not
+    describing every mode. If `gate` ever joined them the pair would agree and
+    neither test would be saying anything."""
+    assert hasattr(_gate_artifact(), "cancelled")
+    assert not hasattr(_COMPARE_OK, "cancelled")
+    assert not hasattr(_DISCOVER_OK, "cancelled")
+
+
 def test_a_stale_pause_file_still_does_not_relabel_a_finished_run():
     """The defect was cancel-specific and the fix must keep it that way — a
     `pause` orphan was verified to leave its run reading `gate_failed`."""
@@ -625,6 +687,29 @@ def test_a_sidecar_directory_that_is_not_a_run_id_is_not_a_row(tmp_path):
     (runs / SIDECAR_DIR_NAME / "not-a-run-id").mkdir(parents=True)
     (runs / SIDECAR_DIR_NAME / "README").write_text("junk")
     assert RunIndex(runs).list() == []
+
+
+def test_a_file_wearing_a_run_ids_name_is_not_a_launched_run(tmp_path):
+    """The launcher writes a **directory** per run, so a plain file that
+    happens to be named like one is not evidence that anything was launched.
+
+    It would otherwise become a row: `_sidecar` short-circuits on
+    `meta_dir.is_dir()` and returns a bare `SidecarState()`, whose defaults
+    (`present=False`, `launched=True`) `derive_status` reads as `interrupted`
+    — a run invented out of a file. The paired assertion is what keeps this
+    honest: the *same* name as a directory does list, so the test is pinning
+    the file/directory distinction and not merely a filter that rejects
+    everything.
+    """
+    runs = tmp_path / "runs"
+    rid = "20260807T180000000000-deadbeef-example"
+    (runs / SIDECAR_DIR_NAME).mkdir(parents=True)
+    (runs / SIDECAR_DIR_NAME / rid).write_text("not a directory")
+    assert RunIndex(runs).list() == []
+
+    (runs / SIDECAR_DIR_NAME / rid).unlink()
+    (runs / SIDECAR_DIR_NAME / rid).mkdir()
+    assert [row.run_id for row in RunIndex(runs).list()] == [rid]
 
 
 def test_a_runs_dir_this_cockpit_never_launched_into_reports_no_process_facts():
