@@ -91,7 +91,11 @@ export const META: MetaResponse = {
   // join it, do not send it back.
   runs_dir: "~/Drive/Projects/evalyn/runs",
   packs: ["~/Drive/Projects/evalyn/packs/example"],
-  allow_discover: true,
+  // `False` in `models.py` and only `evalyn ui --allow-discover` turns it on,
+  // so this is what a browser meets unless the operator chose otherwise. The
+  // `true` that stood here made the launch console's discover refusal — and
+  // every axes lookup behind it — unreachable against a default server.
+  allow_discover: false,
   redaction: {
     enabled: true,
     marker: "«redacted:<kind>»",
@@ -797,26 +801,46 @@ export const TRUST_NEVER_CALIBRATED: TrustReport = {
   threshold: null,
 };
 
+/**
+ * `"pack-" + sha256(name).hexdigest()[:8]`, exactly as `launcher.pack_id_for`
+ * mints it — `pack-50d858e0` for `example`, `pack-f21abfa0` for
+ * `twincore-injection`.
+ *
+ * It was `pack-0` here, which is the reading the *contract* allows ("an index
+ * into that allowlist") and the one the server deliberately refuses: a position
+ * is stable only while the command line is, so one added `--target` silently
+ * renumbers every pack and an id a browser still holds names a different pack
+ * than it did a minute ago. A mock that mints positional ids teaches every
+ * reader the weaker scheme.
+ */
+export const PACK_ID_EXAMPLE = "pack-50d858e0";
+
 export const PACKS: PackRow[] = [
   {
-    id: "pack-0",
+    id: PACK_ID_EXAMPLE,
     name: "example",
     path: "~/Drive/Projects/evalyn/packs/example",
-    version: "1.0.0",
+    // `TargetSpec` has no version field, so `pack_rows` sends `null` for every
+    // pack there is; inventing one from the directory name would be a number
+    // nobody set. The `"1.0.0"` that stood here meant `Launch.tsx`'s
+    // "unversioned" rendition had never once rendered.
+    version: null,
     probe_count: 2,
-    has_calibration: true,
+    // Read off disk (`(pack.root / "calibration.json").is_file()`), and neither
+    // `packs/example` nor `packs/twincore-injection` has one.
+    has_calibration: false,
   },
 ];
 
 export const VALIDATION_REPORT: ValidationReport = {
-  pack_id: "pack-0",
+  pack_id: PACK_ID_EXAMPLE,
   ok: true,
   errors: [],
   warnings: ["calibration is stale: pack hash changed since calibration"],
 };
 
 export const PACK_AXES: PackAxes = {
-  pack_id: "pack-0",
+  pack_id: PACK_ID_EXAMPLE,
   objectives: ["hallucination", "pii"],
   personas: ["curious-recruiter", "persistent-journalist"],
   playbooks: ["escalating-specificity", "authority-escalation"],

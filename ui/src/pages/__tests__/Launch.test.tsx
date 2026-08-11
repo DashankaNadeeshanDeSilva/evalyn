@@ -66,6 +66,30 @@ function captureLaunch(): { body: Record<string, unknown> | null } {
   return captured;
 }
 
+/**
+ * A server started **with** `--allow-discover`.
+ *
+ * `MetaResponse.allow_discover` is `False` in `models.py` and the fixture now
+ * says so too, so a discover launch is a deliberate server configuration a test
+ * must state — exactly as the operator must state it on the command line. It
+ * used to be the fixture's default, which is why the refusal below was the only
+ * discover branch anyone had ever seen against a default server.
+ */
+function allowingDiscover() {
+  server.use(
+    http.get("/api/meta", () =>
+      HttpResponse.json({ ...META, allow_discover: true }),
+    ),
+  );
+}
+
+/** Waits for `/api/meta` to arrive, since unknown is not permission. */
+async function selectDiscover(user: ReturnType<typeof userEvent.setup>) {
+  const discover = screen.getByRole("button", { name: /^discover/ });
+  await waitFor(() => expect(discover).toBeEnabled());
+  await user.click(discover);
+}
+
 async function armGate(user: ReturnType<typeof userEvent.setup>) {
   const pack = PACKS[0]!;
   await user.click(await screen.findByTestId("pack-key"));
@@ -90,6 +114,24 @@ describe("the launch console", () => {
     // path here would mean something reconstructed it client-side.
     expect(key.textContent).toContain(PACKS[0]!.path);
     expect(key.textContent).not.toMatch(/\/(Users|home)\//);
+  });
+
+  /**
+   * The branch that had never rendered.
+   *
+   * `TargetSpec` carries no version field, so `pack_rows` sends `null` for
+   * every pack a real server can list — but the fixture said `"1.0.0"`, so the
+   * only rendition this row ever had was `v1.0.0`, a string no server has ever
+   * sent. The same fixture claimed a calibration record that neither shipped
+   * pack has.
+   */
+  it("states a pack with no version as unversioned rather than inventing one", async () => {
+    renderLaunch();
+
+    const key = await screen.findByTestId("pack-key");
+    expect(key.textContent).toContain("unversioned");
+    expect(key.textContent).not.toMatch(/v\d/);
+    expect(key.textContent).toContain("no calibration record");
   });
 
   it("refuses to arm until the pack's name is typed exactly", async () => {
@@ -132,10 +174,11 @@ describe("the launch console", () => {
 
   it("will not launch a discover run without a stated ceiling", async () => {
     const user = userEvent.setup();
+    allowingDiscover();
     renderLaunch();
 
     await armGate(user);
-    await user.click(screen.getByRole("button", { name: /^discover/ }));
+    await selectDiscover(user);
 
     expect(screen.getByTestId("safety-key")).toBeDisabled();
     expect(screen.getByTestId("launch-refusal").textContent).toContain(
@@ -146,10 +189,11 @@ describe("the launch console", () => {
   it("sends the ceiling the operator chose, and says the server clamps it down", async () => {
     const user = userEvent.setup();
     const captured = captureLaunch();
+    allowingDiscover();
     renderLaunch();
 
     const pack = await armGate(user);
-    await user.click(screen.getByRole("button", { name: /^discover/ }));
+    await selectDiscover(user);
     await user.type(screen.getByLabelText(/most this discover run may spend/), "1.5");
 
     await waitFor(() =>
@@ -183,6 +227,8 @@ describe("the launch console", () => {
   });
 
   it("refuses discover outright when the server was not started for it", async () => {
+    // Stated rather than inherited: this is the default a real server answers,
+    // and the test says which server it is talking to either way.
     server.use(
       http.get("/api/meta", () =>
         HttpResponse.json({ ...META, allow_discover: false }),
@@ -235,6 +281,7 @@ describe("the launch console", () => {
    */
   it("bounds its text fields with an edge that clears the 3:1 bar", async () => {
     const user = userEvent.setup();
+    allowingDiscover();
     renderLaunch();
 
     await armGate(user);
@@ -242,7 +289,7 @@ describe("the launch console", () => {
       "border-chassis-500",
     );
 
-    await user.click(screen.getByRole("button", { name: /^discover/ }));
+    await selectDiscover(user);
     expect(
       screen
         .getByLabelText(/most this discover run may spend/)
