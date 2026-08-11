@@ -2,11 +2,14 @@ import type { ReactElement, ReactNode } from "react";
 
 import type { EventName } from "../api/types";
 import { formatUsd } from "../format";
-import type { RunEventsState, RunPhase } from "../hooks/useRunEvents";
+import type {
+  FinishStatus,
+  RunEventsState,
+  RunPhase,
+} from "../hooks/useRunEvents";
 import {
   IconAlert,
   IconBarred,
-  IconCheck,
   IconLive,
   IconPause,
   IconQuery,
@@ -67,14 +70,38 @@ const PHASE_WORDS: Record<RunPhase, string> = {
 };
 
 /**
- * The mark for the phase. `finished` splits on the exit code, but **both
- * renditions say "finished"** — the verdict is the gate banner's job below, and
- * a cross up here would claim a gate failure for a run that exited 3 because
- * the operator cancelled it.
+ * The mark for the phase. **Every rendition of `finished` says "finished"** —
+ * the verdict is the gate banner's job below, and a cross up here would claim a
+ * gate failure for a run that was cancelled, or for a clean run whose gate
+ * simply went red.
+ *
+ * ## The window never draws the gate's check, and that is a surface rule
+ *
+ * `IconCheck` means one thing on this surface: **the gate held**. It is the
+ * banner's mark, in the pass colour, at the largest type on the run detail
+ * page — and the window sits directly above that banner, so in the demo case
+ * both are on screen at once: a run that completed cleanly whose gate went red.
+ * A check up here over a cross down there is one screen disagreeing with itself
+ * at projector distance, however defensible each mark is in its own file. The
+ * check was drawn here for one round and is refused now.
+ *
+ * So the terminal mark carries **valence, and nothing else**: the alarm for
+ * `status: "error"` — a run that did not finish what it started — and the
+ * unresolved mark for every other ending. It does not distinguish `"ok"` from a
+ * status the stream never sent, because that distinction is the outcome word
+ * below and a mark that drew it would be a second verdict on a screen that
+ * already has one.
+ *
+ * Before the wiring pass this read `exit_code === 0`, a key `run.finished` has
+ * never carried, so **every** finished run drew the alarm.
+ *
+ * No ink changes with any of this: the mark inherits the one measured foreground
+ * of the window's phase line, so the hand-measured inventory the contrast guard
+ * cannot see (see the header above) is untouched.
  */
 function phaseMark(
   phase: RunPhase,
-  exitCode: number | null,
+  finishStatus: FinishStatus | null,
 ): (props: { className?: string }) => ReactElement {
   switch (phase) {
     case "connecting":
@@ -86,9 +113,17 @@ function phaseMark(
     case "cancelling":
       return IconBarred;
     case "finished":
-      return exitCode === 0 ? IconCheck : IconAlert;
+      return finishStatus === "error" ? IconAlert : IconQuery;
   }
 }
+
+/** What the run's own ending was, in words rather than a code. */
+const OUTCOME_WORDS: Record<FinishStatus, string> = {
+  // Not "passed": the gate verdict is computed from the artifact afterwards and
+  // is stated, in its own words and its own colour, in the banner below.
+  ok: "completed",
+  error: "did not complete",
+};
 
 /** What the last frame was, in the surface's own words rather than its wire name. */
 const ACTIVITY_WORDS: Partial<Record<EventName, string>> = {
@@ -110,7 +145,13 @@ function Reading({
   children,
 }: {
   label: string;
-  /** Set only where a test must count reporters rather than read a figure. */
+  /**
+   * Set only where a test must address this reading itself rather than read a
+   * figure out of the window's text: `live-spend` so the surface's "exactly one
+   * spend reporter" invariant can be *counted* (it has a rendition with no
+   * numeral at all), and `live-outcome` because its value is a word, so
+   * scanning the window's prose for it would also match the label above it.
+   */
   testId?: string;
   children: ReactNode;
 }) {
@@ -160,7 +201,7 @@ export function LiveBanner({
   /** The controls. Passed in so the rationed orange lives in its own file. */
   children?: ReactNode;
 }) {
-  const Mark = phaseMark(state.phase, state.exitCode);
+  const Mark = phaseMark(state.phase, state.finishStatus);
   const activity = state.activity;
   const stalled = state.connection === "closed" && state.phase !== "finished";
 
@@ -248,13 +289,20 @@ export function LiveBanner({
         </Reading>
 
         {state.phase === "finished" ? (
-          <Reading label="Exit code">
-            {state.exitCode === null ? (
+          /*
+           * **Not the exit code, and deliberately so.** `run.finished` carries
+           * `status`; the exit code is the CLI's, decided from the artifact
+           * after the run ends. This window used to promise one anyway and
+           * printed "not reported" for every run ever made, forty pixels above
+           * a gate block printing the real figure — two contradictory
+           * statements one screenful apart. The exit code is stated exactly
+           * once on this page now, by the component that can actually read it.
+           */
+          <Reading label="Run outcome" testId="live-outcome">
+            {state.finishStatus === null ? (
               <Unreported what="not reported" />
             ) : (
-              <span data-numeric="exit_code" className="tabular-nums">
-                {state.exitCode}
-              </span>
+              OUTCOME_WORDS[state.finishStatus]
             )}
           </Reading>
         ) : null}

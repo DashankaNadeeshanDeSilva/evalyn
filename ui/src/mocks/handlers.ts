@@ -26,10 +26,10 @@ import {
   CURSOR_SEPARATOR,
   isRunId,
   parseCursor,
+  type ApiError,
   type ControlResponse,
   type DiscoveryListPage,
   type ErrorCode,
-  type ErrorEnvelope,
   type FindingRow,
   type LaunchResponse,
   type PackAxes,
@@ -51,6 +51,7 @@ import {
   PACKS,
   RUN_DETAILS,
   RUN_ID_GATE,
+  RUN_ID_RUNNING,
   RUN_SUMMARIES,
   SCOREBOARD,
   TREND_SERIES,
@@ -71,8 +72,26 @@ const STATUS_FOR: Record<ErrorCode, number> = {
   busy: 409,
 };
 
-function fail(code: ErrorCode, message: string, detail: string | null = null) {
-  const body: ErrorEnvelope = { error: { code, message, detail } };
+/**
+ * The envelope **as it arrives**, which is not quite as `ApiError` declares it.
+ *
+ * `detail` is `str | None = None` server-side and every envelope is rendered
+ * with `model_dump(mode="json", exclude_none=True)` (`ui/redact.py`), so a
+ * refusal carrying no extra context omits the key entirely. `ApiError` declares
+ * it required-and-nullable because `models.py` does, and that model is frozen
+ * in six places — so the difference is stated here, where the wire is
+ * reproduced, rather than papered over by a mock that sends `null`.
+ *
+ * That paper is exactly what shipped `(undefined)` on the launch console: this
+ * handler defaulted `detail` to `null`, the page guarded with `=== null`, and
+ * no test could see the gap because the mock never produced it.
+ */
+type WireError = Omit<ApiError, "detail"> & { detail?: string };
+
+function fail(code: ErrorCode, message: string, detail?: string) {
+  const body: { error: WireError } = {
+    error: { code, message, ...(detail === undefined ? {} : { detail }) },
+  };
   return HttpResponse.json(body, { status: STATUS_FOR[code] });
 }
 
@@ -233,8 +252,35 @@ export const handlers = [
       ["turn.received", { probe_id: "grounding-work-history", epoch: 1, turn: 1 }],
       ["probe.scored", { probe_id: "grounding-work-history", pass_k: 1.0 }],
       ["spend.updated", { judge_usd: 0.01377 }],
-      ["artifact.written", { run_id: RUN_ID_GATE }],
-      ["run.finished", { run_id: RUN_ID_GATE, exit_code: 1 }],
+      // `path`, not `run_id`: `engine/run.py` emits `sink.emit("artifact.written",
+      // path=str(written))`. Nothing in the SPA reads the body — the event's
+      // arrival is the whole signal — but a mock that carries the wrong key is
+      // how the next reader learns the wrong contract.
+      [
+        "artifact.written",
+        { path: `~/Drive/Projects/evalyn/runs/${RUN_ID_GATE}.json` },
+      ],
+      /*
+       * The engine's own terminal frame, field for field (`engine/run.py`).
+       *
+       * This used to read `{run_id, exit_code: 1}`, and that invention is why
+       * the live window shipped promising an exit code: **no emit site has ever
+       * written one**. The exit code is the CLI's, decided from the artifact
+       * after the run ends, and it reaches the browser through
+       * `GET /api/runs/{id}/gate`. `status` is the run's own ending — `"ok"`
+       * here means this scripted run completed, not that its gate passed; the
+       * fixture's gate verdict exits 1.
+       */
+      [
+        "run.finished",
+        {
+          mode: "gate",
+          status: "ok",
+          judge_usd: 0.01377,
+          probes: 1,
+          total_unsure_trials: 0,
+        },
+      ],
     ];
     const encoder = new TextEncoder();
     const stream = new ReadableStream({
@@ -280,7 +326,20 @@ export const handlers = [
     if (body["mode"] === "discover" && !META.allow_discover) {
       return fail("launch_refused", "discover requires --allow-discover");
     }
-    const launched: LaunchResponse = { run_id: RUN_ID_GATE };
+    /*
+     * A **pending** run, which is the whole point of the 202.
+     *
+     * The id is minted before the child process starts, so what comes back
+     * names a run with no artifact on disk and a sidecar status of `running` —
+     * `RUN_DETAILS[RUN_ID_RUNNING]` is exactly that run.
+     *
+     * This used to return the already-finished `RUN_ID_GATE`. The consequence
+     * was not a wrong figure but a **missing screen**: `LiveRunPanel` latches
+     * `watched` from the status it arrives on, so every launch in every test
+     * landed on a terminal run and the one inset window never mounted once. The
+     * live path had no coverage at all, and nothing said so.
+     */
+    const launched: LaunchResponse = { run_id: RUN_ID_RUNNING };
     return HttpResponse.json(launched, { status: 202 });
   }),
 

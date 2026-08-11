@@ -57,8 +57,10 @@ import {
  * artifact is not written until the run ends — so `live` suppresses the verdict
  * query entirely rather than asking a question whose only honest answers are a
  * 404 or a verdict computed from a half-written file. The probe table below
- * stays, because a running gate's `probes[]` is empty and the table already
- * says so in words.
+ * stays and is told the same thing, because a running gate's `probes[]` is
+ * empty for a reason the table cannot infer: "the artifact records no rows" and
+ * "there is no artifact yet" are different facts, and the browser read the
+ * first one under a run that was still going.
  */
 
 /**
@@ -347,6 +349,10 @@ export function GateRunDetail({
       <ScenarioTable
         probes={run.probes}
         capabilities={run.capabilities}
+        /* The same value the verdict query is suppressed on: an empty table
+           means "not written yet" while this holds, and "the artifact says so"
+           the moment it does not. */
+        live={live}
         selected={selected}
         allSelected={allProbeId}
         onSelect={(selection) => {

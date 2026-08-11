@@ -36,7 +36,7 @@ import { LiveBanner } from "./LiveBanner";
  * - **`watched`** — did this page ever see one? Latched at mount, because the
  *   surface brief's window appears "when something is actually running **or has
  *   just finished**". Re-reading it would make the window vanish in the very
- *   frame the run ended, taking the exit code with it.
+ *   frame the run ended, taking the run's outcome with it.
  *
  * The first version had `live` latched here and recomputed on the page. The
  * moment a run finished, the refetch flipped the page's copy to `false` while
@@ -112,8 +112,8 @@ export function LiveRunPanel({
    * see one". Only `watched` may decide whether the window is on screen,
    * because the surface brief's window appears "when something is actually
    * running **or has just finished**" — re-reading `live` here would make the
-   * window vanish in the very frame the run ended, taking the exit code with
-   * it. Nothing else on the surface answers this question, so it cannot
+   * window vanish in the very frame the run ended, taking the run's own
+   * outcome with it. Nothing else on the surface answers this question, so it cannot
    * diverge from anything the way the old latch did.
    */
   const [watched] = useState(() => isLive(status));

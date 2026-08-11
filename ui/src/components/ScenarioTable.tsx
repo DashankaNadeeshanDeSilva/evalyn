@@ -306,6 +306,7 @@ export function ScenarioTable({
   allSelected,
   onSelect,
   onSelectAll,
+  live = false,
 }: {
   probes: readonly ProbeRow[];
   capabilities: Capabilities;
@@ -313,9 +314,30 @@ export function ScenarioTable({
   allSelected: string | null;
   onSelect: (selection: TrialSelection) => void;
   onSelectAll: (probeId: string) => void;
+  /**
+   * Is a process still attached? Then there is **no artifact yet**, and the
+   * empty-artifact sentence below would be a claim about a file that does not
+   * exist. Same `live` the page hands to `GateRunDetail`, so the two cannot
+   * disagree about which run is on the air.
+   */
+  live?: boolean;
 }) {
   if (probes.length === 0) {
-    return (
+    /*
+     * Two different facts, and saying the first when the second is true is how
+     * a running run ended up reading "This artifact records no probe rows" one
+     * line under "the artifact … is written when the run ends" — true, and
+     * read by an operator as "this run found nothing".
+     */
+    return live ? (
+      <p
+        data-testid="scenario-pending"
+        className="engrave-b px-4 py-6 text-readout text-chassis-600 sm:px-6"
+      >
+        No probe rows yet — this table reads the run's artifact, and the
+        artifact is written when the run ends.
+      </p>
+    ) : (
       <p
         data-testid="scenario-empty"
         className="engrave-b px-4 py-6 text-readout text-chassis-600 sm:px-6"

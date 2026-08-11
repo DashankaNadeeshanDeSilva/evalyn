@@ -1,8 +1,10 @@
 import { render, screen, within } from "@testing-library/react";
+import type { ReactElement } from "react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 
 import { ControlButtons } from "../ControlButtons";
+import { IconAlert, IconCheck, IconQuery } from "../InstrumentIcon";
 import { LiveBanner } from "../LiveBanner";
 import {
   initialRunEventsState,
@@ -25,6 +27,27 @@ import {
 
 function stateWith(patch: Partial<RunEventsState>): RunEventsState {
   return { ...initialRunEventsState, ...patch };
+}
+
+/**
+ * The shapes a mark is drawn from, joined — the family shares one viewBox,
+ * stroke and colour, and carries no identity attribute, so the geometry is the
+ * only thing that tells one glyph from another.
+ */
+function shapesOf(root: Element | null): string {
+  if (root === null) return "";
+  const svg = root.tagName.toLowerCase() === "svg" ? root : root.querySelector("svg");
+  return [...(svg?.querySelectorAll("path, circle") ?? [])]
+    .map((node) => node.getAttribute("d") ?? node.outerHTML)
+    .join("|");
+}
+
+/** The same, for a mark rendered on its own, so one can be named as a reference. */
+function shapesOfElement(element: ReactElement): string {
+  const view = render(<div data-testid="mark-reference">{element}</div>);
+  const shapes = shapesOf(screen.getByTestId("mark-reference"));
+  view.unmount();
+  return shapes;
 }
 
 describe("the live readout window", () => {
@@ -89,21 +112,99 @@ describe("the live readout window", () => {
     }
   });
 
-  it("shows the exit code only once there is one", () => {
+  /**
+   * The wiring pass's demo bug, pinned.
+   *
+   * `run.finished` carries `status`, never `exit_code` — the exit code is the
+   * CLI's, decided after the artifact is written. The window read one anyway,
+   * so a clean run rendered "EXIT CODE not reported" forty pixels above a gate
+   * block rendering "EXIT CODE 1": two contradictory statements, one screenful
+   * apart, on the projector.
+   */
+  it("reports the outcome the stream carries, and never an exit code it does not", () => {
     const view = render(<LiveBanner state={stateWith({ phase: "running" })} />);
-    expect(screen.getByTestId("live-window").textContent).not.toContain(
-      "Exit code",
-    );
+    // Nothing has ended, so there is no outcome to state.
+    expect(screen.queryByTestId("live-outcome")).toBeNull();
     view.unmount();
 
     render(
-      <LiveBanner state={stateWith({ phase: "finished", exitCode: 3 })} />,
+      <LiveBanner
+        state={stateWith({ phase: "finished", finishStatus: "ok" })}
+      />,
     );
     const window = screen.getByTestId("live-window");
-    expect(window.textContent).toContain("Exit code");
-    expect(window.querySelector('[data-numeric="exit_code"]')?.textContent).toBe(
-      "3",
+    expect(screen.getByTestId("live-outcome").textContent).toContain(
+      "completed",
     );
+    // The exit code is not this window's to report, in any rendition.
+    expect(window.textContent?.toLowerCase()).not.toContain("exit code");
+    // And a run that told us how it ended is not an unreported anything. (The
+    // spend reading's own "not reported yet" is a different, honest, absence.)
+    expect(screen.getByTestId("live-outcome").textContent).not.toContain(
+      "not reported",
+    );
+  });
+
+  it("says a run that did not complete did not complete, and says nothing when the stream did not say", () => {
+    const errored = render(
+      <LiveBanner
+        state={stateWith({ phase: "finished", finishStatus: "error" })}
+      />,
+    );
+    expect(screen.getByTestId("live-outcome").textContent).toContain(
+      "did not complete",
+    );
+    errored.unmount();
+
+    render(
+      <LiveBanner
+        state={stateWith({ phase: "finished", finishStatus: null })}
+      />,
+    );
+    // Absent is unreported, never "failed": a status the stream never sent is
+    // not a run that went wrong.
+    expect(screen.getByTestId("live-outcome").textContent).toContain(
+      "not reported",
+    );
+  });
+
+  /**
+   * The alarm was the visible half of the original bug: with no exit code on
+   * the wire, `exitCode === 0` was false for every run that ever finished, so
+   * **every** finished run drew the alarm glyph.
+   *
+   * The mark that replaced it carries **valence and nothing else** — the alarm
+   * for a run that did not complete, the unresolved mark for every other
+   * ending. It deliberately does not distinguish `"ok"` from an unreported
+   * status: that distinction is the outcome *word* below, and a mark that drew
+   * it would be a second verdict on a screen that already has one. Marks are
+   * compared by the shapes they are drawn from, since the family carries no
+   * identity attribute.
+   */
+  it("marks a run that did not complete with the alarm, and every other ending neutrally", () => {
+    const alarm = shapesOfElement(<IconAlert />);
+    const unresolved = shapesOfElement(<IconQuery />);
+    expect(alarm).not.toBe(unresolved);
+
+    for (const [status, expected] of [
+      ["ok", unresolved],
+      [null, unresolved],
+      ["error", alarm],
+    ] as const) {
+      const view = render(
+        <LiveBanner
+          state={stateWith({ phase: "finished", finishStatus: status })}
+        />,
+      );
+      expect(
+        shapesOf(screen.getByTestId("live-phase").querySelector("svg")),
+        `a run that finished with status ${String(status)} carries the wrong mark`,
+      ).toBe(expected);
+      // Every rendition still says "finished": the verdict is the gate banner's
+      // job, and a cross here would claim a gate failure for a cancelled run.
+      expect(screen.getByTestId("live-phase").textContent).toContain("finished");
+      view.unmount();
+    }
   });
 
   it("says frames were lost rather than reporting a thinner run", () => {
@@ -178,9 +279,9 @@ describe("the live readout window", () => {
  * The guard the contrast test cannot be (ruling R4-24), applied to **every
  * state the window can actually be in**.
  *
- * The first version of this rendered one state — `running`, no gap, no exit
- * code, resting controls — and scanned `text-` only. Review reproduced the
- * consequence: a `<Flatline>` inserted into the **exit-code** branch left the
+ * The first version of this rendered one state — `running`, no gap, no
+ * outcome, resting controls — and scanned `text-` only. Review reproduced the
+ * consequence: a `<Flatline>` inserted into the **terminal** branch left the
  * whole suite green, because that branch renders only when a run has finished.
  * A control that fires in one of eleven states is not a control.
  *
@@ -255,10 +356,17 @@ const WINDOW_STATES: [string, RunEventsState][] = [
   ["running with no spend reported", stateWith({ phase: "running" })],
   ["paused", stateWith({ phase: "paused", judgeUsd: 0.5 })],
   ["cancelling", stateWith({ phase: "cancelling" })],
-  ["finished with an exit code", stateWith({ phase: "finished", exitCode: 1 })],
   [
-    "finished with no exit code",
-    stateWith({ phase: "finished", exitCode: null, connection: "closed" }),
+    "finished, completed",
+    stateWith({ phase: "finished", finishStatus: "ok" }),
+  ],
+  [
+    "finished, did not complete",
+    stateWith({ phase: "finished", finishStatus: "error" }),
+  ],
+  [
+    "finished with no status reported",
+    stateWith({ phase: "finished", finishStatus: null, connection: "closed" }),
   ],
   [
     "reconnecting after a gap",
@@ -273,6 +381,38 @@ const WINDOW_STATES: [string, RunEventsState][] = [
     stateWith({ phase: "running", connection: "closed" }),
   ],
 ];
+
+/**
+ * One glyph, one meaning, across the **whole surface** — not merely within one
+ * component, which is where the first version of this reasoned.
+ *
+ * `IconCheck` is the gate banner's "gate passed" mark, in the pass colour, at
+ * the largest type on the run detail page. The live window sits directly above
+ * that banner, and in the demo case the two are on screen together: a run that
+ * completed cleanly whose gate went red. A check up here over a cross down
+ * there is one screen disagreeing with itself at projector distance, whatever
+ * the two marks each mean in their own file.
+ *
+ * So the window renders the check in **no** state it can be in. It is an
+ * allowlist-style check over every state the ink guard already enumerates,
+ * because the branch that draws a mark for a finished run is one of eleven and
+ * a spot check would not reach it.
+ */
+describe("the gate's check mark belongs to the gate banner alone", () => {
+  it.each(WINDOW_STATES)("the window draws no check, %s", (name, state) => {
+    const check = shapesOfElement(<IconCheck />);
+    render(<LiveBanner state={state} />);
+
+    const drawn = [
+      ...screen.getByTestId("live-window").querySelectorAll("svg"),
+    ].map((svg) => shapesOf(svg));
+    expect(drawn.length, `${name}: the window drew no mark at all`).toBeGreaterThan(0);
+    expect(
+      drawn,
+      `${name}: this window drew the gate's own pass mark, which sits 40px below it`,
+    ).not.toContain(check);
+  });
+});
 
 type ControlProps = Parameters<typeof ControlButtons>[0];
 

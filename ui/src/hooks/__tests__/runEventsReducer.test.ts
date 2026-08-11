@@ -50,11 +50,17 @@ function applyAll(
 }
 
 /**
- * A short gate run, in the shape the mock SSE handler emits it.
+ * A short gate run, in the shape the **engine actually emits it**.
  *
  * Deliberately not imported from the mocks: the fold's contract is the frame,
  * not the fixture, and a test that reads its own expectations out of the thing
  * under test proves nothing.
+ *
+ * The terminal frame is the wiring pass's correction. `engine/run.py` emits
+ * `run.finished` with `mode`, `status`, `judge_usd`, `probes` and
+ * `total_unsure_trials` — and **no `exit_code`**, because the exit code is the
+ * CLI's, decided after the artifact is written. The mock invented one, so the
+ * fold read one, so the window promised one it could never be given.
  */
 const SCRIPT: readonly RunEvent[] = [
   frame(1, "run.started", { run_id: "r", mode: "gate", pack: "example" }),
@@ -68,7 +74,13 @@ const SCRIPT: readonly RunEvent[] = [
   frame(5, "probe.scored", { probe_id: "grounding-work-history", pass_k: 1.0 }),
   frame(6, "spend.updated", { judge_usd: 0.01377 }),
   frame(7, "artifact.written", { run_id: "r" }),
-  frame(8, "run.finished", { run_id: "r", exit_code: 1 }),
+  frame(8, "run.finished", {
+    mode: "gate",
+    status: "ok",
+    judge_usd: 0.01377,
+    probes: 4,
+    total_unsure_trials: 2,
+  }),
 ];
 
 describe("runEventsReducer", () => {
@@ -113,14 +125,55 @@ describe("runEventsReducer", () => {
     expect(replayed.judgeUsd).toBeCloseTo(0.01377, 5);
   });
 
-  it("sets a terminal phase and records the exit code on run.finished", () => {
+  it("sets a terminal phase and records the finish status on run.finished", () => {
     const state = applyAll(initialRunEventsState, SCRIPT);
 
     expect(state.phase).toBe("finished");
-    expect(state.exitCode).toBe(1);
+    // The only terminal signal the stream carries. `"ok"` means the run itself
+    // completed — it is NOT the gate verdict, which is computed from the
+    // artifact afterwards and reported by the gate banner.
+    expect(state.finishStatus).toBe("ok");
     // Terminal means the stream is done: the hook closes it rather than
     // letting the browser reconnect into an endless replay of the same run.
     expect(state.connection).toBe("closed");
+  });
+
+  /**
+   * The half of the fix that stops the alarm crying wolf.
+   *
+   * A run that blew up emits `status: "error"` with an `error` string; a run
+   * that completed emits `status: "ok"`. Anything else — including the absent
+   * field the fold used to read as "no exit code" — is unreported rather than a
+   * failure, because a finished run whose status went missing is not a run that
+   * went wrong.
+   */
+  it("reads only the two statuses the engine emits, and never invents one", () => {
+    const errored = applyAll(initialRunEventsState, [
+      frame(1, "run.finished", {
+        mode: "gate",
+        status: "error",
+        error: "BudgetExceeded: judge spend $2.4000 exceeded max_usd_per_run $2.00",
+        judge_usd: 2.4,
+      }),
+    ]);
+    expect(errored.finishStatus).toBe("error");
+
+    for (const payload of [
+      // The shape the mock invented, now that nothing reads it.
+      { run_id: "r", exit_code: 1 },
+      {},
+      { status: "OK" },
+      { status: 0 },
+    ]) {
+      const state = applyAll(initialRunEventsState, [
+        frame(1, "run.finished", payload),
+      ]);
+      expect(state.phase).toBe("finished");
+      expect(
+        state.finishStatus,
+        `${JSON.stringify(payload)} is not a status this fold may believe`,
+      ).toBeNull();
+    }
   });
 
   it("will not put a finished run back on the air", () => {

@@ -18,6 +18,7 @@ import type {
 import { MOCK_PAGE_SIZE } from "../handlers";
 import {
   FINDING_ROWS,
+  PACK_ID_EXAMPLE,
   PACKS,
   RUN_ID_GATE,
   RUN_ID_LEGACY,
@@ -47,6 +48,154 @@ describe("/api/meta", () => {
     expect(meta.runs_dir).not.toMatch(/^\/(Users|home)\//);
     expect(meta.redaction.enabled).toBe(true);
     expect(meta.redaction.reveal_required).toBe(true);
+  });
+});
+
+/**
+ * The fixtures the wiring pass caught lying.
+ *
+ * These are not assertions about MSW either: each one is a value the SPA
+ * branches on, pinned to what a **real** `evalyn ui` returns. A mock that
+ * disagrees does not merely fail to catch a bug — it makes whole branches of
+ * the surface unreachable, so no test and no human ever sees them.
+ */
+describe("the fixtures answer what a real server answers", () => {
+  /** `launcher.pack_id_for`: `"pack-" + sha256(name).hexdigest()[:8]`. */
+  async function packIdFor(name: string): Promise<string> {
+    const digest = await crypto.subtle.digest(
+      "SHA-256",
+      new TextEncoder().encode(name),
+    );
+    return `pack-${[...new Uint8Array(digest)]
+      .map((byte) => byte.toString(16).padStart(2, "0"))
+      .join("")
+      .slice(0, 8)}`;
+  }
+
+  /**
+   * `pack-0` is a *position*, and the real server deliberately refuses to mint
+   * one: a position is stable only while the command line is, so adding one
+   * `--target` silently renumbers every pack and an id a browser still holds
+   * then names a different pack (`launcher.pack_id_for`). The digest is stable
+   * across restart, reorder, cwd change and moving the pack.
+   */
+  it("names a pack by a digest of its name, never by its position in the allowlist", async () => {
+    const body = (await (await get("/api/packs")).json()) as PackListPage;
+    expect(body.items.length).toBeGreaterThan(0);
+    for (const pack of body.items) {
+      expect(pack.id).toMatch(/^pack-[0-9a-f]{8}$/);
+      expect(pack.id).toBe(await packIdFor(pack.name));
+    }
+  });
+
+  /**
+   * Both wrong values made a real branch unreachable. `version: "1.0.0"` meant
+   * `Launch.tsx`'s "unversioned" rendition had **never once rendered**, and
+   * `TargetSpec` has no version field at all — the server sends `null` for
+   * every pack there is. `has_calibration: true` said the opposite of what the
+   * shipped packs answer: `pack_rows` reads `calibration.json` off disk, and
+   * neither `packs/example` nor `packs/twincore-injection` has one.
+   */
+  it("reports a pack with no version and no calibration record, as both shipped packs are", async () => {
+    const body = (await (await get("/api/packs")).json()) as PackListPage;
+    for (const pack of body.items) {
+      expect(pack.version).toBeNull();
+      expect(pack.has_calibration).toBe(false);
+    }
+  });
+
+  /**
+   * `MetaResponse.allow_discover` is `False` by default in `models.py` and only
+   * `evalyn ui --allow-discover` turns it on. The fixture said `true`, which
+   * made the launch console's discover refusal — and every axes lookup behind
+   * it — unreachable against a default server.
+   */
+  it("describes a server that was not started with --allow-discover", async () => {
+    const meta = (await (await get("/api/meta")).json()) as MetaResponse;
+    expect(meta.allow_discover).toBe(false);
+  });
+
+  /**
+   * The scripted SSE run, parsed back out of the stream.
+   *
+   * Its only reader until now was the route-coverage list at the bottom of this
+   * file, which asserts `status < 400` and nothing else — so **every payload in
+   * the script could be reverted to its invented shape with the whole suite
+   * green**. That is the exact defect class this wave exists to close: the
+   * frames a browser folds are a contract, and a contract nothing asserts is a
+   * comment.
+   */
+  async function eventFrames(
+    runId: string,
+  ): Promise<{ name: string; data: Record<string, unknown> }[]> {
+    const text = await (await get(`/api/runs/${runId}/events`)).text();
+    return text
+      .split("\n\n")
+      .filter((block) => block.trim() !== "")
+      .map((block) => {
+        const lines = block.split("\n");
+        const event = lines.find((line) => line.startsWith("event: "));
+        const data = lines.find((line) => line.startsWith("data: "));
+        expect(event, `a frame with no event name: ${block}`).toBeDefined();
+        expect(data, `a frame with no data: ${block}`).toBeDefined();
+        return {
+          name: event!.slice("event: ".length),
+          data: JSON.parse(data!.slice("data: ".length)) as Record<
+            string,
+            unknown
+          >,
+        };
+      });
+  }
+
+  /**
+   * `engine/run.py` emits `run.finished` with `mode`, `status`, `judge_usd`,
+   * `probes` and `total_unsure_trials` — and **no `exit_code`**; the exit code
+   * is the CLI's, decided from the artifact after the run ends. The invented
+   * `{run_id, exit_code}` here is what made the live window promise one, and
+   * print "EXIT CODE not reported" above a gate block printing the real figure.
+   */
+  it("ends its scripted run with the engine's own run.finished payload, carrying a status and no exit code", async () => {
+    const finished = (await eventFrames(RUN_ID_GATE)).find(
+      (frame) => frame.name === "run.finished",
+    );
+    expect(finished, "the scripted run never finishes").toBeDefined();
+    expect(Object.keys(finished!.data)).not.toContain("exit_code");
+    // `"ok"` is the *run's* ending, never the gate's: this scripted run
+    // completes, and the gate fixture it belongs to exits 1.
+    expect(["ok", "error"]).toContain(finished!.data["status"]);
+  });
+
+  /** `sink.emit("artifact.written", path=str(written))` — the key is `path`. */
+  it("emits the artifact's path on artifact.written, the key the engine writes", async () => {
+    const written = (await eventFrames(RUN_ID_GATE)).find(
+      (frame) => frame.name === "artifact.written",
+    );
+    expect(written, "the scripted run writes no artifact").toBeDefined();
+    expect(typeof written!.data["path"]).toBe("string");
+    expect(Object.keys(written!.data)).not.toContain("run_id");
+  });
+
+  /**
+   * `exclude_none=True` (`ui/redact.py`) means a refusal with no extra context
+   * **omits** `detail` rather than sending null. A mock that sends null is
+   * strictly more forgiving than the server, and it is what let the launch
+   * console ship a `=== null` guard that printed "(undefined)" for every real
+   * refusal.
+   */
+  it("omits the detail key entirely when a refusal carries none, and sends it when it does", async () => {
+    const bare = (await (await get("/api/runs/not-a-run-id")).json()) as {
+      error: Record<string, unknown>;
+    };
+    expect(bare.error["message"]).toBeTruthy();
+    expect(Object.keys(bare.error)).not.toContain("detail");
+
+    // The other half, so this cannot be satisfied by dropping `detail` always:
+    // a refusal that HAS extra context still carries it.
+    const explained = (await (await get("/api/runs?before=nonsense")).json()) as {
+      error: Record<string, unknown>;
+    };
+    expect(explained.error["detail"]).toContain(CURSOR_SEPARATOR);
   });
 });
 
@@ -220,14 +369,16 @@ describe("the list endpoints are envelopes, never bare arrays", () => {
 describe("packs and the write-side acknowledgements", () => {
   it("echoes the pack_id back on validate, so a response is attributable", async () => {
     const body = (await (
-      await get("/api/packs/pack-0/validate", { method: "POST" })
+      await get(`/api/packs/${PACK_ID_EXAMPLE}/validate`, { method: "POST" })
     ).json()) as ValidationReport;
-    expect(body.pack_id).toBe("pack-0");
+    expect(body.pack_id).toBe(PACK_ID_EXAMPLE);
     expect(body.ok).toBe(true);
   });
 
   it("reports a budget ceiling that is a number, never null", async () => {
-    const body = (await (await get("/api/packs/pack-0/axes")).json()) as PackAxes;
+    const body = (await (
+      await get(`/api/packs/${PACK_ID_EXAMPLE}/axes`)
+    ).json()) as PackAxes;
     expect(typeof body.max_usd_per_run).toBe("number");
     expect(body.objectives.length).toBeGreaterThan(0);
   });
@@ -236,12 +387,28 @@ describe("packs and the write-side acknowledgements", () => {
     const res = await get("/api/runs", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ mode: "gate", pack_id: "pack-0", confirm: "example" }),
+      body: JSON.stringify({
+        mode: "gate",
+        pack_id: PACK_ID_EXAMPLE,
+        confirm: "example",
+      }),
     });
     expect(res.status).toBe(202);
     const body = (await res.json()) as LaunchResponse;
-    // The stem of the artifact that later appears — the id a page subscribes to.
-    expect(body.run_id).toBe(RUN_ID_GATE);
+    // The stem of the artifact that later appears — the id a page subscribes
+    // to. It must name a run that has NOT finished: the id is minted before the
+    // child starts, and a launcher that answered with a terminal run would send
+    // the browser to a page with nothing to watch. This handler used to answer
+    // with the finished RUN_ID_GATE, which is why no test ever mounted the live
+    // window after a launch.
+    const detail = (await (
+      await get(`/api/runs/${body.run_id}`)
+    ).json()) as RunDetail;
+    expect(detail.status).toBe("running");
+    expect(
+      detail.probes,
+      "a run whose artifact does not exist yet cannot have probe rows",
+    ).toEqual([]);
   });
 
   it("answers control with accepted, which is NOT the acknowledgement", async () => {
@@ -287,13 +454,17 @@ describe("every contract route has a handler", () => {
       {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ mode: "gate", pack_id: "pack-0", confirm: "example" }),
+        body: JSON.stringify({
+          mode: "gate",
+          pack_id: PACK_ID_EXAMPLE,
+          confirm: "example",
+        }),
       },
     ],
     [`/api/runs/${RUN_ID_GATE}/control`, { method: "POST" }],
     ["/api/packs", undefined],
-    ["/api/packs/pack-0/validate", { method: "POST" }],
-    ["/api/packs/pack-0/axes", undefined],
+    [`/api/packs/${PACK_ID_EXAMPLE}/validate`, { method: "POST" }],
+    [`/api/packs/${PACK_ID_EXAMPLE}/axes`, undefined],
     ["/api/discoveries", undefined],
     ["/api/discoveries/discovered-hallucination-abcd1234", undefined],
     ["/api/compare/20260806T091011000000-9f8e7d6c-example-compare", undefined],

@@ -91,6 +91,34 @@ function modeRefusal(mode: RunMode, meta: MetaResponse | undefined): string | nu
   return null;
 }
 
+/**
+ * A refused launch, as a sentence the operator can act on.
+ *
+ * **`detail` is absent, not null, when the server has no extra context.**
+ * `ApiError.detail` is `str | None = None` and every envelope is rendered with
+ * `exclude_none=True` (`ui/redact.py`), so the key simply does not arrive. This
+ * guarded with `=== null` — false for `undefined` — and printed the literal
+ * word `(undefined)` at the end of **every** real refusal an operator could
+ * ever read. The MSW handler defaulted the field to `null`, which is the only
+ * reason that survived to a browser.
+ *
+ * ## There is deliberately no second guard here
+ *
+ * The fix is **one** guard, at the fetch boundary: `toFailure` coalesces the
+ * absent key to `null`, which is what makes `ApiFailure.detail`'s declared
+ * `string | null` actually true. A `?? null` repeated here would be unreachable
+ * — both `ApiFailure` construction sites are in `client.ts` and the
+ * constructor's own signature rejects `undefined` — and two guards that only
+ * discriminate together are two guards neither of which a test can catch. It
+ * was written that way for one round; this is the correction.
+ */
+function refusalSentence(error: ApiFailure): string {
+  return (
+    `Launch refused — ${error.code ?? error.status}: ${error.message}` +
+    (error.detail === null ? "" : ` (${error.detail})`)
+  );
+}
+
 /** A key that snaps to one of a closed set of positions. */
 function Detent({
   selected,
@@ -419,9 +447,7 @@ export function Launch() {
           >
             <IconAlert className="mt-0.5 h-4 w-4 shrink-0" />
             {launch.error instanceof ApiFailure
-              ? `Launch refused — ${launch.error.code ?? launch.error.status}: ${launch.error.message}${
-                  launch.error.detail === null ? "" : ` (${launch.error.detail})`
-                }`
+              ? refusalSentence(launch.error)
               : "The cockpit could not reach its server to start this run."}
           </p>
         ) : null}

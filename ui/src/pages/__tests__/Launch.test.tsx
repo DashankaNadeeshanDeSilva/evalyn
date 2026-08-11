@@ -7,9 +7,15 @@ import { describe, expect, it } from "vitest";
 
 import { createQueryClient } from "../../api/client";
 import type { PackListPage } from "../../api/types";
-import { META, PACKS, RUN_ID_GATE } from "../../mocks/fixtures";
+import { META, PACKS, RUN_ID_RUNNING } from "../../mocks/fixtures";
 import { server } from "../../mocks/server";
+import { onlySocket, useFakeEventSource } from "../../test/fakeEventSource";
 import { Launch } from "../Launch";
+import { RunDetailPage } from "../RunDetailPage";
+
+// The live window only exists if something can subscribe to a stream, and jsdom
+// ships no `EventSource`.
+useFakeEventSource();
 
 /**
  * The launch console — the one page that spends money.
@@ -54,16 +60,43 @@ function renderLaunch() {
   );
 }
 
-/** Captures the body the page actually sends, and answers the way Task 20 will. */
+/**
+ * Captures the body the page actually sends, and answers the way the real
+ * launcher does: a **pending** id, minted before the child process starts.
+ */
 function captureLaunch(): { body: Record<string, unknown> | null } {
   const captured: { body: Record<string, unknown> | null } = { body: null };
   server.use(
     http.post("/api/runs", async ({ request }) => {
       captured.body = (await request.json()) as Record<string, unknown>;
-      return HttpResponse.json({ run_id: RUN_ID_GATE }, { status: 202 });
+      return HttpResponse.json({ run_id: RUN_ID_RUNNING }, { status: 202 });
     }),
   );
   return captured;
+}
+
+/**
+ * A server started **with** `--allow-discover`.
+ *
+ * `MetaResponse.allow_discover` is `False` in `models.py` and the fixture now
+ * says so too, so a discover launch is a deliberate server configuration a test
+ * must state — exactly as the operator must state it on the command line. It
+ * used to be the fixture's default, which is why the refusal below was the only
+ * discover branch anyone had ever seen against a default server.
+ */
+function allowingDiscover() {
+  server.use(
+    http.get("/api/meta", () =>
+      HttpResponse.json({ ...META, allow_discover: true }),
+    ),
+  );
+}
+
+/** Waits for `/api/meta` to arrive, since unknown is not permission. */
+async function selectDiscover(user: ReturnType<typeof userEvent.setup>) {
+  const discover = screen.getByRole("button", { name: /^discover/ });
+  await waitFor(() => expect(discover).toBeEnabled());
+  await user.click(discover);
 }
 
 async function armGate(user: ReturnType<typeof userEvent.setup>) {
@@ -90,6 +123,24 @@ describe("the launch console", () => {
     // path here would mean something reconstructed it client-side.
     expect(key.textContent).toContain(PACKS[0]!.path);
     expect(key.textContent).not.toMatch(/\/(Users|home)\//);
+  });
+
+  /**
+   * The branch that had never rendered.
+   *
+   * `TargetSpec` carries no version field, so `pack_rows` sends `null` for
+   * every pack a real server can list — but the fixture said `"1.0.0"`, so the
+   * only rendition this row ever had was `v1.0.0`, a string no server has ever
+   * sent. The same fixture claimed a calibration record that neither shipped
+   * pack has.
+   */
+  it("states a pack with no version as unversioned rather than inventing one", async () => {
+    renderLaunch();
+
+    const key = await screen.findByTestId("pack-key");
+    expect(key.textContent).toContain("unversioned");
+    expect(key.textContent).not.toMatch(/v\d/);
+    expect(key.textContent).toContain("no calibration record");
   });
 
   it("refuses to arm until the pack's name is typed exactly", async () => {
@@ -132,10 +183,11 @@ describe("the launch console", () => {
 
   it("will not launch a discover run without a stated ceiling", async () => {
     const user = userEvent.setup();
+    allowingDiscover();
     renderLaunch();
 
     await armGate(user);
-    await user.click(screen.getByRole("button", { name: /^discover/ }));
+    await selectDiscover(user);
 
     expect(screen.getByTestId("safety-key")).toBeDisabled();
     expect(screen.getByTestId("launch-refusal").textContent).toContain(
@@ -146,10 +198,11 @@ describe("the launch console", () => {
   it("sends the ceiling the operator chose, and says the server clamps it down", async () => {
     const user = userEvent.setup();
     const captured = captureLaunch();
+    allowingDiscover();
     renderLaunch();
 
     const pack = await armGate(user);
-    await user.click(screen.getByRole("button", { name: /^discover/ }));
+    await selectDiscover(user);
     await user.type(screen.getByLabelText(/most this discover run may spend/), "1.5");
 
     await waitFor(() =>
@@ -183,6 +236,8 @@ describe("the launch console", () => {
   });
 
   it("refuses discover outright when the server was not started for it", async () => {
+    // Stated rather than inherited: this is the default a real server answers,
+    // and the test says which server it is talking to either way.
     server.use(
       http.get("/api/meta", () =>
         HttpResponse.json({ ...META, allow_discover: false }),
@@ -235,6 +290,7 @@ describe("the launch console", () => {
    */
   it("bounds its text fields with an edge that clears the 3:1 bar", async () => {
     const user = userEvent.setup();
+    allowingDiscover();
     renderLaunch();
 
     await armGate(user);
@@ -242,12 +298,90 @@ describe("the launch console", () => {
       "border-chassis-500",
     );
 
-    await user.click(screen.getByRole("button", { name: /^discover/ }));
+    await selectDiscover(user);
     expect(
       screen
         .getByLabelText(/most this discover run may spend/)
         .getAttribute("class"),
     ).toContain("border-chassis-500");
+  });
+
+  /**
+   * The wiring pass read this off the screen against a real server: every
+   * launch refusal ended in the literal word **`(undefined)`**.
+   *
+   * `ApiError.detail` is `str | None = None` in `models.py`, and the server
+   * renders the envelope with `exclude_none=True` (`ui/redact.py`) — so a
+   * refusal with no extra context **omits the key** rather than sending null.
+   * The page guarded with `=== null`, which is false for `undefined`, and the
+   * MSW handler defaulted the field to `null`, which is why nothing ever
+   * caught it. The body below is the real server's, key-for-key.
+   */
+  it("renders a refusal whose detail the server omitted, without the word undefined", async () => {
+    const user = userEvent.setup();
+    server.use(
+      http.post("/api/runs", () =>
+        HttpResponse.json(
+          {
+            error: {
+              code: "launch_refused",
+              message: "pack 'example' is not on this server's --target allowlist",
+            },
+          },
+          { status: 400 },
+        ),
+      ),
+    );
+    renderLaunch();
+
+    await armGate(user);
+    await user.click(screen.getByTestId("safety-key"));
+
+    const alarm = await screen.findByTestId("launch-error");
+    expect(alarm.textContent).toContain("not on this server's --target allowlist");
+    // This is the sentence the operator reads when a launch fails on stage.
+    expect(alarm.textContent).not.toContain("undefined");
+    expect(alarm.textContent).not.toContain("()");
+  });
+
+  /**
+   * The coverage hole the mock dug, and the one the wiring pass fell into.
+   *
+   * `POST /api/runs` returned the **already-finished** `RUN_ID_GATE`, so every
+   * launch this suite has ever performed navigated to a terminal run:
+   * `LiveRunPanel` latched `watched = false` and returned `null`, and the one
+   * inset window **has never mounted in a launch test**. The real server mints
+   * a pending id — the stem of an artifact that does not exist yet — and the
+   * panel mounts on arrival, which is the whole shape of the demo's first
+   * minute.
+   *
+   * Nothing is overridden below: the default handler is under test, because the
+   * default handler is what lied.
+   */
+  it("lands on a run that is still on the air, with the live window mounted", async () => {
+    const user = userEvent.setup();
+    render(
+      <QueryClientProvider client={createQueryClient()}>
+        <MemoryRouter initialEntries={["/launch"]}>
+          <Routes>
+            <Route path="/launch" element={<Launch />} />
+            {/* The real page, not a stub: the question is whether what the
+                launcher hands back is a run this surface can watch. */}
+            <Route path="/runs/:runId" element={<RunDetailPage />} />
+          </Routes>
+        </MemoryRouter>
+      </QueryClientProvider>,
+    );
+
+    await armGate(user);
+    await user.click(screen.getByTestId("safety-key"));
+
+    expect(await screen.findByTestId("live-window")).toBeInTheDocument();
+    expect(onlySocket().url).toBe(
+      `/api/runs/${encodeURIComponent(RUN_ID_RUNNING)}/events`,
+    );
+    // And no verdict is demanded of an artifact that does not exist yet.
+    expect(screen.getByTestId("gate-banner-pending")).toBeInTheDocument();
   });
 
   it("renders a refused launch with a glyph, not colour alone", async () => {
@@ -256,11 +390,8 @@ describe("the launch console", () => {
       http.post("/api/runs", () =>
         HttpResponse.json(
           {
-            error: {
-              code: "busy",
-              message: "another run is already in flight",
-              detail: null,
-            },
+            // No `detail` key, the way the server sends it — see the test above.
+            error: { code: "busy", message: "another run is already in flight" },
           },
           { status: 409 },
         ),
