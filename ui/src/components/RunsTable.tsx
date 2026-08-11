@@ -49,40 +49,82 @@ import { RunStatusChip } from "./RunStatusChip";
  * exercises. The column has to hold the widest **enum member**, not the widest
  * sample.
  *
- * **Every number below is measured in Chrome against the built CSS, at the
- * table's own floor, with each column forced to the widest content it can ever
- * hold.** An earlier revision derived this budget arithmetically and claimed
- * "zero overflow"; the claim did not survive measurement — pack overflowed by
- * ~2px and spend by ~12.5px, right-aligned, straight into VERDICT. Arithmetic
- * cannot see that a cell inherited the wrong font size.
+ * An earlier revision derived this budget arithmetically and claimed "zero
+ * overflow"; the claim did not survive measurement — pack overflowed by ~2px
+ * and spend by ~12.5px, right-aligned, straight into VERDICT. Arithmetic cannot
+ * see that a cell inherited the wrong font size, which was the actual cause:
+ * the verdict and spend `<td>`s carry no size token, so `Flatline`'s word fell
+ * through to the user agent's 16px. Fixing that (the component now states
+ * `text-legend`, and `index.css` sets the base to the scale) recovered most of
+ * the room on its own.
  *
- * Which was the actual cause: the verdict and spend `<td>`s carry no size
- * token, so `Flatline`'s word fell through to the user agent's 16px. Fixing
- * that (the component now states `text-legend`, and `index.css` sets the base
- * to the scale) recovered most of the room on its own.
+ * **VERDICT was then narrowed 12% -> 11% against the wrong worst case** — the
+ * widest thing that column holds is not a `Flatline` at all. It is
+ * `VerdictHintCell`'s longest rendition, `gate unknown`, which needs 125.9px of
+ * content box where 11% leaves 124.3. The third mis-sizing of this budget, and
+ * the third with the same shape: a column measured against the content in front
+ * of the author instead of the widest content the column's own type admits.
  *
- * Slack at the 1248px floor, worst case, after the fix:
+ * ## How the numbers below were taken
  *
- *   status  16%  — "✓ failed_to_start"; 25px to the run id
- *   run     30%  — a 44-char run id at 14px mono
- *   mode     7%  — "discover"
- *   pack     9%  — the mark plus "unknown"          (6.3px slack at 8%, so 9%)
- *   created 15%  — "2026-08-06 09:10:11Z", nowrap
- *   verdict 11%  — the mark plus "unreadable"       (34.6px slack at 12%)
- *   spend   12%  — the mark plus "unrecorded"       (11.6px slack)
+ * In Chrome, against the **built** stylesheet (the dev-injected styles disabled
+ * and `assets/index-*.css` linked in their place), on the **real component
+ * markup**, with the scroller pinned to the table's own floor (78rem = 1248px)
+ * so every `<td>` box is exactly its percentage of the floor. Each column was
+ * then forced through every value its type admits: all nine `RunStatus` members
+ * in STATUS, all three `VerdictHint` renditions plus both `Flatline` words in
+ * VERDICT, `formatUsd` plus the `Flatline` word in SPEND.
  *
- * Re-measure rather than re-derive when this changes.
+ * **`sr-only` nodes are removed before measuring.** They are `position:absolute`
+ * and cannot affect layout, but their text pollutes a range measurement — which
+ * is how a reading of this column came back 11px wide of the truth.
+ *
+ * The face is monospace, so every reading here cross-checks against character
+ * count: 0.6em advance, plus `tracking-legend` (0.12em) on the uppercase runs.
+ * `gate unknown` = 12 chars x (7.2 + 1.44) + a 16px mark + a 6px gap = 125.9.
+ * Two readings that disagree with the character count are two readings to
+ * retake.
+ *
+ * Slack at the 1248px floor, worst case, in the content box (box minus padding):
+ *
+ *   col        %     avail   widest content it can hold    width   slack
+ *   status   16     163.7   "failed_to_start" + mark      151.9   +11.8
+ *   run      28.9   347.7   a 38-char id at 14px mono     320.3   +27.4
+ *   mode      7      74.3   "discover"                     67.4    +6.9
+ *   pack      9      99.3   the mark plus "unknown"        80.5   +18.8
+ *   created  15     174.2   "2026-08-06 09:10:11Z"        168.6    +5.6
+ *   verdict  12.1   138.0   "gate unknown" + mark         125.9   +12.1
+ *   spend    12     113.8   the mark plus "unrecorded"    102.2   +11.6
+ *
+ * Two columns hold values with no upper bound at all — a `run_id`'s trailing
+ * slug and a `pack_name` are whatever the artifact says. Neither can be sized
+ * against a worst case, so neither is allowed to overflow: the run id is
+ * `break-all` and the degraded row's reason is `truncate`, so an unusually long
+ * value costs a second line rather than a collision. The 38-char id above is the
+ * canonical stem length, not a ceiling.
+ *
+ * VERDICT's 12.1% is a floor set by ruling, not by the measurement: 11.2% is
+ * where `gate unknown` just fits. The extra is deliberate — it lands VERDICT's
+ * slack alongside STATUS's and SPEND's, so the three columns that carry a mark
+ * plus a word all have the same room to grow. The 1.1% comes out of RUN, which
+ * has the most slack and wraps rather than collides.
+ *
+ * Re-measure rather than re-derive when this changes — and note that the budget
+ * is now executable: `RunsTable.test.tsx` re-derives the worst case from
+ * `RUN_STATUSES`, `RUN_MODES` and `VERDICT_HINTS` and reds when a column is
+ * narrowed below what its own type can hold. A comment could not stop this
+ * happening three times; the assertion can.
  */
-const COLUMNS = [
+export const COLUMNS = [
   { key: "status", label: "Status", width: "16%" },
-  { key: "run", label: "Run", width: "30%" },
+  { key: "run", label: "Run", width: "28.9%" },
   { key: "mode", label: "Mode", width: "7%" },
   { key: "pack", label: "Pack", width: "9%" },
   { key: "created", label: "Created (UTC)", width: "15%" },
   // "hint" is in the header rather than on every cell: the list's verdict is
   // computed from `probes[]` without calling `evaluate_gate`, and the contract
   // says never to render it without saying so.
-  { key: "verdict", label: "Verdict (hint)", width: "11%" },
+  { key: "verdict", label: "Verdict (hint)", width: "12.1%" },
   { key: "spend", label: "Judge USD", width: "12%", numeric: true },
 ] as const;
 
