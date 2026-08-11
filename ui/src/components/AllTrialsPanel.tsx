@@ -83,18 +83,34 @@ import { RedactedChip } from "./RedactedChip";
  */
 const EXCERPT_CHARS = 360;
 
+/**
+ * How much of the **opening turn** is shown before it is cut.
+ *
+ * Smaller than a reply's budget, and it has to be: the opening turn is context
+ * the room needs once, while the replies are the evidence it came to compare.
+ * Measured on the corpus this ships against — `injection-control-background`
+ * carries a 2853-character transcript, and an unbounded header of that size
+ * pushes all seven replies off a projected screen, which is not a cosmetic
+ * problem but the loss of the panel's entire reason to exist.
+ *
+ * 180 characters is about two projected lines: enough to recognise the question
+ * being asked, never enough to own the screen. The rest is one key away, and
+ * the panel says how much it is holding back.
+ */
+const OPENING_CHARS = 180;
+
 export interface Excerpt {
   shown: string;
-  /** Characters withheld. `0` means the reply is on screen in full. */
+  /** Characters withheld. `0` means the text is on screen in full. */
   hidden: number;
 }
 
 /** Cut at a word boundary, never mid-word, and report the cost. */
-export function excerpt(text: string): Excerpt {
-  if (text.length <= EXCERPT_CHARS) return { shown: text, hidden: 0 };
-  const window = text.slice(0, EXCERPT_CHARS);
+export function excerpt(text: string, budget: number = EXCERPT_CHARS): Excerpt {
+  if (text.length <= budget) return { shown: text, hidden: 0 };
+  const window = text.slice(0, budget);
   const space = window.search(/\s\S*$/);
-  const cut = space > EXCERPT_CHARS * 0.6 ? space : EXCERPT_CHARS;
+  const cut = space > budget * 0.6 ? space : budget;
   return { shown: text.slice(0, cut), hidden: text.length - cut };
 }
 
@@ -205,28 +221,41 @@ function Mark({ mark, amongMarked }: { mark: TrialMark; amongMarked: boolean }) 
   );
 }
 
-function ReplyBody({ text }: { text: string }) {
+/**
+ * A block of recorded text, cut to a budget and stated when it is cut.
+ *
+ * One component for the replies and for the opening turn, because they answer
+ * to the same rule — **nothing on this panel may run to an unbounded height.**
+ * Seven replies only read as one comparison while they are all on the screen at
+ * once, so any block that can grow without limit can push the rest below the
+ * fold and take the comparison with it. The two budgets differ (the evidence
+ * gets more room than the context) but the treatment does not: cut at a word,
+ * count what was withheld, and offer it back in one key.
+ */
+function Excerpted({
+  text,
+  budget,
+  testId,
+  expandTestId,
+  className,
+}: {
+  text: string;
+  budget: number;
+  testId: string;
+  expandTestId: string;
+  className: string;
+}) {
   const [open, setOpen] = useState(false);
-  const cut = excerpt(text);
+  const cut = excerpt(text, budget);
   return (
     <>
-      <p
-        data-testid="trial-reply"
-        /*
-         * A measure, not the full panel width. Seven replies are read as one
-         * comparison, and a 180-character line makes the eye traverse rather
-         * than compare — the same reason prose has a measure at all. 78ch of
-         * this mono stack is ~660px, so six identical answers still wrap
-         * identically and the odd one out still breaks the shape.
-         */
-        className="max-w-[78ch] whitespace-pre-wrap break-words text-readout text-chassis-900"
-      >
+      <p data-testid={testId} className={className}>
         {open || cut.hidden === 0 ? text : `${cut.shown}…`}
       </p>
       {cut.hidden === 0 ? null : (
         <button
           type="button"
-          data-testid="reply-expand"
+          data-testid={expandTestId}
           aria-expanded={open}
           onClick={() => setOpen((was) => !was)}
           // The same key vocabulary as the trial keys: a hard rectangle over an
@@ -240,6 +269,25 @@ function ReplyBody({ text }: { text: string }) {
         </button>
       )}
     </>
+  );
+}
+
+function ReplyBody({ text }: { text: string }) {
+  return (
+    <Excerpted
+      text={text}
+      budget={EXCERPT_CHARS}
+      testId="trial-reply"
+      expandTestId="reply-expand"
+      /*
+       * A measure, not the full panel width. Seven replies are read as one
+       * comparison, and a 180-character line makes the eye traverse rather
+       * than compare — the same reason prose has a measure at all. 78ch of
+       * this mono stack is ~660px, so six identical answers still wrap
+       * identically and the odd one out still breaks the shape.
+       */
+      className="max-w-[78ch] whitespace-pre-wrap break-words text-readout text-chassis-900"
+    />
   );
 }
 
@@ -477,17 +525,24 @@ export function AllTrialsPanel({
         </p>
 
         {opening?.turn ? (
-          <p className="mt-2 text-legend text-chassis-600">
+          <div className="mt-2 text-legend text-chassis-600">
             {/* Attributed, never generalised: the trials are not guaranteed to
                 have been sent the same words, so this says which one it read
                 rather than claiming it stands for all seven. */}
-            <span className="uppercase tracking-legend">
+            <p className="uppercase tracking-legend">
               {`Opening turn, as sent in trial ${opening.trial.epoch}`}
-            </span>
-            <span className="mt-1 block whitespace-pre-wrap break-words text-readout text-chassis-700">
-              {opening.turn.text}
-            </span>
-          </p>
+            </p>
+            {/* Bounded on the same terms as the replies — an injection prompt
+                is routinely thousands of characters, and the header is the one
+                block that can grow until the evidence is off the screen. */}
+            <Excerpted
+              text={opening.turn.text}
+              budget={OPENING_CHARS}
+              testId="opening-turn"
+              expandTestId="opening-expand"
+              className="mt-1 max-w-[78ch] whitespace-pre-wrap break-words text-readout text-chassis-700"
+            />
+          </div>
         ) : null}
       </div>
 
