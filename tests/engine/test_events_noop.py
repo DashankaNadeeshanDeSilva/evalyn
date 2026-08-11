@@ -307,10 +307,16 @@ async def test_discover_fires_every_named_call_site(discover_pack, tmp_path,
         "run.started", "agent.step", "agent.reply", "confirm.result",
         "finding.staged", "replay.result", "spend.updated", "artifact.written",
         "run.finished"}
+    # Every hunt event carries the SAME hunt_key, and it is the string the
+    # discovery dataset gives the sample as its id — derived, not hardcoded, so
+    # this stays true if the shipped personas change.
+    from evalyn.discovery.personas import load_personas
+
+    expected = f"{INJECTION}::{sorted(load_personas(discover_pack))[0]}"
     hunt_keys = {f["hunt_key"] for n, f in sink.events
                  if n in {"agent.step", "agent.reply", "confirm.result",
                           "finding.staged", "replay.result"}}
-    assert hunt_keys == {f"{INJECTION}::curious-user"}, sorted(hunt_keys)
+    assert hunt_keys == {expected}, sorted(hunt_keys)
 
 
 # ==========================================================================
@@ -350,6 +356,10 @@ def test_the_cli_never_constructs_a_jsonl_sink_without_events(
 
     monkeypatch.setenv("EVALYN_TARGET_URL", toy_target)
     pack_dir = str(_write_gate_pack(tmp_path / "clipack", toy_target))
+    # The CLI has no --log-dir, so `run_gate`'s default `runs/logs` is CWD-
+    # relative: without this the test litters the repo's own runs/ (which reds
+    # tests/ui/test_index.py's real-directory scan).
+    monkeypatch.chdir(tmp_path)
     result = CliRunner().invoke(app, [
         "gate", "--target", pack_dir, "--out-dir", str(tmp_path / "runs"),
         "--baseline", str(tmp_path / "none.json")])

@@ -7,6 +7,7 @@ from inspect_ai import Epochs, Task
 from inspect_ai.dataset import MemoryDataset, Sample
 from inspect_ai.scorer import pass_at, pass_k
 
+from evalyn.engine.events import NULL_SINK, EventSink
 from evalyn.engine.solver import session_solver
 from evalyn.scoring.tier1 import tier1_scorer
 from evalyn.scoring.tier2 import tier2_scorer
@@ -99,7 +100,8 @@ def family_warnings(pack: Pack, *, judge_model: str, rubric_model: str,
 def build_task(pack: Pack, judge_model: str = "mockllm/model",
                rubric_judge_model: str | None = None,
                max_samples: int | None = None,
-               cache_dir: Path | None = None) -> Task:
+               cache_dir: Path | None = None,
+               sink: EventSink = NULL_SINK) -> Task:
     probes = pack.probes if max_samples is None else pack.probes[:max_samples]
     samples = [Sample(input=p.id, target=p.category, metadata=_probe_metadata(p)) for p in probes]
     k = max((p.samples for p in probes), default=1)
@@ -111,7 +113,10 @@ def build_task(pack: Pack, judge_model: str = "mockllm/model",
         warnings.warn(msg, UserWarning, stacklevel=2)
     return Task(
         dataset=MemoryDataset(samples),
-        solver=session_solver(pack),
+        # The sink is threaded through the task the same way `cache_dir` is:
+        # as a plain argument. `NULL_SINK` by default, so a task built by any
+        # existing caller is byte-identical to the one it built before.
+        solver=session_solver(pack, sink=sink),
         scorer=[tier1_scorer(pack), tier2_scorer(judge_model),
                 tier3_scorer(pack, rubric_model, cache_dir=cache_dir)],
         epochs=Epochs(k, [pass_at(k), pass_k(k), "mean"]),

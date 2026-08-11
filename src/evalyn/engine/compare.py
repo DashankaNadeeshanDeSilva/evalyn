@@ -21,6 +21,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 from evalyn.engine.budget import BudgetExceeded, estimate_cost
+from evalyn.engine.events import NULL_SINK, EventSink
 from evalyn.engine.run import RunArtifact, atomic_write_artifact, pack_fingerprint
 from evalyn.scoring.pairwise import judge_pair
 from evalyn.scoring.rubrics import (
@@ -165,7 +166,11 @@ async def run_compare(pack: Pack, art_a: RunArtifact, art_b: RunArtifact,
                       out_dir: str = "runs",
                       label_a: str = "A", label_b: str = "B",
                       source_a: str = "", source_b: str = "",
-                      run_id: str | None = None) -> CompareArtifact:
+                      run_id: str | None = None,
+                      sink: EventSink = NULL_SINK) -> CompareArtifact:
+    sink.emit("run.started", mode="compare", pack=pack.spec.name,
+              judge_model=judge_model, label_a=label_a, label_b=label_b,
+              source_a=source_a, source_b=source_b, run_id=run_id)
     if max_concurrency < 1:
         raise ValueError(f"max_concurrency must be >= 1, got {max_concurrency}")
     _check_preconditions(pack, art_a, art_b)
@@ -186,12 +191,22 @@ async def run_compare(pack: Pack, art_a: RunArtifact, art_b: RunArtifact,
     sem = asyncio.Semaphore(max_concurrency)
     master = random.Random(seed)
 
-    async def _judge(rid: str, ta: str, tb: str, rng: random.Random):
+    async def _judge(probe_id: str, rid: str, epoch_a: int, epoch_b: int,
+                     ta: str, tb: str, rng: random.Random):
         async with sem:
             text, rhash = rubrics[rid]
-            return await judge_pair(text, rhash, ta, tb, judge_model,
-                                    cache_dir=cache_dir, context=contexts[rid],
-                                    steps=frozen[rid], rng=rng)
+            verdict = await judge_pair(text, rhash, ta, tb, judge_model,
+                                       cache_dir=cache_dir, context=contexts[rid],
+                                       steps=frozen[rid], rng=rng)
+            # Emitted inside the semaphore, as each pair lands — the whole point
+            # is that the cockpit sees judging progress rather than one silent
+            # `asyncio.gather`. The rng was drawn at SCHEDULING time above, so
+            # nothing here can perturb the seeded order.
+            sink.emit("pair.judged", probe_id=probe_id, rubric=rid,
+                      epoch_a=epoch_a, epoch_b=epoch_b,
+                      verdicts=dict(verdict.verdicts),
+                      flipped=dict(verdict.flipped))
+            return verdict
 
     # Build the per-probe pairing plan, then judge every (pair x rubric).
     probe_entries: list[dict] = []
@@ -215,7 +230,8 @@ async def run_compare(pack: Pack, art_a: RunArtifact, art_b: RunArtifact,
                 entry["rubrics"][rid] = []
                 for rec_a, rec_b in pairs:
                     jobs.append((entry, rid, rec_a["epoch"], rec_b["epoch"]))
-                    coros.append(_judge(rid, rec_a["transcript"],
+                    coros.append(_judge(probe.id, rid, rec_a["epoch"],
+                                        rec_b["epoch"], rec_a["transcript"],
                                         rec_b["transcript"],
                                         random.Random(master.random())))
         probe_entries.append(entry)
@@ -255,6 +271,8 @@ async def run_compare(pack: Pack, art_a: RunArtifact, art_b: RunArtifact,
     # would silently meter $0.00.
     judge_usd = estimate_cost(
         {m: SimpleNamespace(**u) for m, u in usage_acc.items()})
+    sink.emit("spend.updated", judge_usd=judge_usd,
+              max_usd_per_run=pack.spec.budget.max_usd_per_run)
 
     art = CompareArtifact(
         pack_name=pack.spec.name,
@@ -281,22 +299,36 @@ async def run_compare(pack: Pack, art_a: RunArtifact, art_b: RunArtifact,
         # The breach artifact carries the SAME run_id the caller asked for: a
         # cockpit-launched compare that busts its cap must still land at the
         # path the server is watching, or the run reads as vanished.
-        write_compare_artifact(art, out_dir=out_dir, run_id=run_id)
+        write_compare_artifact(art, out_dir=out_dir, run_id=run_id, sink=sink)
+        sink.emit("run.finished", mode="compare", status="error",
+                  error="BudgetExceeded", judge_usd=judge_usd)
         raise BudgetExceeded(
             f"judge spend ${judge_usd:.4f} exceeded max_usd_per_run "
             f"${cap:.2f} (compare artifact written)")
+    # NOT `artifact.written` here: on the happy path the CLI owns the write (it
+    # knows the real labels and sources), so `write_compare_artifact` is the one
+    # place that can honestly claim a file exists. `run.finished` still belongs
+    # to the engine — the judging is what finished.
+    sink.emit("run.finished", mode="compare", status="ok", judge_usd=judge_usd,
+              excluded_pairs=excluded_pairs, probes=len(probe_entries))
     return art
 
 
 def write_compare_artifact(art: CompareArtifact, out_dir: str = "runs",
-                           *, run_id: str | None = None) -> Path:
+                           *, run_id: str | None = None,
+                           sink: EventSink = NULL_SINK) -> Path:
     """Atomic temp-then-rename write with a collision-proof name — the shared
     house writer (R8-13), suffixed `-compare`.
 
     `run_id=None` mints exactly as before; a caller that passes one (the CLI,
-    from `EVALYN_RUN_ID`) gets `runs/<run_id>-compare.json`."""
-    return atomic_write_artifact(art.to_dict(), art.pack_name, out_dir,
-                                 suffix="-compare", run_id=run_id)
+    from `EVALYN_RUN_ID`) gets `runs/<run_id>-compare.json`. `artifact.written`
+    is emitted HERE, the single place that knows the path really exists — both
+    the CLI's happy-path write and `run_compare`'s budget-breach write go
+    through it, so the cockpit gets the event either way."""
+    written = atomic_write_artifact(art.to_dict(), art.pack_name, out_dir,
+                                    suffix="-compare", run_id=run_id)
+    sink.emit("artifact.written", path=str(written))
+    return written
 
 
 def _fmt(val: float | None, suffix: str = "") -> str:
