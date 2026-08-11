@@ -137,7 +137,13 @@ function Reading({
   children,
 }: {
   label: string;
-  /** Set only where a test must count reporters rather than read a figure. */
+  /**
+   * Set only where a test must address this reading itself rather than read a
+   * figure out of the window's text: `live-spend` so the surface's "exactly one
+   * spend reporter" invariant can be *counted* (it has a rendition with no
+   * numeral at all), and `live-outcome` because its value is a word, so
+   * scanning the window's prose for it would also match the label above it.
+   */
   testId?: string;
   children: ReactNode;
 }) {
