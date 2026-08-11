@@ -459,6 +459,26 @@ const SURFACES: Record<string, Surface> = {
       },
     ],
   },
+  /**
+   * The chart's HTML furniture only. **The chart's own marks are invisible to
+   * this guard**: an SVG paints with `stroke`/`fill` attributes and this file
+   * reads `text-*` and `bg-*` out of the source text, so not one line, dot,
+   * gridline or axis rule below is measured here. Those are derived from the
+   * palette in `chartInk.ts` and measured by hand in that file's docstring —
+   * the same arrangement, and the same obligation, as the `inset` window.
+   *
+   * `chassis-25` appears as a ground because the tooltip paints the face's own
+   * colour beneath itself rather than floating the user agent's white over the
+   * plot area.
+   */
+  "components/TrendChart.tsx": {
+    inherits: "chassis-25",
+    sets: ["chassis-25"],
+    inks: [
+      { ink: "chassis-900", role: "text" },
+      { ink: "chassis-600", role: "text" },
+    ],
+  },
   "pages/Launch.tsx": {
     inherits: "chassis-25",
     // The two form fields, which carry the face's own colour rather than the
