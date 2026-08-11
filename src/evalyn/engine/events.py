@@ -165,14 +165,27 @@ class JsonlSink:
         construction, before either run spends. Reopening in the SAME process
         is fine and appends.
         """
-        for event in read_events(self.path):
-            pid = event.get("pid")
-            if pid is not None and pid != self._pid:
-                raise ValueError(
-                    f"{self.path} is already being written by pid {pid} (this "
-                    f"process is {self._pid}) — two processes must not share "
-                    f"one event stream")
-            return  # the first well-formed line settles ownership
+        try:
+            with open(self.path, encoding="utf-8", errors="replace") as fh:
+                # The FIRST well-formed line settles ownership, so read lines
+                # lazily — a relaunch onto an existing multi-megabyte stream
+                # must not slurp the whole thing to look at one field.
+                for line in fh:
+                    try:
+                        event = json.loads(line)
+                    except json.JSONDecodeError:
+                        continue
+                    if not isinstance(event, dict):
+                        continue
+                    pid = event.get("pid")
+                    if pid is not None and pid != self._pid:
+                        raise ValueError(
+                            f"{self.path} is already being written by pid {pid} "
+                            f"(this process is {self._pid}) — two processes must "
+                            f"not share one event stream")
+                    return
+        except (FileNotFoundError, IsADirectoryError, NotADirectoryError):
+            return  # no stream yet: this process owns the one it is about to open
 
     # -- emit --------------------------------------------------------------
 
