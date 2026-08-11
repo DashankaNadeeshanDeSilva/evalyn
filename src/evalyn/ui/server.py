@@ -468,14 +468,16 @@ def create_app(runs_dir: Path, packs: list[Path], *,
         *unplaced* is behaving correctly; inventing an index that made it place
         would be inventing evidence.
 
-        **`checks` comes off the trial record, so today it is empty.** The
-        artifact's `probes[].checks` are explicitly *representative* — one
-        epoch's results, carried for the report, with nothing recording which
-        epoch — so serving them here under the SPA's "Checks on this trial"
-        heading would attribute one trial's verdicts to all of them. The empty
-        list is the true answer ("this trial record carries no per-check
-        results"), and the read is written against the record so that it starts
-        carrying them the day the engine records them.
+        **`checks` comes off the trial record — never off `probes[].checks`.**
+        Those are explicitly *representative*: one epoch's results carried for
+        the report, with nothing recording which epoch, so serving them here
+        under the SPA's "Checks on this trial" heading would attribute one
+        trial's verdicts to all of them. Task 22 made the engine record each
+        epoch's own checks, and this read — written against the record from the
+        start — began serving them the day it did. **Artifacts written before
+        Task 22 have no such key and still answer `[]`**, which the SPA reads as
+        "not captured": the honest answer for a trial whose results were never
+        recorded, and the reason no capability flag was added for it.
 
         404s (never 200 with an empty conversation) when the artifact has no
         trial records at all: the SPA gates the drill-down on

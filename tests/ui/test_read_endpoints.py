@@ -495,6 +495,133 @@ async def test_an_epoch_or_probe_that_was_never_recorded_is_a_404_envelope(
         assert _envelope_of(response)["code"] == "not_found"
 
 
+def _artifact_with_one_deviating_epoch(runs_dir: Path) -> tuple[str, str, int]:
+    """The GATE fixture, re-shaped like the run the demo is built on.
+
+    `20260811T090650075039-da7c9df0-twincore-injection`'s
+    `injection-exfil-boundaries` passed six of seven trials and deviated on
+    epoch 2 — the shape that rendered `pass^k=0.0  7 checks  0 failed`. That
+    artifact predates Task 22 and so carries no per-trial checks on disk; this
+    reproduces its shape from the fixture's **own on-disk check dicts** (`tier`
+    an int, as every artifact spells it), flipping one `passed` on one epoch.
+    """
+    artifact = _artifact(runs_dir, GATE)
+    probe = next(p for p in artifact["probes"]
+                 if len(p["trial_records"]) > 1 and p["checks"])
+    deviating = probe["trial_records"][1]["epoch"]
+    for record in probe["trial_records"]:
+        checks = json.loads(json.dumps(probe["checks"]))  # a deep copy, per epoch
+        if record["epoch"] == deviating:
+            checks[0]["passed"] = False
+            checks[0]["score"] = 0.0
+        record["checks"] = checks
+    run_id = "20260809T121212121212-abcdef12-example"
+    runs_dir.joinpath(f"{run_id}.json").write_text(json.dumps(artifact),
+                                                   encoding="utf-8")
+    return run_id, probe["id"], deviating
+
+
+async def test_the_trial_endpoint_serves_that_trials_own_checks(runs_dir,
+                                                                asgi_client):
+    """Task 22. The drill-down used to serve `[]` because the engine recorded
+    nothing per trial; now it serves the epoch's own results, and the epoch
+    that deviated is the only one that shows a failure."""
+    run_id, probe_id, deviating = _artifact_with_one_deviating_epoch(runs_dir)
+    on_disk = _artifact(runs_dir, run_id)
+    records = next(p for p in on_disk["probes"]
+                   if p["id"] == probe_id)["trial_records"]
+    passing = next(r["epoch"] for r in records if r["epoch"] != deviating)
+
+    async with asgi_client(_app(runs_dir)) as client:
+        deviated = await client.get(
+            f"/api/runs/{run_id}/trials/{probe_id}/{deviating}")
+        clean = await client.get(f"/api/runs/{run_id}/trials/{probe_id}/{passing}")
+
+    assert (deviated.status_code, clean.status_code) == (200, 200)
+    # Positional, not keyed by name: an artifact's checks repeat names (one
+    # `invariant:no-internal-leak` per turn), so a dict would quietly let a
+    # later passing namesake mask the failure this test exists to see.
+    for epoch, response in ((deviating, deviated), (passing, clean)):
+        on_disk = next(r["checks"] for r in records if r["epoch"] == epoch)
+        wire = response.json()["checks"]
+        assert [c["check"] for c in wire] == [c["check"] for c in on_disk]
+        assert [c["passed"] for c in wire] == [c["passed"] for c in on_disk]
+    assert deviated.json()["checks"][0]["passed"] is False
+    assert clean.json()["checks"][0]["passed"] is True
+
+
+async def test_a_checks_tier_reaches_the_wire_as_a_string(runs_dir, asgi_client):
+    """Artifacts spell `tier` as a JSON **number**; `types.ts` spells it as a
+    string union, and `VerdictBadge` renders `unscored` for anything else.
+
+    Read off disk on both sides so it cannot pass by a coincidence in a
+    hand-written fixture: any construction that skips pydantic validation
+    (`model_construct`, a hand-built dict) forwards the int and fails here.
+    """
+    run_id, probe_id, deviating = _artifact_with_one_deviating_epoch(runs_dir)
+    on_disk = next(r for p in _artifact(runs_dir, run_id)["probes"]
+                   if p["id"] == probe_id
+                   for r in p["trial_records"] if r["epoch"] == deviating)
+    assert any(isinstance(c["tier"], int) and not isinstance(c["tier"], bool)
+               for c in on_disk["checks"]), "the fixture must store ints"
+
+    async with asgi_client(_app(runs_dir)) as client:
+        body = (await client.get(
+            f"/api/runs/{run_id}/trials/{probe_id}/{deviating}")).json()
+
+    assert [c["tier"] for c in body["checks"]] == [
+        str(c["tier"]) for c in on_disk["checks"]]
+    assert all(isinstance(c["tier"], str) for c in body["checks"])
+
+
+async def test_a_pre_task_22_artifact_still_serves_an_empty_check_list(
+        runs_dir, asgi_client):
+    """The 87 artifacts already on disk have no per-trial checks. They must
+    keep answering 200 with `checks: []` — "not captured", exactly as before —
+    rather than 404, 500, or an invented list."""
+    probe = _artifact(runs_dir, GATE)["probes"][0]
+    record = probe["trial_records"][0]
+    assert "checks" not in record, "the fixture must predate Task 22"
+
+    async with asgi_client(_app(runs_dir)) as client:
+        response = await client.get(
+            f"/api/runs/{GATE}/trials/{probe['id']}/{record['epoch']}")
+
+    assert response.status_code == 200
+    assert response.json()["checks"] == []
+
+
+@pytest.mark.skipif(not REAL_RUNS.is_dir(),
+                    reason="runs/ is gitignored; CI has no such directory")
+async def test_every_pre_task_22_drill_down_in_the_real_corpus_degrades_cleanly(
+        asgi_client):
+    """The same claim against the **real** corpus rather than a fixture: every
+    recorded trial whose artifact predates Task 22 answers 200 with `[]`."""
+    degraded = 0
+
+    async with asgi_client(_app(REAL_RUNS)) as client:
+        page = (await client.get("/api/runs", params={"limit": 1000})).json()
+        for row in page["items"]:
+            if row["mode"] != "gate" or not row["capabilities"]["trial_records"]:
+                continue
+            artifact = _artifact(REAL_RUNS, row["run_id"])
+            for probe in artifact["probes"]:
+                record = next((r for r in probe["trial_records"]
+                               if isinstance(r, dict) and "checks" not in r),
+                              None)
+                if record is None:
+                    continue
+                response = await client.get(
+                    f"/api/runs/{row['run_id']}/trials/{probe['id']}"
+                    f"/{record['epoch']}")
+                assert response.status_code == 200, row["run_id"]
+                assert response.json()["checks"] == [], row["run_id"]
+                degraded += 1
+                break
+
+    assert degraded, "no pre-Task-22 artifact in runs/ — nothing was proved"
+
+
 # --------------------------------------------------------------------------
 # 6. R4-41 — the transcript split, which may never lose text
 # --------------------------------------------------------------------------

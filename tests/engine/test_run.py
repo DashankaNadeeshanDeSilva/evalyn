@@ -123,6 +123,81 @@ def test_reducer_tolerates_unknown_scorer_names(minimal_pack_with_probe):
     assert pr.trials == 1 and pr.mean_score == 0.8
 
 
+# --- Task 22: per-trial checks, and a representative that agrees with the verdict ---
+
+#: The five fields the gate reads. Task 22 is presentation-only, so every one of
+#: these literals is the value the PRE-Task-22 reducer produced on the same
+#: input — recorded here so a later "improvement" to the check plumbing that
+#: moves a verdict fails loudly instead of silently re-scoring the corpus.
+_VERDICT_FIELDS = ("trials", "pass_at_k", "pass_k", "mean_score", "unsure_trials")
+
+
+def _epoch_samples(pattern):
+    """One single-scorer `_FakeSample` per epoch. `pattern` maps epoch -> the
+    required check's `passed`; `None` means it came back unsure."""
+    return [_FakeSample("p", epoch, {"tier1": _FakeScore({"checks": [
+        _cr("contains:x", 1, True, passed, 1.0 if passed else 0.0,
+            unsure=passed is None)]})})
+        for epoch, passed in sorted(pattern.items())]
+
+
+def test_each_trial_record_carries_that_epochs_own_checks(minimal_pack_with_probe):
+    """Task 22: the drill-down must show THIS trial's checks.
+
+    Discriminating by construction — epoch 2 is the only one that deviated, so
+    a record handed the probe-level representative list (or epoch 1's, or an
+    empty one) fails on `passed`, not merely on length.
+    """
+    pack = minimal_pack_with_probe("p", samples=3)
+    samples = _epoch_samples({1: True, 2: False, 3: True})
+    # a second scorer on epoch 2 only: the plumbing is per-epoch, not per-scorer
+    samples[1].scores["tier3"] = _FakeScore(
+        {"checks": [_cr("rubric:tone", 3, False, True, 0.5)]})
+    [pr] = _reduce_log_to_probes(_FakeLog(samples), pack)
+
+    by_epoch = {rec["epoch"]: rec["checks"] for rec in pr.trial_records}
+    assert sorted(by_epoch) == [1, 2, 3]
+    assert [c["passed"] for c in by_epoch[1]] == [True]
+    assert [c["passed"] for c in by_epoch[3]] == [True]
+    assert [(c["check"], c["passed"]) for c in by_epoch[2]] == [
+        ("contains:x", False), ("rubric:tone", True)]
+    # the artifact's own check-dict shape, unchanged
+    assert all(set(c) == {"check", "tier", "required", "weight", "passed",
+                          "score", "turn", "evidence", "unsure"}
+               for checks in by_epoch.values() for c in checks)
+
+
+def test_a_trial_records_checks_are_not_aliased_to_the_representative_list(
+        minimal_pack_with_probe):
+    """Sharing one list object between `checks` and a `trial_records` entry
+    would make a redactor that rewrites the drill-down silently rewrite the
+    report as well. They serialise the same; they must not BE the same."""
+    pack = minimal_pack_with_probe("p", samples=1)
+    [pr] = _reduce_log_to_probes(_FakeLog(_epoch_samples({1: False})), pack)
+
+    assert pr.checks == pr.trial_records[0]["checks"]
+    assert pr.checks is not pr.trial_records[0]["checks"]
+
+
+@pytest.mark.parametrize("pattern, expected", [
+    ({1: True, 2: True, 3: True}, (3, 1.0, 1.0, 1.0, 0)),
+    ({1: True, 2: False, 3: True}, (3, 1.0, 0.0, 2 / 3, 0)),
+    ({1: False, 2: False, 3: False}, (3, 0.0, 0.0, 0.0, 0)),
+    # the unsure trial counts toward `trials`/`unsure_trials` but is EXCLUDED
+    # from the mean (PR #4 fix #1), so that is (1.0 + 0.0) / 2, not / 3
+    ({1: True, 2: None, 3: False}, (3, 1.0, 0.0, 0.5, 1)),
+    ({1: False, 2: True}, (2, 1.0, 0.0, 0.5, 0)),
+])
+def test_task_22_moves_no_verdict_field(minimal_pack_with_probe, pattern, expected):
+    """**PRESENTATION ONLY.** `pass_k`/`pass_at_k`/`mean_score`/`unsure_trials`
+    come from the `req_passes` aggregation, never from `checks` or
+    `trial_records`. These are the pre-Task-22 values on the same inputs."""
+    pack = minimal_pack_with_probe("p", samples=max(pattern))
+    [pr] = _reduce_log_to_probes(_FakeLog(_epoch_samples(pattern)), pack)
+
+    assert tuple(getattr(pr, f) for f in _VERDICT_FIELDS) == pytest.approx(expected)
+
+
 def test_run_gate_raises_on_non_success_eval_status(monkeypatch, tmp_path):
     """A failed Inspect eval must raise (CLI maps it to exit 2), not reduce an empty log."""
     monkeypatch.setenv("EVALYN_TARGET_URL", "http://localhost:8899")
@@ -529,6 +604,9 @@ def test_reducer_trial_records_scored_epochs_only(minimal_pack_with_probe):
     assert pr.trials == 1
     assert pr.trial_records == [{
         "epoch": 1, "transcript": "User: hi\nAssistant: hello",
+        # Task 22: the epoch's own checks, all three of them — including the
+        # two that `invariant_failures` does not count.
+        "checks": scored.scores["tier1"].metadata["checks"],
         "session_seconds": 1.25, "invariant_failures": 1}]
 
 

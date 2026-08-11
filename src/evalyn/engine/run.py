@@ -53,8 +53,12 @@ class ProbeResult:
     #                           (all non-required unsure) trials, not failures
     checks: list[dict] = field(default_factory=list)  # representative CheckResults
     # Per-trial evidence, one dict per SCORED epoch (same rule as `trials`),
-    # sorted by epoch: {"epoch": int, "transcript": str,
-    # "session_seconds": float | None, "invariant_failures": int}. The
+    # sorted by epoch: {"epoch": int, "transcript": str, "checks": list[dict],
+    # "session_seconds": float | None, "invariant_failures": int}. `checks` is
+    # THIS epoch's own CheckResults across every scorer (Task 22) — the field
+    # above is one representative epoch's, so the cockpit's per-trial
+    # drill-down cannot be served from it. Also additive: artifacts written
+    # before Task 22 carry no such key and read as [] ("not captured"). The
     # transcript is the judged one (labeled_transcript format: "User: …\n
     # Assistant: …" — identical to what Tier-2/3 saw); session_seconds is the
     # target session wall-clock the solver stored — concurrency-gate queue wait
@@ -263,6 +267,13 @@ def reduce_log_to_probes(log, pack: Pack,
             trial_records.append({
                 "epoch": epoch,
                 "transcript": transcript,
+                # THIS epoch's own checks, across every scorer (Task 22). The
+                # probe-level `checks` are one *representative* epoch's, so the
+                # drill-down had nothing true to show and served []. Copied
+                # rather than aliased: the representative list is the same
+                # object for one of the epochs, and a consumer that rewrites
+                # one (the redactor) must not silently rewrite the other.
+                "checks": list(crs),
                 "session_seconds": session_seconds,
                 "invariant_failures": sum(
                     1 for c in crs
