@@ -33,7 +33,7 @@ from evalyn.ui.launcher import (
     refusal_for,
     spawn_child,
 )
-from evalyn.ui.models import ControlAction, LaunchRequest
+from evalyn.ui.models import ControlAction, LaunchRequest, RunMode
 from evalyn.ui.paths import (
     META_EXIT_CODE_KEY,
     META_LAUNCHED_KEY,
@@ -721,10 +721,44 @@ def test_r4_46_an_events_file_with_no_artifact_still_lists(tmp_path, pack):
     assert _list_ids(runs) == []
 
 
-def test_r4_46_a_trial_record_that_is_not_a_dict_is_the_parked_500(tmp_path, pack):
-    """The parked defect itself, pinned rather than fixed (R4-46 says do not
-    fix it here). If this ever starts passing, the guard landed and this test
-    should become the assertion that it did."""
+#: The five fields `ProbeResult` requires (`engine/run.py:33-38`). Named here
+#: because the FIRST version of the test below omitted them: the artifact then
+#: failed validation, `typed` was `None`, and the failure branch was
+#: unreachable in every possible world. A tripwire that cannot fire is worse
+#: than no tripwire, because it is read as protection.
+REQUIRED_PROBE_FIELDS = {"id": "p", "category": "grounding", "kind": "probe",
+                         "safety_critical": False, "samples": 1}
+
+#: And the six `RunArtifact` requires. Both sets were introspected with
+#: `dataclasses.fields(...)`, not remembered. Note there is **no**
+#: `schema_version` and **no** per-probe `tier`: both are rejected as unexpected
+#: keyword arguments, and either one alone is enough to make an artifact fail to
+#: validate — which is how the original version of this test ended up proving
+#: nothing while passing.
+REQUIRED_ARTIFACT_FIELDS = {"pack_name": "example", "pack_hash": "0" * 8,
+                            "judge_model": "mockllm/model",
+                            "created_at": "2026-08-11T00:00:00+00:00",
+                            "log_path": "logs/none.eval"}
+
+
+def test_r4_46_a_non_dict_trial_record_still_breaks_the_run_list(tmp_path, pack):
+    """The parked `list()` 500, pinned as it ACTUALLY behaves today.
+
+    This asserts the bug, not the fix. `RunIndex.list()` has no per-row guard
+    where `get()` does, so a probe whose `trial_records` holds a non-dict makes
+    `capabilities_of` raise `AttributeError` and 500s the entire run list —
+    the cockpit's first screen. R4-46 parks the guard as structural work, so
+    this test's job is to be *honest* about the state of the tree, and to go
+    red the moment somebody fixes it.
+
+    **No Evalyn code path produces this artifact.** `ProbeResult.trial_records`
+    is written only by the engine, one dict per scored epoch, and this task's
+    launcher never writes artifact content at all — it is reachable only by
+    hand-editing a file in `runs/`. That is why it is parked rather than urgent.
+
+    When the guard lands: this test fails, and it should be inverted to assert
+    the run lists with one degraded row.
+    """
     from evalyn.ui.index import RunIndex
 
     runs = tmp_path / "runs"
@@ -733,13 +767,46 @@ def test_r4_46_a_trial_record_that_is_not_a_dict_is_the_parked_500(tmp_path, pac
     run_id = made.launch(request_for("gate"), pack=pack, pack_path=EXAMPLE_PACK)
     made.live.process.wait(timeout=60)
     (runs / f"{run_id}.json").write_text(json.dumps({
-        "schema_version": 1,
+        **REQUIRED_ARTIFACT_FIELDS,
+        "probes": [{**REQUIRED_PROBE_FIELDS,
+                    "trial_records": ["not-a-dict"]}],
+    }), encoding="utf-8")
+
+    # The artifact must actually VALIDATE, or the branch is never reached and
+    # this test proves nothing — which is precisely how its predecessor passed.
+    assert RunIndex(runs)._load(runs / f"{run_id}.json", run_id,
+                                RunMode.gate).typed is not None
+
+    with pytest.raises(AttributeError):
+        RunIndex(runs).list()
+
+
+def test_the_vacuous_form_of_the_tripwire_would_not_have_reached_the_defect(
+        tmp_path, pack):
+    """The discriminator for the test above, and the reason it was rewritten.
+
+    The original artifact carried only `id` and `tier`, and it failed for two
+    independent reasons: `ProbeResult` requires five fields it did not have,
+    **and** `tier` is not a `ProbeResult` field at all (it belongs to a check).
+    Either alone is enough — `typed` stayed `None`, and `list()` returned a
+    degraded row without ever touching `trial_records`. This pins that
+    difference, so the fix cannot silently regress to the vacuous shape.
+    """
+    from evalyn.ui.index import RunIndex
+
+    runs = tmp_path / "runs"
+    runs.mkdir()
+    made = launcher_spawning(INERT, runs)
+    run_id = made.launch(request_for("gate"), pack=pack, pack_path=EXAMPLE_PACK)
+    made.live.process.wait(timeout=60)
+    (runs / f"{run_id}.json").write_text(json.dumps({
+        **REQUIRED_ARTIFACT_FIELDS,
         "probes": [{"id": "p", "tier": 1, "trial_records": ["not-a-dict"]}],
     }), encoding="utf-8")
-    try:
-        RunIndex(runs).list()
-    except AttributeError:
-        pytest.fail("REACHED the parked list() 500 from a launcher-produced run")
+
+    assert RunIndex(runs)._load(runs / f"{run_id}.json", run_id,
+                                RunMode.gate).typed is None
+    assert [row.run_id for row in RunIndex(runs).list()] == [run_id]
 
 
 # --------------------------------------------------------------------------
@@ -1229,3 +1296,244 @@ async def test_the_events_endpoint_hands_the_stream_a_disconnect_check(
     assert callable(seen.get("is_disconnected"))
     assert callable(seen.get("scrub"))
     assert seen.get("idle_timeout") == app.state.sse_idle_timeout
+
+
+# --------------------------------------------------------------------------
+# 14. Control may not rewrite a finished run's verdict (I-1)
+# --------------------------------------------------------------------------
+#
+# `derive_status` puts `control is cancel` ABOVE the artifact, so a control
+# file written after a run completes relabels a `passed` run `cancelled` — in
+# the detail view, in the run list, and on disk. On stage that means clicking
+# Cancel a moment too late silently rewrites a real result.
+
+#: An artifact that validates and passes, written by the inert child so a run
+#: can genuinely FINISH inside a test.
+PASSING_ARTIFACT = {
+    "pack_name": "example", "pack_hash": "0" * 8, "judge_model": "mockllm/model",
+    "created_at": "2026-08-11T00:00:00+00:00", "log_path": "logs/none.eval",
+    "probes": [{"id": "grounding", "category": "grounding", "kind": "probe",
+                "safety_critical": False, "samples": 1, "trials": 1,
+                "expected_trials": 1, "pass_at_k": 1.0, "pass_k": 1.0}],
+}
+
+
+def artifact_writing_child() -> list[str]:
+    return [sys.executable, "-c",
+            "import json, os, pathlib;"
+            "pathlib.Path(os.environ['OUT'], os.environ['EVALYN_RUN_ID'] + '.json')"
+            ".write_text(os.environ['ART'])"]
+
+
+async def test_cancelling_a_finished_run_cannot_rewrite_its_verdict(
+        tmp_path, asgi_client):
+    """The one the reviewer said to fix before the 14th.
+
+    A completed evaluation's result must not be changeable by a UI click. The
+    refusal is a 409 — the request conflicts with the resource's state — which
+    maps to the frozen `busy` code; the message is what the operator reads.
+    """
+    app = cockpit(tmp_path, child=artifact_writing_child())
+    os.environ["OUT"] = str(tmp_path)
+    os.environ["ART"] = json.dumps(PASSING_ARTIFACT)
+    try:
+        async with asgi_client(app) as client:
+            run_id = (await client.post("/api/runs",
+                                        json=launch_body())).json()["run_id"]
+            reap_app(app)
+            before = (await client.get(f"/api/runs/{run_id}")).json()
+            assert before["status"] == "passed", before["status"]
+
+            response = await client.post(f"/api/runs/{run_id}/control",
+                                         json={"action": "cancel"})
+            after = (await client.get(f"/api/runs/{run_id}")).json()
+            rows = (await client.get("/api/runs")).json()["items"]
+    finally:
+        del os.environ["OUT"], os.environ["ART"]
+
+    assert response.status_code == 409
+    assert response.json()["error"]["code"] == "busy"
+    # The verdict, in all three places the reviewer found it rewritten.
+    assert after["status"] == "passed"
+    assert after["cancelled"] is False
+    assert [row["status"] for row in rows] == ["passed"]
+    # And nothing was left on disk to rewrite it later.
+    assert not control_path(tmp_path / f"{run_id}.json").exists()
+
+
+async def test_a_control_action_on_a_run_whose_child_exited_is_refused(
+        tmp_path, asgi_client):
+    """The second half of the liveness rule: a recorded `exit_code` means the
+    child is gone, even when it never wrote an artifact."""
+    app = cockpit(tmp_path, child=[sys.executable, "-c", "raise SystemExit(1)"])
+    async with asgi_client(app) as client:
+        run_id = (await client.post("/api/runs", json=launch_body())).json()["run_id"]
+        reap_app(app)
+        response = await client.post(f"/api/runs/{run_id}/control",
+                                     json={"action": "cancel"})
+    assert response.status_code == 409
+    assert response.json()["error"]["code"] == "busy"
+    assert not control_path(tmp_path / f"{run_id}.json").exists()
+
+
+@pytest.mark.parametrize("action", ["pause", "resume", "cancel"])
+async def test_a_run_that_is_still_in_flight_still_takes_every_action(
+        tmp_path, asgi_client, action):
+    """The discriminator. A liveness check that refused everything would
+    satisfy the tests above while making the cockpit's controls dead."""
+    app = cockpit(tmp_path, child=INERT_SLEEPER)
+    async with asgi_client(app) as client:
+        run_id = (await client.post("/api/runs", json=launch_body())).json()["run_id"]
+        response = await client.post(f"/api/runs/{run_id}/control",
+                                     json={"action": action})
+    try:
+        assert response.status_code == 202
+        assert json.loads(control_path(tmp_path / f"{run_id}.json")
+                          .read_text(encoding="utf-8")) == {"action": action}
+    finally:
+        app.state.launcher.live.process.kill()
+        reap_app(app)
+
+
+async def test_a_run_launched_elsewhere_with_no_result_yet_still_takes_control(
+        tmp_path, asgi_client):
+    """A run this cockpit did not launch, with no artifact and no recorded exit
+    code, may genuinely be alive in another process — and the control file is
+    the only way to reach it. Nothing is at risk: there is no result to
+    overwrite. Refusing here would make the guard over-broad."""
+    app = cockpit(tmp_path)
+    run_id = "20260811T000000000000-deadbeef-example"
+    sidecar_dir(tmp_path, run_id).mkdir(parents=True)
+    async with asgi_client(app) as client:
+        response = await client.post(f"/api/runs/{run_id}/control",
+                                     json={"action": "cancel"})
+    assert response.status_code == 202
+    assert control_path(tmp_path / f"{run_id}.json").exists()
+
+
+# --------------------------------------------------------------------------
+# 15. M-1 — the event NAME reaches the wire too
+# --------------------------------------------------------------------------
+
+async def test_the_events_endpoint_scrubs_the_event_name_not_only_the_payload(
+        tmp_path, asgi_client):
+    """`event: <type>` goes out as literally as `data:` does.
+
+    Scrubbing only the payload left a secret in the event name verbatim on the
+    one route that is on screen during a live run. Unreachable from today's
+    emit sites, which is why it is a name and not a payload — and exactly why
+    it would have gone unnoticed.
+    """
+    app = cockpit(tmp_path)
+    async with asgi_client(app) as client:
+        run_id = (await client.post("/api/runs", json=launch_body())).json()["run_id"]
+        reap_app(app)
+        (tmp_path / f"{run_id}.events.jsonl").write_text(
+            json.dumps({"seq": 1, "type": "turn.AKIAIOSFODNN7EXAMPLE",
+                        "data": {}}) + "\n"
+            + json.dumps({"seq": 2, "type": "run.finished", "data": {}}) + "\n",
+            encoding="utf-8")
+        response = await client.get(f"/api/runs/{run_id}/events")
+    assert "AKIAIOSFODNN7EXAMPLE" not in response.text
+    assert "«redacted:token»" in response.text
+    # The resume cursor is an integer and survives redaction untouched — a
+    # scrubbed `id:` would break `Last-Event-ID` resumption for the whole run.
+    assert "id: 1\n" in response.text
+    assert "id: 2\n" in response.text
+
+
+# --------------------------------------------------------------------------
+# 16. M-2 — containment outranks the pending-detail fallback
+# --------------------------------------------------------------------------
+
+async def test_a_symlink_escaping_the_runs_directory_is_still_refused(
+        tmp_path, asgi_client):
+    """R4-7's braces. `_resolved_artifact` 404s a symlink that resolves outside
+    `runs/`, and that arm is a containment control — it must not sit behind a
+    convenience fallback that answers for the same id. The run below has a
+    sidecar directory, so the pending view would gladly claim it.
+    """
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    runs = tmp_path / "runs"
+    runs.mkdir()
+    app = cockpit(runs)
+    run_id = "20260811T000000000000-deadbeef-example"
+    sidecar_dir(runs, run_id).mkdir(parents=True)
+    (outside / "secret.json").write_text(json.dumps(PASSING_ARTIFACT),
+                                         encoding="utf-8")
+    (runs / f"{run_id}.json").symlink_to(outside / "secret.json")
+
+    async with asgi_client(app) as client:
+        response = await client.get(f"/api/runs/{run_id}")
+    assert response.status_code == 404
+    assert response.json()["error"]["code"] == "not_found"
+
+
+# The two liveness arms are mutually redundant for a run that finished BEFORE
+# the request, so neither of the tests above can tell them apart: remove either
+# one alone and they both still pass. These two separate them.
+
+async def test_a_finished_run_never_has_a_control_file_written_at_all(
+        tmp_path, asgi_client):
+    """Pins the arm BEFORE the write.
+
+    With only the post-write arm, a refused cancel still momentarily writes a
+    real cancel file into `runs/` and then deletes it. Nothing should be
+    written for a run that is already over — the refusal must happen before the
+    filesystem is touched, not be repaired afterwards.
+    """
+    app = cockpit(tmp_path, child=artifact_writing_child())
+    os.environ["OUT"] = str(tmp_path)
+    os.environ["ART"] = json.dumps(PASSING_ARTIFACT)
+    calls: list = []
+    real_control = app.state.launcher.control
+    app.state.launcher.control = lambda *a, **k: calls.append(a) or real_control(*a, **k)
+    try:
+        async with asgi_client(app) as client:
+            run_id = (await client.post("/api/runs",
+                                        json=launch_body())).json()["run_id"]
+            reap_app(app)
+            response = await client.post(f"/api/runs/{run_id}/control",
+                                         json={"action": "cancel"})
+    finally:
+        del os.environ["OUT"], os.environ["ART"]
+    assert response.status_code == 409
+    assert calls == [], "a finished run must not reach the control writer"
+
+
+async def test_a_run_that_finishes_DURING_the_write_has_its_file_removed(
+        tmp_path, asgi_client):
+    """Pins the arm AFTER the write — the race the first arm cannot close.
+
+    A run can finish between the liveness check and the write. Here that is
+    forced rather than hoped for: the artifact lands *inside* `control()`, so
+    the pre-write check sees a live run, the file is written, and only the
+    second check can notice that what was just written would now rewrite a
+    finished run's verdict.
+    """
+    app = cockpit(tmp_path, child=INERT_SLEEPER)
+    async with asgi_client(app) as client:
+        run_id = (await client.post("/api/runs", json=launch_body())).json()["run_id"]
+        real_control = app.state.launcher.control
+
+        def control_then_finish(rid, action):
+            real_control(rid, action)
+            # The run completes in the window: its artifact appears.
+            (tmp_path / f"{rid}.json").write_text(json.dumps(PASSING_ARTIFACT),
+                                                 encoding="utf-8")
+
+        app.state.launcher.control = control_then_finish
+        try:
+            response = await client.post(f"/api/runs/{run_id}/control",
+                                         json={"action": "cancel"})
+            detail = await client.get(f"/api/runs/{run_id}")
+        finally:
+            app.state.launcher.live.process.kill()
+            reap_app(app)
+
+    assert response.status_code == 409
+    assert not control_path(tmp_path / f"{run_id}.json").exists(), \
+        "the file written inside the race window was left on disk"
+    assert detail.json()["status"] == "passed"
+    assert detail.json()["cancelled"] is False
