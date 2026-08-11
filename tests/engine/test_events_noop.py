@@ -24,6 +24,7 @@ from __future__ import annotations
 import asyncio
 import json
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from inspect_ai.model import ModelOutput, ModelUsage, get_model
@@ -33,7 +34,8 @@ from evalyn.discovery import loop as loop_mod
 from evalyn.discovery import run as discovery_run
 from evalyn.discovery.config import DiscoveryConfig, Limits
 from evalyn.engine import events as events_mod
-from evalyn.engine.compare import run_compare
+from evalyn.engine.budget import BudgetExceeded
+from evalyn.engine.compare import CompareArtifact, run_compare, write_compare_artifact
 from evalyn.engine.run import ProbeResult, RunArtifact, pack_fingerprint, run_gate
 from evalyn.scoring.pairwise import PairVerdict
 from evalyn.scoring.rubrics import parse_criteria
@@ -152,21 +154,33 @@ def _gate(pack, tmp_path, name="runs", **kw):
 TONE_RUBRIC = "# Tone rubric\n## Calm\nStays calm.\n"
 
 
-@pytest.fixture
-def compare_pack(tmp_path):
+def _write_compare_pack(tmp_path, *, budget_usd: float | None = None):
     d = tmp_path / "cpack"
     (d / "probes").mkdir(parents=True)
     (d / "rubrics").mkdir()
-    (d / "target.yaml").write_text(
-        "name: cmp\nsessions:\n  open: {method: POST, path: /session}\n"
-        "  message: {method: POST, path: /chat}\n"
-        "env: {base_url: http://localhost:8899}\n"
-        "allowlist: [http://localhost:8899]\n")
+    target = ("name: cmp\nsessions:\n  open: {method: POST, path: /session}\n"
+              "  message: {method: POST, path: /chat}\n"
+              "env: {base_url: http://localhost:8899}\n"
+              "allowlist: [http://localhost:8899]\n")
+    if budget_usd is not None:
+        target += f"budget: {{max_usd_per_run: {budget_usd}}}\n"
+    (d / "target.yaml").write_text(target)
     (d / "rubrics" / "tone.md").write_text(TONE_RUBRIC)
     (d / "probes" / "p.yaml").write_text(
         "- id: r1\n  category: chat\n  turns: [hi]\n  checks:\n"
         "    - { type: rubric, rubric: tone, required: true }\n")
     return load_pack(str(d))
+
+
+@pytest.fixture
+def compare_pack(tmp_path):
+    return _write_compare_pack(tmp_path)
+
+
+@pytest.fixture
+def capped_compare_pack(tmp_path):
+    """Same pack with a cap the stub judge's metered usage is certain to bust."""
+    return _write_compare_pack(tmp_path, budget_usd=0.001)
 
 
 def _compare_artifacts(pack):
@@ -191,7 +205,9 @@ async def _stub_judge(rubric_text, rubric_hash, ta, tb, judge_model, *,
         votes={c: [] for c in crits},
         justifications={c: "because" for c in crits},
         steps=steps or ["generated"], rubric_hash=rubric_hash,
-        usage={"openai/gpt-4o": {"input_tokens": 10, "output_tokens": 10}})
+        # 1000/1000 priced tokens: enough that `capped_compare_pack`'s
+        # $0.001 cap is certainly breached, so the budget path is deterministic.
+        usage={"openai/gpt-4o": {"input_tokens": 1000, "output_tokens": 1000}})
 
 
 @pytest.fixture
@@ -307,6 +323,14 @@ async def test_discover_fires_every_named_call_site(discover_pack, tmp_path,
         "run.started", "agent.step", "agent.reply", "confirm.result",
         "finding.staged", "replay.result", "spend.updated", "artifact.written",
         "run.finished"}
+    # A name-SET assertion is structurally blind to a missing DUPLICATE: discover
+    # emits `spend.updated` twice, and deleting either site leaves the name
+    # present from the other, so the set above stays satisfied. Assert the
+    # ordered `phase` sequence instead — that distinguishes the two sites and
+    # pins their order (the post-eval reading, then the post-replay final one,
+    # which is the only pair a live spend meter can be read from).
+    phases = [f["phase"] for n, f in sink.events if n == "spend.updated"]
+    assert phases == ["eval", "final"], phases
     # Every hunt event carries the SAME hunt_key, and it is the string the
     # discovery dataset gives the sample as its id — derived, not hardcoded, so
     # this stays true if the shipped personas change.
@@ -317,6 +341,106 @@ async def test_discover_fires_every_named_call_site(discover_pack, tmp_path,
                  if n in {"agent.step", "agent.reply", "confirm.result",
                           "finding.staged", "replay.result"}}
     assert hunt_keys == {expected}, sorted(hunt_keys)
+
+
+# ==========================================================================
+# PROOF 1c: the FAILING paths emit their terminal event too
+#
+# The happy-path tests above drive only the successful return, so the three
+# `run.finished(status="error")` sites and the compare writer's
+# `artifact.written` survived deletion with the full suite green (fix round 1,
+# findings I-1.1/2/3/6). A run that DIED is exactly the run a cockpit must not
+# leave spinning, so these are the emissions that matter most, and they need
+# tests that actually take the exception branch.
+# ==========================================================================
+
+@pytest.mark.filterwarnings("ignore:no price entry")
+def test_gate_emits_run_finished_error_when_no_trial_is_collected(gate_pack, tmp_path,
+                                                                  monkeypatch):
+    """`run_gate`'s fully-dead-target branch (round-2 N6) still terminates the
+    stream. The eval is stubbed rather than the target killed: this must pin the
+    EMISSION, not re-test the RuntimeError, and a stub keeps it instant."""
+    fake = SimpleNamespace(samples=[], status="success", location=None)
+    monkeypatch.setattr("evalyn.engine.run.inspect_eval", lambda *a, **k: [fake])
+    monkeypatch.setattr("evalyn.engine.run._judge_usd", lambda log: 0.0)
+
+    sink = _RecordingSink()
+    with pytest.raises(RuntimeError, match="no probe collected"):
+        _gate(gate_pack, tmp_path, sink=sink)
+
+    finished = [f for n, f in sink.events if n == "run.finished"]
+    assert finished, "a gate run that died emitted no run.finished at all"
+    assert [f["status"] for f in finished] == ["error"]
+    assert "RuntimeError" in finished[0]["error"]
+    # ...and the artifact event still preceded it: the evidence was written
+    # before the raise (house write-before-raise), so the cockpit can offer it.
+    assert sink.names.index("artifact.written") < sink.names.index("run.finished")
+
+
+def test_compare_emits_run_finished_error_on_a_budget_breach(capped_compare_pack,
+                                                             offline_judge, tmp_path):
+    sink = _RecordingSink()
+    with pytest.raises(BudgetExceeded, match="max_usd_per_run"):
+        _run_compare(capped_compare_pack, tmp_path, sink=sink)
+
+    finished = [f for n, f in sink.events if n == "run.finished"]
+    assert finished, "a compare that busted its cap emitted no run.finished"
+    assert [f["status"] for f in finished] == ["error"]
+    assert finished[0]["error"] == "BudgetExceeded"
+    # The breach artifact is written FIRST and announces itself, so a
+    # cockpit-launched compare that busts its cap is still findable on disk.
+    assert "artifact.written" in sink.names
+    assert sink.names.index("artifact.written") < sink.names.index("run.finished")
+
+
+@pytest.mark.filterwarnings("ignore:no price entry")
+async def test_discover_emits_run_finished_error_when_the_finding_loop_raises(
+        discover_pack, tmp_path, monkeypatch):
+    """R8-5's durability wrap: staging blows up after the money is spent."""
+    _scripted_brain(monkeypatch, _confirming_script())
+
+    def _boom(*a, **kw):
+        raise OSError(28, "No space left on device")
+
+    monkeypatch.setattr(discovery_run, "stage_probe", _boom)
+
+    sink = _RecordingSink()
+    with pytest.raises(OSError, match="No space left"):
+        await discovery_run.run_discovery(
+            discover_pack, _discovery_cfg(tmp_path, staging_dir=None), sink=sink)
+
+    finished = [f for n, f in sink.events if n == "run.finished"]
+    assert finished, "a discover run that raised mid-loop emitted no run.finished"
+    assert [f["status"] for f in finished] == ["error"]
+    # The partial artifact R8-5 guarantees is announced before the re-raise —
+    # that record is the only evidence of what the run already spent.
+    assert "artifact.written" in sink.names
+    assert sink.names.index("artifact.written") < sink.names.index("run.finished")
+
+
+def test_write_compare_artifact_announces_the_file_it_wrote(compare_pack, tmp_path):
+    """`compare.py`'s `artifact.written` had no coverage of any kind (I-1.6).
+
+    It cannot be covered through `run_compare`: on the happy path the CLI owns
+    the write, so this writer is reached directly. Both callers go through it,
+    which is the whole reason the emit lives here rather than at two call sites.
+    """
+    art_a, _ = _compare_artifacts(compare_pack)
+    art = CompareArtifact(
+        pack_name="cmp", pack_hash=art_a.pack_hash, judge_model="openai/gpt-4o",
+        created_at="2026-08-11T00:00:00+00:00", label_a="A", label_b="B",
+        source_a="a.json", source_b="b.json",
+        created_at_a=art_a.created_at, created_at_b=art_a.created_at,
+        categories={}, probes=[], hard_metrics={}, excluded_pairs=0,
+        judge_usd=0.0)
+
+    sink = _RecordingSink()
+    written = write_compare_artifact(art, out_dir=str(tmp_path / "runs"), sink=sink)
+
+    assert [n for n in sink.names] == ["artifact.written"]
+    # the announced path is the real one, not a reconstruction
+    assert sink.events[0][1]["path"] == str(written)
+    assert written.is_file() and written.name.endswith("-compare.json")
 
 
 # ==========================================================================
