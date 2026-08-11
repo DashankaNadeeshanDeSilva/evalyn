@@ -33,7 +33,7 @@ from evalyn.ui.launcher import (
     refusal_for,
     spawn_child,
 )
-from evalyn.ui.models import ControlAction, LaunchRequest, RunMode
+from evalyn.ui.models import ControlAction, LaunchRequest, RunMode, RunStatus
 from evalyn.ui.paths import (
     META_EXIT_CODE_KEY,
     META_LAUNCHED_KEY,
@@ -692,7 +692,16 @@ def _list_ids(runs: Path) -> list[str]:
     return [row.run_id for row in RunIndex(runs).list()]
 
 
+def _list_rows(runs: Path):
+    from evalyn.ui.index import RunIndex
+    return RunIndex(runs).list()
+
+
 def test_r4_46_a_child_that_never_started_still_lists(tmp_path, pack):
+    """`failed_to_start` is a row, not a disappearance. The operator pressed
+    Launch and something has to say what came of it — before F5 was fixed this
+    run had no row at all and the click left no trace anywhere in the table.
+    """
     runs = tmp_path / "runs"
     runs.mkdir()
 
@@ -702,17 +711,21 @@ def test_r4_46_a_child_that_never_started_still_lists(tmp_path, pack):
     with pytest.raises(OSError):
         RunLauncher(runs, spawn=exploding_spawn).launch(
             request_for("gate"), pack=pack, pack_path=EXAMPLE_PACK)
-    assert _list_ids(runs) == []      # no artifact, so no row — and no crash
+    (row,) = _list_rows(runs)                        # a row, and no crash
+    assert row.status is RunStatus.failed_to_start
+    assert row.degraded is False
 
 
 def test_r4_46_a_child_that_died_instantly_still_lists(tmp_path, pack):
     runs = tmp_path / "runs"
     runs.mkdir()
     made = launcher_spawning([sys.executable, "-c", "raise SystemExit(2)"], runs)
-    made.launch(request_for("gate"), pack=pack, pack_path=EXAMPLE_PACK)
+    run_id = made.launch(request_for("gate"), pack=pack, pack_path=EXAMPLE_PACK)
     made.live.process.wait(timeout=60)
     made.reap()
-    assert _list_ids(runs) == []
+    (row,) = _list_rows(runs)
+    assert row.run_id == run_id
+    assert row.status is RunStatus.interrupted, "it vanished without a record"
 
 
 def test_r4_46_a_half_written_meta_file_still_lists(tmp_path, pack):
@@ -750,7 +763,12 @@ def test_r4_46_an_events_file_with_no_artifact_still_lists(tmp_path, pack):
     made.live.process.wait(timeout=60)
     (runs / f"{run_id}.events.jsonl").write_text(
         '{"seq": 1, "type": "run.started", "data": {}}\n', encoding="utf-8")
-    assert _list_ids(runs) == []
+    (row,) = _list_rows(runs)
+    assert row.run_id == run_id
+    # Nothing reaped this child, so no exit code was ever recorded — which
+    # `index.py` says outright is indistinguishable from a live run. The point
+    # here is the row, not the verdict on it.
+    assert row.status is RunStatus.running
 
 
 #: The five fields `ProbeResult` requires (`engine/run.py:33-38`). Named here
@@ -1143,6 +1161,28 @@ async def test_a_launched_run_has_a_detail_before_any_artifact_exists(
         assert body["pack_name"] == "example"
         assert body["capabilities"] == {"transcripts": False, "trial_records": False,
                                         "hard_metrics": False}
+    finally:
+        app.state.launcher.live.process.kill()
+        reap_app(app)
+
+
+async def test_a_live_run_is_in_the_runs_table_before_its_artifact_lands(
+        tmp_path, asgi_client):
+    """Wiring-pass F5, confirmed by execution: with a run in flight,
+    `GET /api/runs` returned only the previously *finished* artifacts. The
+    demo path does not depend on it — the Launch button navigates straight to
+    the detail page — but a user who clicks **Runs** during a run saw the table
+    exactly as it was before they pressed Launch.
+    """
+    app = cockpit(tmp_path, child=INERT_SLEEPER)
+    async with asgi_client(app) as client:
+        run_id = (await client.post("/api/runs", json=launch_body())).json()["run_id"]
+        page = (await client.get("/api/runs")).json()
+    try:
+        assert not (tmp_path / f"{run_id}.json").exists(), "still pending"
+        assert [row["run_id"] for row in page["items"]] == [run_id]
+        assert page["items"][0]["status"] == "running"
+        assert page["items"][0]["degraded"] is False
     finally:
         app.state.launcher.live.process.kill()
         reap_app(app)

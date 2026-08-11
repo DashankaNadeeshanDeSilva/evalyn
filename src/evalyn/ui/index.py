@@ -532,6 +532,41 @@ class RunIndex:
         found.sort(key=lambda pair: pair[0], reverse=True)
         return found
 
+    def _pending(self, mode: RunMode | None = None) -> list[str]:
+        """Every run this cockpit launched that has written no artifact yet.
+
+        The glob above can only see runs that are **over**, because the
+        artifact is written once, at the end. So a run in flight had no row at
+        all until it finished — an operator who clicked **Runs** during a run
+        saw the table exactly as it was before they pressed Launch, which was
+        confirmed by execution against the real server. The launcher's own
+        sidecar directory is the only record that exists in the meantime.
+
+        Sourced from `runs/.evalyn-ui/`, so a `runs/` this cockpit never
+        launched into costs one failed `iterdir` and nothing else. An entry is
+        a run only if its name satisfies the frozen grammar — that directory is
+        on a real filesystem and can hold anything — and only while there is no
+        artifact, so no run is ever listed twice and the artifact row, which
+        knows strictly more, always wins.
+        """
+        try:
+            entries = list((self.runs_dir / SIDECAR_DIR_NAME).iterdir())
+        except OSError:
+            return []
+        found = []
+        for entry in entries:
+            run_id = entry.name
+            if not is_run_id(run_id):
+                continue
+            if mode is not None and mode_of(run_id) is not mode:
+                continue
+            if self.artifact_path(run_id) is not None:
+                continue
+            if not entry.is_dir():
+                continue
+            found.append(run_id)
+        return found
+
     # -- the three-layer load ---------------------------------------------
 
     def _load(self, path: Path, run_id: str, mode: RunMode) -> LoadedArtifact:
@@ -636,6 +671,32 @@ class RunIndex:
                           if isinstance(loaded.typed, RunArtifact) else None),
         )
 
+    def _pending_summary(self, run_id: str, sidecar: SidecarState) -> RunSummary:
+        """The row for a run that exists only as a sidecar directory.
+
+        Everything an artifact would have answered is `None` rather than a
+        zero: nothing has been measured, and `judge_usd=0.0` would be the claim
+        that this run has so far cost nothing, which is false the moment the
+        first trial is judged. `degraded` is `False` — "not written yet" is a
+        different fact from "cannot be read", and the SPA paints the second one
+        as an alarm. `pack_name` is `None` because the index has no allowlist:
+        the pack a run was started against lives on the launcher, and inventing
+        it here would mean guessing.
+        """
+        return RunSummary(
+            run_id=run_id,
+            mode=mode_of(run_id),
+            pack_name=None,
+            created_at=created_at_from_run_id(run_id),
+            status=derive_status(None, sidecar),
+            degraded=False,
+            degraded_reason=None,
+            capabilities=Capabilities(transcripts=False, trial_records=False,
+                                      hard_metrics=False),
+            judge_usd=None,
+            verdict_hint=None,
+        )
+
     def list(self, *, mode: RunMode | None = None, pack: str | None = None,
              status: RunStatus | None = None, limit: int = 50,
              before: str | None = None) -> list[RunSummary]:
@@ -664,17 +725,31 @@ class RunIndex:
         """
         cursor = parse_cursor(before) if before is not None else None
 
+        def wanted(row: RunSummary) -> bool:
+            if pack is not None and row.pack_name != pack:
+                return False
+            if status is not None and row.status is not status:
+                return False
+            if cursor is not None and (row.created_at, row.run_id) >= cursor:
+                return False
+            return True
+
         rows: list[RunSummary] = []
         for run_id, path in self._candidates(mode):
             loaded = self._load(path, run_id, mode_of(run_id))
             row = self._summary(loaded, self._sidecar(run_id, path))
-            if pack is not None and row.pack_name != pack:
-                continue
-            if status is not None and row.status is not status:
-                continue
-            if cursor is not None and (row.created_at, row.run_id) >= cursor:
-                continue
-            rows.append(row)
+            if wanted(row):
+                rows.append(row)
+
+        # Two sequences, one page. The filters and the sort are applied to both
+        # through the same code, so a run in flight cannot appear on a page the
+        # operator has narrowed away from it — and cannot jump the ordering at
+        # the seam where the two sources meet.
+        for run_id in self._pending(mode):
+            row = self._pending_summary(
+                run_id, self._sidecar(run_id, self.runs_dir / f"{run_id}.json"))
+            if wanted(row):
+                rows.append(row)
 
         rows.sort(key=lambda r: (r.created_at, r.run_id), reverse=True)
         return rows[:limit] if limit is not None else rows

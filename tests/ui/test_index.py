@@ -553,6 +553,80 @@ def test_an_explicit_pause_survives_an_unreadable_process_record(tmp_path):
     assert derive_status(None, idx._sidecar(rid, artifact)) is m.RunStatus.paused
 
 
+# --------------------------------------------------------------------------
+# 5c. a launched run has to LIST before it has written anything (F5)
+# --------------------------------------------------------------------------
+#
+# `_candidates` globs `runs/*.json`, so until an artifact exists the run has no
+# row at all: an operator who clicks **Runs** during a run sees the table it had
+# before they pressed Launch. Confirmed by execution against the real server.
+
+def test_a_launched_run_lists_before_it_has_written_an_artifact(tmp_path):
+    idx, rid, artifact = _planted(tmp_path, json.dumps({META_EXIT_CODE_KEY: None}))
+    (row,) = idx.list()
+    assert row.run_id == rid
+    assert row.status is m.RunStatus.running
+    assert row.degraded is False, "not written yet is not the same as unreadable"
+    assert row.pack_name is None, "the index has no allowlist to name it from"
+    assert row.judge_usd is None and row.verdict_hint is None
+
+
+def test_a_pending_row_disappears_the_moment_its_artifact_arrives(tmp_path):
+    """No run may be listed twice, and the artifact row is the better one."""
+    idx, rid, artifact = _planted(tmp_path, json.dumps({META_EXIT_CODE_KEY: 0}))
+    artifact.write_text(json.dumps(_gate_artifact().to_dict()))
+    (row,) = idx.list()
+    assert row.status is m.RunStatus.passed
+    assert row.pack_name == "example"
+
+
+def test_a_pending_row_answers_the_same_filters_every_other_row_does(tmp_path):
+    """`list()` is the runs table's only entry point, and a row that ignored
+    the filters would appear on a page the operator narrowed away from it."""
+    idx, rid, _ = _planted(tmp_path, json.dumps({META_EXIT_CODE_KEY: None}))
+    assert [r.run_id for r in idx.list(mode=m.RunMode.gate)] == [rid]
+    assert idx.list(mode=m.RunMode.compare) == []
+    assert [r.run_id for r in idx.list(status=m.RunStatus.running)] == [rid]
+    assert idx.list(status=m.RunStatus.passed) == []
+    assert idx.list(pack="example") == [], "no artifact means no pack name yet"
+
+
+def test_pending_and_written_runs_share_one_ordering_and_one_cursor(tmp_path):
+    """Two sequences merged into one page: newest first, and the cursor has to
+    walk through both kinds rather than skipping the sort order at the seam."""
+    runs = tmp_path / "runs"
+    runs.mkdir()
+    older = "20260807T170000000000-aaaaaaaa-example"
+    newer = "20260807T190000000000-cccccccc-example"
+    middle = "20260807T180000000000-deadbeef-example"      # the pending one
+    for rid, when in ((older, "2026-08-07T17:00:00+00:00"),
+                      (newer, "2026-08-07T19:00:00+00:00")):
+        runs.joinpath(f"{rid}.json").write_text(
+            json.dumps(_gate_artifact(created_at=when).to_dict()))
+    (runs / SIDECAR_DIR_NAME / middle).mkdir(parents=True)
+    (runs / SIDECAR_DIR_NAME / middle / META_FILENAME).write_text(
+        json.dumps({META_EXIT_CODE_KEY: None}))
+
+    idx = RunIndex(runs)
+    rows = idx.list()
+    keys = [(row.created_at, row.run_id) for row in rows]
+    assert keys == sorted(keys, reverse=True)
+    assert [row.run_id for row in rows] == [newer, middle, older]
+
+    first = idx.list(limit=1)
+    cursor = m.make_cursor(first[0].created_at, first[0].run_id)
+    assert [row.run_id for row in idx.list(limit=1, before=cursor)] == [middle]
+
+
+def test_a_sidecar_directory_that_is_not_a_run_id_is_not_a_row(tmp_path):
+    """`runs/.evalyn-ui/` is a directory on a real filesystem, so it can hold
+    anything. The grammar decides, exactly as it does for `runs/*.json`."""
+    runs = tmp_path / "runs"
+    (runs / SIDECAR_DIR_NAME / "not-a-run-id").mkdir(parents=True)
+    (runs / SIDECAR_DIR_NAME / "README").write_text("junk")
+    assert RunIndex(runs).list() == []
+
+
 def test_a_runs_dir_this_cockpit_never_launched_into_reports_no_process_facts():
     idx = RunIndex(FIXTURES)
     assert idx._sidecar(GATE_ID, FIXTURES / f"{GATE_ID}.json") == SidecarState()
