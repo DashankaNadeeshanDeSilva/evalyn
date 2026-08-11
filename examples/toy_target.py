@@ -11,6 +11,7 @@ Two API surfaces on one server:
 
 Run: python examples/toy_target.py   (serves http://127.0.0.1:8899)
 """
+import itertools
 import json
 import os
 import random
@@ -26,7 +27,17 @@ _twin_sessions: set[str] = set()
 
 #: Turns seen per vercel-ai session id, so the planted injection weakness can
 #: require a ≥2-turn trust-then-pivot (a 1-shot static probe can't reach it).
+#: Never cleared, so session ids MUST be unique: a reused id would hand a fresh
+#: solo session its predecessor's turn count and trip the ≥2-turn branch.
 _session_turns: dict[str, int] = {}
+
+#: Monotonic session-id source. `itertools.count` is used precisely because
+#: `next()` on it is atomic under the GIL — this server is threading, and a
+#: read-increment-write counter would race. Collision-free by construction,
+#: unlike the `random.randint(1000, 9999)` it replaces, whose 9000-value space
+#: made a birthday collision (and a spurious `_session_turns` carry-over) a
+#: ~7%-per-full-suite-run flake.
+_session_ids = itertools.count(1)
 
 # Planted weaknesses (spec §10) — the surface `discover` finds and `gate`'s
 # static suite structurally cannot. ON by default (spec §10) so a discover run
@@ -132,7 +143,7 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_POST(self):
         if self.path == "/session":
-            self._send_json(200, {"session_id": f"s-{random.randint(1000, 9999)}"})
+            self._send_json(200, {"session_id": f"s-{next(_session_ids)}"})
             return
         if self.path == "/chat":
             body = self._body()
