@@ -114,6 +114,89 @@ describe("the fixtures answer what a real server answers", () => {
     const meta = (await (await get("/api/meta")).json()) as MetaResponse;
     expect(meta.allow_discover).toBe(false);
   });
+
+  /**
+   * The scripted SSE run, parsed back out of the stream.
+   *
+   * Its only reader until now was the route-coverage list at the bottom of this
+   * file, which asserts `status < 400` and nothing else — so **every payload in
+   * the script could be reverted to its invented shape with the whole suite
+   * green**. That is the exact defect class this wave exists to close: the
+   * frames a browser folds are a contract, and a contract nothing asserts is a
+   * comment.
+   */
+  async function eventFrames(
+    runId: string,
+  ): Promise<{ name: string; data: Record<string, unknown> }[]> {
+    const text = await (await get(`/api/runs/${runId}/events`)).text();
+    return text
+      .split("\n\n")
+      .filter((block) => block.trim() !== "")
+      .map((block) => {
+        const lines = block.split("\n");
+        const event = lines.find((line) => line.startsWith("event: "));
+        const data = lines.find((line) => line.startsWith("data: "));
+        expect(event, `a frame with no event name: ${block}`).toBeDefined();
+        expect(data, `a frame with no data: ${block}`).toBeDefined();
+        return {
+          name: event!.slice("event: ".length),
+          data: JSON.parse(data!.slice("data: ".length)) as Record<
+            string,
+            unknown
+          >,
+        };
+      });
+  }
+
+  /**
+   * `engine/run.py` emits `run.finished` with `mode`, `status`, `judge_usd`,
+   * `probes` and `total_unsure_trials` — and **no `exit_code`**; the exit code
+   * is the CLI's, decided from the artifact after the run ends. The invented
+   * `{run_id, exit_code}` here is what made the live window promise one, and
+   * print "EXIT CODE not reported" above a gate block printing the real figure.
+   */
+  it("ends its scripted run with the engine's own run.finished payload, carrying a status and no exit code", async () => {
+    const finished = (await eventFrames(RUN_ID_GATE)).find(
+      (frame) => frame.name === "run.finished",
+    );
+    expect(finished, "the scripted run never finishes").toBeDefined();
+    expect(Object.keys(finished!.data)).not.toContain("exit_code");
+    // `"ok"` is the *run's* ending, never the gate's: this scripted run
+    // completes, and the gate fixture it belongs to exits 1.
+    expect(["ok", "error"]).toContain(finished!.data["status"]);
+  });
+
+  /** `sink.emit("artifact.written", path=str(written))` — the key is `path`. */
+  it("emits the artifact's path on artifact.written, the key the engine writes", async () => {
+    const written = (await eventFrames(RUN_ID_GATE)).find(
+      (frame) => frame.name === "artifact.written",
+    );
+    expect(written, "the scripted run writes no artifact").toBeDefined();
+    expect(typeof written!.data["path"]).toBe("string");
+    expect(Object.keys(written!.data)).not.toContain("run_id");
+  });
+
+  /**
+   * `exclude_none=True` (`ui/redact.py`) means a refusal with no extra context
+   * **omits** `detail` rather than sending null. A mock that sends null is
+   * strictly more forgiving than the server, and it is what let the launch
+   * console ship a `=== null` guard that printed "(undefined)" for every real
+   * refusal.
+   */
+  it("omits the detail key entirely when a refusal carries none, and sends it when it does", async () => {
+    const bare = (await (await get("/api/runs/not-a-run-id")).json()) as {
+      error: Record<string, unknown>;
+    };
+    expect(bare.error["message"]).toBeTruthy();
+    expect(Object.keys(bare.error)).not.toContain("detail");
+
+    // The other half, so this cannot be satisfied by dropping `detail` always:
+    // a refusal that HAS extra context still carries it.
+    const explained = (await (await get("/api/runs?before=nonsense")).json()) as {
+      error: Record<string, unknown>;
+    };
+    expect(explained.error["detail"]).toContain(CURSOR_SEPARATOR);
+  });
 });
 
 describe("/api/runs pagination", () => {
