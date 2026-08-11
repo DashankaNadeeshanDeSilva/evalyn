@@ -595,52 +595,103 @@ def _cockpit_app(runs_dir: Path):
     return create_app(runs_dir, [])
 
 
-def _api_routes(app) -> list:
-    """Every `/api` route the app will actually serve, however it was mounted.
+def _api_routes(app) -> list[tuple[str, object]]:
+    """`(served path, route)` for everything the app answers under `/api`.
 
-    `app.routes` is **not** the route table any more. From FastAPI 0.139
-    `include_router` is lazy: it leaves an `_IncludedRouter` placeholder in
-    `app.routes` and the real `APIRoute` objects stay on the original router,
-    reachable through `original_router`. A census that read `app.routes` alone
-    would have found one route here, declared the exempt set empty, and passed
-    — a green test certifying a route table it never looked at. Hence the walk,
-    and hence the "both known routes were found" assertion in the caller.
+    Two ways a route hides from a census that reads `app.routes`, and this walk
+    exists for both.
+
+    **Lazy includes.** From FastAPI 0.139 `include_router` leaves an
+    `_IncludedRouter` placeholder in `app.routes` and the real `APIRoute`
+    objects stay on the original router, reachable through `original_router`.
+    A census reading `app.routes` alone found one route here, declared the
+    exempt set empty and passed — green, over a table it never looked at.
+
+    **Mounts.** `app.mount("/api/v2", sub)` puts a whole sub-application under
+    `/api`, and a sub-app brings its own routing, its own middleware and its own
+    exception handlers: it inherits neither `app.router.route_class` nor the
+    redacting handlers, so *nothing* about it is scrubbed. Its routes are not in
+    `app.routes` either — they hang off `Mount.app.routes` — and their `path` is
+    relative to the mount, which is why this walk accumulates the prefix rather
+    than reading `route.path`. Mount inside `create_app` and the route lands
+    ahead of the `/api` catch-all, live and unredacted. The caller's
+    `unprotected` assertion is what turns that into a red.
     """
-    from fastapi.routing import APIRoute
-
-    found, stack = [], list(app.routes)
+    found, stack = [], [("", route) for route in app.routes]
     while stack:
-        route = stack.pop()
-        if isinstance(route, APIRoute):
-            if route.path.startswith("/api"):
-                found.append(route)
-            continue
+        prefix, route = stack.pop()
         original = getattr(route, "original_router", None)
         if original is not None:
-            stack.extend(original.routes)
+            # `include_router(prefix=…)` keeps its prefix in the include
+            # context; `APIRouter(prefix=…)` bakes it into `route.path`. Both
+            # spellings appear in this repo, so read both.
+            context = getattr(route, "include_context", None)
+            inherited = prefix + (getattr(context, "prefix", "") or "")
+            stack.extend((inherited, sub) for sub in original.routes)
+            continue
+        mounted = getattr(getattr(route, "app", None), "routes", None)
+        if mounted is not None:
+            stack.extend((prefix + getattr(route, "path", ""), sub)
+                         for sub in mounted)
+            continue
+        path = prefix + getattr(route, "path", "")
+        if path.startswith("/api"):
+            found.append((path, route))
     return found
 
 
 def test_every_api_route_is_redacting_and_exactly_two_are_exempt(tmp_path):
     """The census: what the app actually mounts, not what it meant to.
 
-    A route that forgot the router, or an `@no_redact` someone added because a
-    body was awkward to scrub, is invisible to every other test in this file —
-    they all build their own app. This one reads the shipped route table.
+    A route that forgot the router, an `@no_redact` someone added because a
+    body was awkward to scrub, or a whole sub-app mounted under `/api`, is
+    invisible to every other test in this file — they all build their own app.
+    This one reads the shipped route table.
     """
+    from fastapi.routing import APIRoute
+
     from evalyn.ui.redact import RedactingRoute, is_no_redact
 
     api_routes = _api_routes(_cockpit_app(tmp_path))
     # Non-vacuity, and the tripwire for the next FastAPI that moves the route
     # table again: if the walk stops finding these, it is finding nothing.
-    assert NO_REDACT_ROUTES <= {route.path for route in api_routes}
+    assert NO_REDACT_ROUTES <= {path for path, _ in api_routes}
 
-    unprotected = sorted(route.path for route in api_routes
+    unprotected = sorted(path for path, route in api_routes
                          if not isinstance(route, RedactingRoute))
     assert unprotected == [], "mounted outside the /api router — redaction skipped"
 
-    exempt = {route.path for route in api_routes if is_no_redact(route.endpoint)}
+    exempt = {path for path, route in api_routes
+              if isinstance(route, APIRoute) and is_no_redact(route.endpoint)}
     assert exempt == NO_REDACT_ROUTES
+
+
+def test_a_sub_app_mounted_under_api_is_caught_by_the_census(tmp_path):
+    """The census's own tripwire, because the walk is the fragile part.
+
+    A mounted sub-app is the one way to serve `/api/...` while inheriting
+    neither the route class nor the exception handlers, and its routes are not
+    in `app.routes` at all. Asserting that the census *catches* it is the only
+    thing that stops the walk from silently degrading into "found nothing,
+    therefore nothing is wrong" — which is exactly how it failed before.
+    """
+    from fastapi import FastAPI
+
+    from evalyn.ui.redact import RedactingRoute
+
+    sub = FastAPI()
+
+    @sub.get("/leak")
+    async def leak() -> dict:
+        return {"content": EMAIL}
+
+    app = _cockpit_app(tmp_path)
+    app.mount("/api/v2", sub)
+
+    served = _api_routes(app)
+    assert "/api/v2/leak" in {path for path, _ in served}
+    assert [path for path, route in served
+            if not isinstance(route, RedactingRoute)] != []
 
 
 def test_the_app_mounts_the_handlers_that_render_above_the_route(tmp_path):
