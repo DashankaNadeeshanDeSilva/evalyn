@@ -250,17 +250,52 @@ describe("the launch console", () => {
     ).toContain("border-chassis-500");
   });
 
-  it("renders a refused launch with a glyph, not colour alone", async () => {
+  /**
+   * The wiring pass read this off the screen against a real server: every
+   * launch refusal ended in the literal word **`(undefined)`**.
+   *
+   * `ApiError.detail` is `str | None = None` in `models.py`, and the server
+   * renders the envelope with `exclude_none=True` (`ui/redact.py`) — so a
+   * refusal with no extra context **omits the key** rather than sending null.
+   * The page guarded with `=== null`, which is false for `undefined`, and the
+   * MSW handler defaulted the field to `null`, which is why nothing ever
+   * caught it. The body below is the real server's, key-for-key.
+   */
+  it("renders a refusal whose detail the server omitted, without the word undefined", async () => {
     const user = userEvent.setup();
     server.use(
       http.post("/api/runs", () =>
         HttpResponse.json(
           {
             error: {
-              code: "busy",
-              message: "another run is already in flight",
-              detail: null,
+              code: "launch_refused",
+              message: "pack 'example' is not on this server's --target allowlist",
             },
+          },
+          { status: 400 },
+        ),
+      ),
+    );
+    renderLaunch();
+
+    await armGate(user);
+    await user.click(screen.getByTestId("safety-key"));
+
+    const alarm = await screen.findByTestId("launch-error");
+    expect(alarm.textContent).toContain("not on this server's --target allowlist");
+    // This is the sentence the operator reads when a launch fails on stage.
+    expect(alarm.textContent).not.toContain("undefined");
+    expect(alarm.textContent).not.toContain("()");
+  });
+
+  it("renders a refused launch with a glyph, not colour alone", async () => {
+    const user = userEvent.setup();
+    server.use(
+      http.post("/api/runs", () =>
+        HttpResponse.json(
+          {
+            // No `detail` key, the way the server sends it — see the test above.
+            error: { code: "busy", message: "another run is already in flight" },
           },
           { status: 409 },
         ),

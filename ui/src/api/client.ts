@@ -60,7 +60,12 @@ async function toFailure(res: Response): Promise<ApiFailure> {
     const body = (await res.json()) as ErrorEnvelope;
     const err = body.error;
     if (err && typeof err.message === "string") {
-      return new ApiFailure(res.status, err.code, err.message, err.detail);
+      // `?? null` makes the declared `string | null` actually true. The server
+      // renders every envelope with `exclude_none=True`, so a refusal with no
+      // extra context omits `detail` rather than sending null — and a caller
+      // that trusted the declared type printed the word "undefined" at the end
+      // of every real refusal it rendered.
+      return new ApiFailure(res.status, err.code, err.message, err.detail ?? null);
     }
   } catch {
     // Fall through: a body that is not the envelope is itself the anomaly.

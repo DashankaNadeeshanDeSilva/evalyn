@@ -26,10 +26,10 @@ import {
   CURSOR_SEPARATOR,
   isRunId,
   parseCursor,
+  type ApiError,
   type ControlResponse,
   type DiscoveryListPage,
   type ErrorCode,
-  type ErrorEnvelope,
   type FindingRow,
   type LaunchResponse,
   type PackAxes,
@@ -71,8 +71,26 @@ const STATUS_FOR: Record<ErrorCode, number> = {
   busy: 409,
 };
 
-function fail(code: ErrorCode, message: string, detail: string | null = null) {
-  const body: ErrorEnvelope = { error: { code, message, detail } };
+/**
+ * The envelope **as it arrives**, which is not quite as `ApiError` declares it.
+ *
+ * `detail` is `str | None = None` server-side and every envelope is rendered
+ * with `model_dump(mode="json", exclude_none=True)` (`ui/redact.py`), so a
+ * refusal carrying no extra context omits the key entirely. `ApiError` declares
+ * it required-and-nullable because `models.py` does, and that model is frozen
+ * in six places — so the difference is stated here, where the wire is
+ * reproduced, rather than papered over by a mock that sends `null`.
+ *
+ * That paper is exactly what shipped `(undefined)` on the launch console: this
+ * handler defaulted `detail` to `null`, the page guarded with `=== null`, and
+ * no test could see the gap because the mock never produced it.
+ */
+type WireError = Omit<ApiError, "detail"> & { detail?: string };
+
+function fail(code: ErrorCode, message: string, detail?: string) {
+  const body: { error: WireError } = {
+    error: { code, message, ...(detail === undefined ? {} : { detail }) },
+  };
   return HttpResponse.json(body, { status: STATUS_FOR[code] });
 }
 
