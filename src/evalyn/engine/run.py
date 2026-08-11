@@ -16,6 +16,7 @@ from inspect_ai import eval as inspect_eval
 from inspect_ai.log import read_eval_log
 
 from evalyn.engine.budget import BudgetExceeded, estimate_cost
+from evalyn.engine.events import NULL_SINK, EventSink
 from evalyn.engine.task_builder import build_task
 from evalyn.scoring.checks import aggregate_trial
 from evalyn.targets.loader import Pack
@@ -200,7 +201,16 @@ def _sample_transcript(sample) -> str:
     return "\n".join(blocks)
 
 
-def reduce_log_to_probes(log, pack: Pack) -> list[ProbeResult]:
+def reduce_log_to_probes(log, pack: Pack,
+                         sink: EventSink = NULL_SINK) -> list[ProbeResult]:
+    """Log -> per-probe results. `sink` emits `probe.scored`, POST-HOC.
+
+    Post-hoc is the only honest place for it: scoring happens inside Inspect's
+    scorers, and the per-probe verdict does not exist until every epoch's checks
+    have been aggregated here. A cockpit therefore sees trials stream live and
+    the probe verdicts land in one burst at the end — which is what actually
+    happens.
+    """
     by_id = {p.id: p for p in pack.probes}
     # Group CheckResults per (probe_id, epoch) across ALL scorers present in the
     # log (tier3 lands later — never hardcode a scorer list). The authority is
@@ -273,6 +283,10 @@ def reduce_log_to_probes(log, pack: Pack) -> list[ProbeResult]:
             pass_k=pass_k, mean_score=mean_score,
             unsure_trials=unsure_ct, checks=rep_checks,
             trial_records=trial_records))
+        sink.emit("probe.scored", probe_id=pid, category=probe.category,
+                  safety_critical=probe.safety_critical, trials=n,
+                  expected_trials=expected, pass_at_k=pass_at_k, pass_k=pass_k,
+                  mean_score=mean_score, unsure_trials=unsure_ct)
     return results
 
 
@@ -307,7 +321,19 @@ def run_gate(pack: Pack, judge_model: str = "mockllm/model",
              rubric_scores_untrusted: bool = False,
              out_dir: str = "runs",
              cache_dir: str | Path | None = None,
-             *, run_id: str | None = None) -> RunArtifact:
+             *, run_id: str | None = None,
+             sink: EventSink = NULL_SINK) -> RunArtifact:
+    """Run the probe suite and write the artifact.
+
+    `sink` is **opt-in and inert by default** (`NULL_SINK`): with no sink this
+    function does exactly what it did before the event stream existed, which
+    `tests/engine/test_events_noop.py` proves by artifact equality. Nothing here
+    branches on the sink and nothing constructs one.
+    """
+    sink.emit("run.started", mode="gate", pack=pack.spec.name,
+              probes=len(pack.probes), judge_model=judge_model,
+              rubric_judge_model=rubric_judge_model or pack.spec.judge.rubric_model,
+              run_id=run_id)
     # Grading-steps cache for the tier-3 judge. Defaults to the pack's .cache
     # dir — the SAME location `evalyn calibrate` caches under — so gate trials
     # are judged with the steps calibration validated, instead of regenerating
@@ -315,14 +341,14 @@ def run_gate(pack: Pack, judge_model: str = "mockllm/model",
     steps_cache = Path(cache_dir) if cache_dir is not None else Path(pack.root) / ".cache"
     task = build_task(pack, judge_model=judge_model,
                       rubric_judge_model=rubric_judge_model,
-                      cache_dir=steps_cache)
+                      cache_dir=steps_cache, sink=sink)
     logs = inspect_eval(task, model="mockllm/model", log_dir=log_dir, display="none")
     log = logs[0]
     if log.status != "success":
         raise RuntimeError(f"inspect eval did not succeed: status {log.status!r}")
     if log.samples is None and log.location:
         log = read_eval_log(log.location)
-    probes = reduce_log_to_probes(log, pack)
+    probes = reduce_log_to_probes(log, pack, sink)
     art = RunArtifact(
         pack_name=pack.spec.name,
         pack_hash=pack_fingerprint(pack),
@@ -334,28 +360,44 @@ def run_gate(pack: Pack, judge_model: str = "mockllm/model",
         total_unsure_trials=sum(p.unsure_trials for p in probes),
     )
     art.judge_usd = _judge_usd(log)
+    sink.emit("spend.updated", judge_usd=art.judge_usd,
+              max_usd_per_run=pack.spec.budget.max_usd_per_run)
     # Write the artifact BEFORE any budget check so a partial/complete artifact
     # survives a budget breach for inspection. Atomic temp-then-rename so a
     # crash mid-write never leaves a torn artifact behind (shared writer, R8-13).
-    atomic_write_artifact(art.to_dict(), pack.spec.name, out_dir, suffix="",
-                          run_id=run_id)
-    # Fully-dead target (round-2 N6): with fail_on_error=False every sample can
-    # error individually while log.status stays "success" — if NO probe
-    # collected a single scored trial the run is a SETUP failure (CLI exit 2),
-    # not an all-MISSING gate FAIL. Raised AFTER the artifact write (house
-    # pattern: write-before-raise) so the evidence survives for inspection.
-    # A partially-dead run still proceeds — per-probe incompleteness is the
-    # gate's job (expected_trials / INCOMPLETE).
-    if probes and all(p.trials == 0 for p in probes):
-        raise RuntimeError(
-            "no probe collected a single scored trial — every session errored "
-            "(target down or misconfigured?); the run artifact was still "
-            f"written under {out_dir}/ for inspection")
-    # Post-hoc budget gate: there is no mid-run stop, so the run may already
-    # have overshot the cap — the breach is raised after metering.
-    cap = pack.spec.budget.max_usd_per_run
-    if cap and art.judge_usd > cap:
-        raise BudgetExceeded(
-            f"judge spend ${art.judge_usd:.4f} exceeded max_usd_per_run ${cap:.2f} "
-            f"(partial artifact written)")
+    written = atomic_write_artifact(art.to_dict(), pack.spec.name, out_dir,
+                                    suffix="", run_id=run_id)
+    sink.emit("artifact.written", path=str(written))
+    # Both terminal conditions below are already raised AFTER the artifact
+    # write; `run.finished` goes out on that same failing path so a cockpit
+    # never leaves a finished-but-broken run spinning. The emit is the ONLY
+    # thing added to these branches — no control flow changes, which is why a
+    # default (NULL_SINK) run is byte-identical.
+    try:
+        # Fully-dead target (round-2 N6): with fail_on_error=False every sample
+        # can error individually while log.status stays "success" — if NO probe
+        # collected a single scored trial the run is a SETUP failure (CLI exit
+        # 2), not an all-MISSING gate FAIL. Raised AFTER the artifact write
+        # (house pattern: write-before-raise) so the evidence survives for
+        # inspection. A partially-dead run still proceeds — per-probe
+        # incompleteness is the gate's job (expected_trials / INCOMPLETE).
+        if probes and all(p.trials == 0 for p in probes):
+            raise RuntimeError(
+                "no probe collected a single scored trial — every session errored "
+                "(target down or misconfigured?); the run artifact was still "
+                f"written under {out_dir}/ for inspection")
+        # Post-hoc budget gate: there is no mid-run stop, so the run may already
+        # have overshot the cap — the breach is raised after metering.
+        cap = pack.spec.budget.max_usd_per_run
+        if cap and art.judge_usd > cap:
+            raise BudgetExceeded(
+                f"judge spend ${art.judge_usd:.4f} exceeded max_usd_per_run ${cap:.2f} "
+                f"(partial artifact written)")
+    except BaseException as e:
+        sink.emit("run.finished", mode="gate", status="error",
+                  error=f"{type(e).__name__}: {e}", judge_usd=art.judge_usd)
+        raise
+    sink.emit("run.finished", mode="gate", status="ok",
+              judge_usd=art.judge_usd, probes=len(probes),
+              total_unsure_trials=art.total_unsure_trials)
     return art

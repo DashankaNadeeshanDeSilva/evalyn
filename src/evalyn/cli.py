@@ -39,6 +39,45 @@ def _run_id_from_env() -> str | None:
     return raw
 
 
+#: `--events` help text, shared by the three modes so it cannot drift.
+EVENTS_HELP = ("Write a live JSONL event stream next to the run artifact "
+               "(`runs/<run_id>....events.jsonl`), for `evalyn ui`. Off by "
+               "default, and off means nothing is written and no sink is even "
+               "constructed.")
+
+#: Artifact filename suffix per mode — the same suffixes the writers use.
+_MODE_SUFFIX = {"gate": "", "compare": "-compare", "discover": "-discover"}
+
+
+def _open_sink(events: bool, *, mode: str, pack_name: str, out_dir: str,
+               run_id: str | None):
+    """`(sink, run_id)`. Without `--events` this is `(NULL_SINK, run_id)`.
+
+    **Nothing is imported, constructed or created when `events` is false** —
+    that is what `tests/engine/test_events_noop.py`'s constructor-interdiction
+    proof checks, and it is why `JsonlSink` is reached through the module
+    (`events_mod.JsonlSink`) rather than bound at import time: a test can then
+    replace it with a sentinel and watch nobody call it.
+
+    With `--events` the run id is minted HERE if the launcher did not supply
+    one, because the stream's path is derived from the artifact's — and the
+    artifact does not exist yet. That derivation is `ui.paths.events_path`,
+    never a hand-built `.events.jsonl` string (Task 2 owns the layout).
+    """
+    from evalyn.engine import events as events_mod
+
+    if not events:
+        return events_mod.NULL_SINK, run_id
+    from evalyn.engine.run import new_run_id
+    from evalyn.ui.paths import events_path
+
+    if run_id is None:
+        run_id = new_run_id(pack_name)
+    artifact = Path(out_dir) / f"{run_id}{_MODE_SUFFIX[mode]}.json"
+    return (events_mod.JsonlSink(events_path(artifact), run_id=run_id, mode=mode),
+            run_id)
+
+
 @app.command()
 def gate(
     target: str = typer.Option(..., "--target", help="Path to a target pack directory."),
@@ -60,6 +99,7 @@ def gate(
     dry_run: bool = typer.Option(False, "--dry-run"),
     out_dir: str = typer.Option(
         "runs", "--out-dir", help="Directory the run artifact is written to."),
+    events: bool = typer.Option(False, "--events", help=EVENTS_HELP),
     debug: bool = typer.Option(
         False, "--debug",
         help="Re-raise errors with full tracebacks instead of clean exit-2 messages."),
@@ -126,10 +166,19 @@ def gate(
         raise typer.Exit(0)
 
     try:
+        sink, run_id = _open_sink(events, mode="gate", pack_name=pack.spec.name,
+                                  out_dir=out_dir, run_id=run_id)
+    except Exception as e:  # unwritable --out-dir, a stream another pid owns
+        if debug:
+            raise
+        typer.echo(f"gate: setup error: --events stream unavailable: {e}", err=True)
+        raise typer.Exit(2)
+
+    try:
         art = run_mod.run_gate(pack, judge_model=judge_model,
                                rubric_judge_model=rubric_judge_model,
                                rubric_scores_untrusted=rubric_untrusted,
-                               out_dir=out_dir, run_id=run_id)
+                               out_dir=out_dir, run_id=run_id, sink=sink)
     except BudgetExceeded as e:
         if debug:
             raise
@@ -141,6 +190,11 @@ def gate(
             raise
         typer.echo(f"gate: run error: {e}", err=True)
         raise typer.Exit(2)
+    finally:
+        # Every gate event is emitted inside run_gate; what follows is baseline
+        # diffing and rendering, which emits nothing. `close` is idempotent and
+        # never raises.
+        sink.close()
 
     if update_baseline:
         # Round-2 N4: refuse to bless artifacts every future gate diff would
@@ -217,6 +271,7 @@ def compare(
              "(loud warning; verdicts marked untrusted in the artifact)."),
     out_dir: str = typer.Option(
         "runs", "--out-dir", help="Directory the compare artifact is written to."),
+    events: bool = typer.Option(False, "--events", help=EVENTS_HELP),
     seed: int = typer.Option(
         None, "--seed", help="Seed for the judge's order-controlled draw-2 orders."),
     debug: bool = typer.Option(
@@ -295,24 +350,40 @@ def compare(
             raise typer.Exit(2)
 
     try:
+        sink, run_id = _open_sink(events, mode="compare", pack_name=pack.spec.name,
+                                  out_dir=out_dir, run_id=run_id)
+    except Exception as e:
+        if debug:
+            raise
+        typer.echo(f"compare: setup error: --events stream unavailable: {e}", err=True)
+        raise typer.Exit(2)
+
+    try:
         art = asyncio.run(cmp_mod.run_compare(
             pack, arts["A"], arts["B"], rubric_model,
             cache_dir=Path(target) / ".cache",
             rubric_scores_untrusted=rubric_untrusted, seed=seed,
             out_dir=out_dir, label_a=label_a, label_b=label_b,
-            source_a=a, source_b=b, run_id=run_id))
+            source_a=a, source_b=b, run_id=run_id, sink=sink))
+    # Unlike `gate`, this block cannot take a `finally`: the sink has to stay
+    # open through `write_compare_artifact` below, the one place that can
+    # honestly emit `artifact.written`. So each failing exit closes it here
+    # instead, first thing, before --debug re-raises. `close` is idempotent.
     except BudgetExceeded as e:
+        sink.close()
         if debug:
             raise
         typer.echo(f"compare: budget exceeded: {e} — the compare artifact is "
                    f"on disk under {out_dir}/ for inspection", err=True)
         raise typer.Exit(2)
     except ValueError as e:  # locked preconditions (pack hash, transcripts)
+        sink.close()
         if debug:
             raise
         typer.echo(f"compare: setup error: {e}", err=True)
         raise typer.Exit(2)
     except Exception as e:  # judge connection / infra
+        sink.close()
         if debug:
             raise
         typer.echo(f"compare: run error: {e}", err=True)
@@ -321,13 +392,18 @@ def compare(
     # Guarded write/render: an OSError here (unwritable/full --out-dir) must
     # stay inside compare's exit-0/2 contract, never escape as exit 1.
     try:
-        path = cmp_mod.write_compare_artifact(art, out_dir=out_dir, run_id=run_id)
+        path = cmp_mod.write_compare_artifact(art, out_dir=out_dir, run_id=run_id,
+                                              sink=sink)
         report_md = cmp_mod.render_compare_report(art)
     except Exception as e:
         if debug:
             raise
         typer.echo(f"compare: run error: {e}", err=True)
         raise typer.Exit(2)
+    finally:
+        # Held open across the write so `artifact.written` — which only the
+        # writer can honestly emit — makes it into the stream.
+        sink.close()
     typer.echo(report_md)
     typer.echo(f"compare: artifact written to {path}")
     raise typer.Exit(0)
@@ -462,6 +538,7 @@ def discover(
     staging_dir: str = typer.Option(
         None, "--staging-dir", help="Where confirmed probes stage (default: <pack>/discoveries/)."),
     out_dir: str = typer.Option("runs", "--out-dir"),
+    events: bool = typer.Option(False, "--events", help=EVENTS_HELP),
     seed: int = typer.Option(None, "--seed"),
     dry_run: bool = typer.Option(False, "--dry-run"),
     debug: bool = typer.Option(False, "--debug"),
@@ -652,7 +729,19 @@ def discover(
         raise typer.Exit(0)
 
     try:
-        art = asyncio.run(discovery_run.run_discovery(pack, cfg, run_id=run_id))
+        sink, run_id = _open_sink(events, mode="discover", pack_name=pack.spec.name,
+                                  out_dir=str(cfg.out_dir), run_id=run_id)
+    except Exception as e:
+        if debug:
+            raise
+        # Exit 2, not 3: this is preflight — nothing has been billed yet.
+        typer.echo(f"discover: setup error: --events stream unavailable: {e}",
+                   err=True)
+        raise typer.Exit(2)
+
+    try:
+        art = asyncio.run(discovery_run.run_discovery(pack, cfg, run_id=run_id,
+                                                      sink=sink))
     except Exception as e:
         if debug:
             raise
@@ -669,6 +758,10 @@ def discover(
                    f"before the failure) was written under {cfg.out_dir}/ as "
                    f"the newest `*-discover.json`.", err=True)
         raise typer.Exit(3)
+    finally:
+        # `run_discovery` owns every discover event, including the ones on its
+        # partial-write path; what follows is rendering and exit-code policy.
+        sink.close()
 
     typer.echo(discovery_run.render_discovery_report(art))
     # Run-invalid (3), in the two shapes it takes. The eval-status case is the

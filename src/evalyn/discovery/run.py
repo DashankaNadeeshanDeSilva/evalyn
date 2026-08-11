@@ -79,6 +79,7 @@ from evalyn.discovery.meter import SpendMeter, reconcile
 from evalyn.discovery.objectives import get_objective
 from evalyn.discovery.replay import ReplayResult, replay_staged_probe
 from evalyn.discovery.task_builder import build_discovery_task
+from evalyn.engine.events import NULL_SINK, EventSink, hunt_key
 from evalyn.engine.run import atomic_write_artifact, pack_fingerprint
 from evalyn.targets.loader import Pack
 
@@ -337,16 +338,26 @@ def _reconcile_path(path: str) -> float:
 # --------------------------------------------------------------------------
 
 async def run_discovery(pack: Pack, cfg: DiscoveryConfig, *,
-                        run_id: str | None = None) -> DiscoveryArtifact:
+                        run_id: str | None = None,
+                        sink: EventSink = NULL_SINK) -> DiscoveryArtifact:
     """Run one `discover` pass and return its record. Never raises on budget.
 
     `run_id` (keyword-only, `None` = mint as before) reaches the writer from the
     CLI's `EVALYN_RUN_ID` read. It has to travel this far because discover owns
     its own writes — including the partial one on the failing path, which is the
     write a cockpit most needs to find.
+
+    `sink` (keyword-only, inert `NULL_SINK` by default) travels the same way,
+    and for the same reason: the run-level events and the per-hunt ones have to
+    come out of one stream, and the sink reaches the hunts as an explicit
+    argument rather than ambient state (R4-43).
     """
+    sink.emit("run.started", mode="discover", pack=pack.spec.name,
+              objectives=list(cfg.objectives), agent_model=cfg.agent_model,
+              judge_model=cfg.judge_model, max_usd=cfg.limits.max_usd,
+              max_sessions=cfg.limits.max_sessions, run_id=run_id)
     meter = SpendMeter(cfg.limits.max_usd)
-    task = build_discovery_task(pack, cfg, meter=meter)
+    task = build_discovery_task(pack, cfg, meter=meter, sink=sink)
 
     stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%f")
     log_root = Path(cfg.out_dir) / "logs" / f"discover-{stamp}"
@@ -368,6 +379,9 @@ async def run_discovery(pack: Pack, cfg: DiscoveryConfig, *,
     # live figure stays independent (R8-14).
     reconciled = reconcile(log)
     log_location = str(getattr(log, "location", "") or disc_log_dir)
+    sink.emit("spend.updated", live_usd=meter.spent_usd,
+              reconciled_usd=reconciled, max_usd=cfg.limits.max_usd,
+              phase="eval")
 
     findings: list[Finding] = []
     error_count = 0
@@ -457,9 +471,17 @@ async def run_discovery(pack: Pack, cfg: DiscoveryConfig, *,
             yaml_text = probe_yaml(probe, provenance=_provenance(session, cfg))
             staged = stage_probe(pack, probe, yaml_text,
                                  staging_dir=cfg.staging_dir)
+            key = hunt_key(session.objective_id, session.persona_id)
+            sink.emit("finding.staged", hunt_key=key, objective_id=session.objective_id,
+                      probe_id=probe.id, probe_path=str(staged),
+                      duplicate_of=dup.probe_id if dup else None)
 
             replay = await _replay_finding(pack, cfg, meter, probe.id, staged,
                                            log_root)
+            sink.emit("replay.result", hunt_key=key, probe_id=probe.id,
+                      reproduced=getattr(replay, "reproduced", None),
+                      skipped=isinstance(replay, ReplaySkipped),
+                      reason=getattr(replay, "reason", ""))
             if isinstance(replay, ReplayResult) and replay.log_path:
                 replay_usd = _reconcile_path(replay.log_path)
                 reconciled += replay_usd
@@ -493,20 +515,40 @@ async def run_discovery(pack: Pack, cfg: DiscoveryConfig, *,
         # always carries both.
         try:
             write_discovery_artifact(_build_artifact(aborted=True),
-                                     out_dir=str(cfg.out_dir), run_id=run_id)
+                                     out_dir=str(cfg.out_dir), run_id=run_id,
+                                     sink=sink)
         except Exception as e:  # noqa: BLE001 — report it, never swallow it
             warnings.warn(
                 f"discovery run failed AND its partial artifact could not be "
                 f"written ({type(e).__name__}: {e}) — the spend record for this "
                 f"run is lost", RuntimeWarning, stacklevel=2)
+        # Terminal event on the failing path too, so a cockpit does not leave a
+        # dead run spinning. Emitted after the write attempt and before the
+        # re-raise; the original exception still propagates.
+        sink.emit("run.finished", mode="discover", status="error",
+                  findings=len(findings), confirmed_count=confirmed_count,
+                  sessions_total=sessions_total, error_count=error_count)
         raise
 
     artifact = _build_artifact()
+    sink.emit("spend.updated", live_usd=artifact.live_spend_usd,
+              reconciled_usd=artifact.reconciled_spend_usd,
+              max_usd=cfg.limits.max_usd, phase="final")
 
     # Write BEFORE returning — and, on the failing path above, before the raise
     # — so neither a budget stop nor a mid-loop exception leaves a run that
     # spent money with no record (spec §12 / R8-5).
-    write_discovery_artifact(artifact, out_dir=str(cfg.out_dir), run_id=run_id)
+    write_discovery_artifact(artifact, out_dir=str(cfg.out_dir), run_id=run_id,
+                             sink=sink)
+    # `discover` never raises on budget, so unlike `gate` there is only ever the
+    # one terminal event on this path; `eval_status` carries whether the eval
+    # itself was healthy (the CLI turns a bad one into exit 3).
+    sink.emit("run.finished", mode="discover", status="ok",
+              eval_status=artifact.eval_status, partial=artifact.partial,
+              findings=len(artifact.findings),
+              confirmed_count=artifact.confirmed_count,
+              sessions_total=artifact.sessions_total,
+              error_count=artifact.error_count)
     return artifact
 
 
@@ -539,14 +581,19 @@ async def _replay_finding(pack: Pack, cfg: DiscoveryConfig, meter: SpendMeter,
 
 def write_discovery_artifact(artifact: DiscoveryArtifact,
                              out_dir: str = "runs",
-                             *, run_id: str | None = None) -> Path:
+                             *, run_id: str | None = None,
+                             sink: EventSink = NULL_SINK) -> Path:
     """Atomic temp-then-rename write — the shared house writer (R8-13), suffixed
     `-discover`.
 
     `run_id=None` mints exactly as before; a caller that passes one gets
-    `runs/<run_id>-discover.json`."""
-    return atomic_write_artifact(artifact.to_dict(), artifact.pack_name, out_dir,
-                                 suffix="-discover", run_id=run_id)
+    `runs/<run_id>-discover.json`. `artifact.written` is emitted here — the one
+    place that knows the file landed — so the partial write on the failing path
+    announces itself exactly like the happy-path one."""
+    written = atomic_write_artifact(artifact.to_dict(), artifact.pack_name, out_dir,
+                                    suffix="-discover", run_id=run_id)
+    sink.emit("artifact.written", path=str(written))
+    return written
 
 
 def _replay_line(replay: ReplayResult | ReplaySkipped) -> str:

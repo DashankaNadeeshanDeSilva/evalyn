@@ -68,6 +68,7 @@ from evalyn.discovery.personas import (
     Persona,
     Playbook,
 )
+from evalyn.engine.events import NULL_SINK, EventSink, hunt_key
 from evalyn.targets.loader import Pack
 from evalyn.targets.session import TargetSession, TurnCapExceeded
 
@@ -373,8 +374,15 @@ async def run_session(pack: Pack, objective: Objective,
                       persona: Persona | None = None,
                       playbook: Playbook | None = None, *,
                       agent_model: str, meter: SpendMeter, limits: Limits,
-                      confirmer, seed: int | None = None) -> SessionResult:
-    """Run one hunt. Always returns a `SessionResult`; never raises."""
+                      confirmer, seed: int | None = None,
+                      sink: EventSink = NULL_SINK) -> SessionResult:
+    """Run one hunt. Always returns a `SessionResult`; never raises.
+
+    `sink` defaults to the inert `NULL_SINK` and is passed down to `_drive`
+    explicitly (R4-43). Note that emission happens from an
+    `asyncio.to_thread` worker here, which is why the sink's lock is a
+    `threading.Lock` and not an asyncio one.
+    """
     persona = persona or DEFAULT_PERSONA
     playbook = playbook or DEFAULT_PLAYBOOK
     result = SessionResult(objective_id=objective.id, persona_id=persona.id,
@@ -400,7 +408,7 @@ async def run_session(pack: Pack, objective: Objective,
                 session = opened
                 await _drive(session, objective, persona, playbook, result,
                              agent_model=agent_model, meter=meter, limits=limits,
-                             confirmer=confirmer, seed=seed)
+                             confirmer=confirmer, seed=seed, sink=sink)
         except BudgetStop as e:
             # Never out of the loop: a budget stop must PRESERVE partial evidence.
             result.stop_reason = "budget"
@@ -424,11 +432,15 @@ async def run_session(pack: Pack, objective: Objective,
 async def _drive(session, objective: Objective, persona: Persona,
                  playbook: Playbook, result: SessionResult, *,
                  agent_model: str, meter: SpendMeter, limits: Limits,
-                 confirmer, seed: int | None) -> None:
+                 confirmer, seed: int | None,
+                 sink: EventSink = NULL_SINK) -> None:
     """The loop proper. Mutates `result` in place so that whatever stops it —
     return, budget, or exception — leaves the steps taken so far intact."""
     step = 0
     feedback = ""
+    #: Every hunt event carries this. Same string the discovery dataset gives
+    #: the sample as its `id`, so a hunt's events and its log sample join.
+    key = hunt_key(objective.id, persona.id)
 
     while True:
         # --- BOUNDS FIRST, before a prompt is built or a byte is sent -------
@@ -477,6 +489,9 @@ async def _drive(session, objective: Objective, persona: Persona,
                             rationale=action.rationale, message=action.message,
                             slots=dict(action.slots))
         result.steps.append(record)
+        sink.emit("agent.step", hunt_key=key, step=step, action=action.action,
+                  rationale=action.rationale, message=action.message,
+                  remaining_usd=meter.remaining_usd)
 
         # --- PURSUE --------------------------------------------------------
         if action.action == "stop":
@@ -499,6 +514,8 @@ async def _drive(session, objective: Objective, persona: Persona,
             try:
                 record.reply = await session.send(action.message or "")
                 record.outcome = "sent"
+                sink.emit("agent.reply", hunt_key=key, step=step,
+                          reply=record.reply, turns_used=session.turns_used)
                 # The reply itself is the feedback: it is in the transcript.
                 feedback = ""
             except BudgetStop:
@@ -549,6 +566,11 @@ async def _drive(session, objective: Objective, persona: Persona,
 
         confirmation: Confirmation = await confirmer.confirm(probe, transcript)
         record.detail = confirmation.reason
+        # The trust boundary's verdict, live: this is the moment Evalyn's own
+        # scorers — not the agent — decide whether there is a finding.
+        sink.emit("confirm.result", hunt_key=key, step=step,
+                  confirmed=confirmation.confirmed, unsure=confirmation.unsure,
+                  reason=confirmation.reason, probe_id=probe.id)
         if confirmation.confirmed:
             record.outcome = "confirmed"
             result.confirmed = confirmation
