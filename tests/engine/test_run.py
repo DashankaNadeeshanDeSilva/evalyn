@@ -140,9 +140,9 @@ def test_run_gate_raises_on_non_success_eval_status(monkeypatch, tmp_path):
 
 
 def test_run_gate_produces_artifact_with_per_probe_trial_stats(toy_target, monkeypatch,
-                                                               tmp_path):
+                                                               tmp_path, live_pack_dir):
     monkeypatch.setenv("EVALYN_TARGET_URL", toy_target)
-    pack = load_pack(EXAMPLE)
+    pack = load_pack(live_pack_dir(REPO_EXAMPLE))
     # mockllm/model is unpriced, so real metering warns and prices it at the
     # conservative upper bound — capturing it here also PROVES the eval's own
     # usage reaches _judge_usd (the ContextVar seam silently returned {}).
@@ -234,12 +234,12 @@ def test_fingerprint_ignores_env_localhost_vs_127(tmp_pack_two_envs):
 
 
 def test_run_gate_out_dir_writes_artifact_there_not_cwd(toy_target, monkeypatch,
-                                                        tmp_path):
+                                                        tmp_path, live_pack_dir):
     monkeypatch.setenv("EVALYN_TARGET_URL", toy_target)
+    pack = load_pack(live_pack_dir(REPO_EXAMPLE))
     monkeypatch.chdir(tmp_path)  # a CWD runs/ write would be visible here
     # metering is not this test's concern (and unpriced mockllm would warn)
     monkeypatch.setattr("evalyn.engine.run._judge_usd", lambda log: 0.0)
-    pack = load_pack(str(REPO_EXAMPLE))
     out = tmp_path / "artifacts"
     art = run_gate(pack, judge_model="mockllm/model",
                    log_dir=str(tmp_path / "logs"), out_dir=str(out))
@@ -333,18 +333,24 @@ def test_reducer_all_no_signal_trials_is_fail_closed_zero_mean(minimal_pack_with
 
 # --- PR #4 fix #2: a sample error must not abort the whole eval ---------------
 
-_ERRPACK_TARGET_YAML = """\
+def _errpack_target_yaml(base_url: str) -> str:
+    """The pack text, built around the live target's URL (its port is dynamic).
+
+    `base_url` is the 127.0.0.1 spelling the `toy_target` fixture yields; the
+    allowlist keeps a `localhost` entry too, as the shipped packs do.
+    """
+    return f"""\
 name: errpack
 sessions:
-  open:    { method: POST, path: /session }
-  message: { method: POST, path: /chat, stream: sse, event_format: vercel-ai }
-auth: { kind: none }
-budget: { max_turns_per_session: 1 }
+  open:    {{ method: POST, path: /session }}
+  message: {{ method: POST, path: /chat, stream: sse, event_format: vercel-ai }}
+auth: {{ kind: none }}
+budget: {{ max_turns_per_session: 1 }}
 env:
-  base_url: ${EVALYN_TARGET_URL:-http://127.0.0.1:8899}
+  base_url: ${{EVALYN_TARGET_URL:-{base_url}}}
 allowlist:
-  - http://127.0.0.1:8899
-  - http://localhost:8899
+  - {base_url}
+  - {base_url.replace("127.0.0.1", "localhost")}
 """
 
 # `doomed` has 2 turns > max_turns_per_session=1 — the solver raises before any
@@ -373,7 +379,7 @@ def test_errored_probe_is_missing_gate_fail_not_run_abort(toy_target, monkeypatc
     monkeypatch.setenv("EVALYN_TARGET_URL", toy_target)
     pack_dir = tmp_path / "errpack"
     (pack_dir / "probes").mkdir(parents=True)
-    (pack_dir / "target.yaml").write_text(_ERRPACK_TARGET_YAML)
+    (pack_dir / "target.yaml").write_text(_errpack_target_yaml(toy_target))
     (pack_dir / "probes" / "p.yaml").write_text(_ERRPACK_PROBES)
     out = tmp_path / "runs"
     art = run_gate(load_pack(pack_dir), judge_model="mockllm/model",

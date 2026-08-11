@@ -93,12 +93,10 @@ def copied_pack(tmp_path, monkeypatch):
 
 
 @pytest.fixture
-def live_pack(tmp_path, monkeypatch, toy_target):
+def live_pack(monkeypatch, toy_target, live_pack_dir):
     """A writable minipack copy pointed at the live toy target."""
     monkeypatch.setenv("EVALYN_TARGET_URL", toy_target)
-    root = tmp_path / "pack"
-    shutil.copytree(MINIPACK, root)
-    return load_pack(root)
+    return load_pack(live_pack_dir(MINIPACK))
 
 
 def _cfg(tmp_path, **kw) -> DiscoveryConfig:

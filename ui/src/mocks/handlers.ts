@@ -26,10 +26,17 @@ import {
   CURSOR_SEPARATOR,
   isRunId,
   parseCursor,
+  type ControlResponse,
+  type DiscoveryListPage,
   type ErrorCode,
   type ErrorEnvelope,
+  type FindingRow,
+  type LaunchResponse,
+  type PackAxes,
+  type PackListPage,
   type RunListPage,
   type RunSummary,
+  type ValidationReport,
 } from "../api/types";
 import {
   FINDING_DETAIL,
@@ -72,6 +79,29 @@ function key(row: RunSummary): [string, string] {
   return [row.created_at, row.run_id];
 }
 
+/**
+ * The same, for a finding. Both halves are nullable on `FindingRow` — a row
+ * salvaged without its run has neither — and an empty string sorts first under
+ * the descending order, which is where an unattributable row belongs.
+ */
+function findingKey(row: FindingRow): [string, string] {
+  return [row.created_at ?? "", row.run_id ?? ""];
+}
+
+/**
+ * The refusal for a `?before=` that fails its grammar. Shared by both
+ * paginated routes so they cannot drift into two different rejections: the
+ * real server answers `not_found` for a bad query parameter, not a 422 — the
+ * resource cannot exist, and saying so leaks nothing about the filesystem.
+ */
+function badCursor() {
+  return fail(
+    "not_found",
+    "invalid cursor",
+    `?before= must be the opaque '<created_at>${CURSOR_SEPARATOR}<run_id>' composite`,
+  );
+}
+
 /** Descending tuple comparison. Never compares the joined cursor strings. */
 function isBefore(a: [string, string], b: [string, string]): boolean {
   if (a[0] !== b[0]) return a[0] < b[0];
@@ -105,13 +135,8 @@ export const handlers = [
       try {
         cursor = parseCursor(before);
       } catch {
-        // The real server rejects the tie-unsafe bare-timestamp form. A query
-        // parameter that fails its grammar is `not_found`, not a 422.
-        return fail(
-          "not_found",
-          "invalid cursor",
-          `?before= must be the opaque '<created_at>${CURSOR_SEPARATOR}<run_id>' composite`,
-        );
+        // The real server rejects the tie-unsafe bare-timestamp form.
+        return badCursor();
       }
       rows = rows.filter((r) => isBefore(key(r), cursor));
     }
@@ -244,7 +269,8 @@ export const handlers = [
     if (body["mode"] === "discover" && !META.allow_discover) {
       return fail("launch_refused", "discover requires --allow-discover");
     }
-    return HttpResponse.json({ run_id: RUN_ID_GATE }, { status: 202 });
+    const launched: LaunchResponse = { run_id: RUN_ID_GATE };
+    return HttpResponse.json(launched, { status: 202 });
   }),
 
   /**
@@ -254,21 +280,28 @@ export const handlers = [
   http.post("/api/runs/:runId/control", ({ params }) => {
     const runId = String(params["runId"]);
     if (!RUN_DETAILS[runId]) return fail("not_found", `no such run: ${runId}`);
-    return HttpResponse.json({ run_id: runId, accepted: true }, { status: 202 });
+    const body: ControlResponse = { run_id: runId, accepted: true };
+    return HttpResponse.json(body, { status: 202 });
   }),
 
   // -------------------------------------------------------------------------
   // Packs
   // -------------------------------------------------------------------------
 
-  http.get("/api/packs", () => HttpResponse.json(PACKS)),
+  // An envelope, not a bare array — the allowlist is short enough that
+  // `next_cursor` is always null, but a frozen array could never grow a field.
+  http.get("/api/packs", () => {
+    const body: PackListPage = { items: PACKS, next_cursor: null };
+    return HttpResponse.json(body);
+  }),
 
   http.post("/api/packs/:packId/validate", ({ params }) => {
     const packId = String(params["packId"]);
     if (!PACKS.some((p) => p.id === packId)) {
       return fail("not_found", `no such pack: ${packId}`);
     }
-    return HttpResponse.json({ ...VALIDATION_REPORT, pack_id: packId });
+    const body: ValidationReport = { ...VALIDATION_REPORT, pack_id: packId };
+    return HttpResponse.json(body);
   }),
 
   http.get("/api/packs/:packId/axes", ({ params }) => {
@@ -276,19 +309,43 @@ export const handlers = [
     if (!PACKS.some((p) => p.id === packId)) {
       return fail("not_found", `no such pack: ${packId}`);
     }
-    return HttpResponse.json({ ...PACK_AXES, pack_id: packId });
+    const body: PackAxes = { ...PACK_AXES, pack_id: packId };
+    return HttpResponse.json(body);
   }),
 
   // -------------------------------------------------------------------------
   // Discover findings
   // -------------------------------------------------------------------------
 
+  // Paginated the same way `/api/runs` is — same envelope, same opaque
+  // `(created_at, run_id)` cursor, same refusal for a malformed one.
   http.get("/api/discoveries", ({ request }) => {
-    const objective = new URL(request.url).searchParams.get("objective");
-    const rows = objective
+    const url = new URL(request.url);
+    const objective = url.searchParams.get("objective");
+    const before = url.searchParams.get("before");
+
+    let rows = objective
       ? FINDING_ROWS.filter((f) => f.objective_id === objective)
-      : FINDING_ROWS;
-    return HttpResponse.json(rows);
+      : [...FINDING_ROWS];
+
+    if (before !== null) {
+      let cursor: [string, string];
+      try {
+        cursor = parseCursor(before);
+      } catch {
+        return badCursor();
+      }
+      rows = rows.filter((f) => isBefore(findingKey(f), cursor));
+    }
+
+    const page = rows.slice(0, MOCK_PAGE_SIZE);
+    const last = page[page.length - 1];
+    const more = rows.length > page.length;
+    const body: DiscoveryListPage = {
+      items: page,
+      next_cursor: more && last ? findingKey(last).join(CURSOR_SEPARATOR) : null,
+    };
+    return HttpResponse.json(body);
   }),
 
   http.get("/api/discoveries/:probeId", ({ params, request }) => {

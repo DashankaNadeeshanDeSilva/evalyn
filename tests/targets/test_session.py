@@ -18,10 +18,10 @@ MINIPACK = Path(__file__).parent.parent / "fixtures" / "minipack"
 
 
 @pytest.mark.asyncio
-async def test_open_send_drives_toy_target(toy_target, monkeypatch):
+async def test_open_send_drives_toy_target(toy_target, monkeypatch, live_pack_dir):
     """open -> send returns the target's reply; the session records the turn."""
     monkeypatch.setenv("EVALYN_TARGET_URL", toy_target)
-    pack = load_pack(MINIPACK)
+    pack = load_pack(live_pack_dir(MINIPACK))
     async with TargetSession.open(pack) as session:
         reply = await session.send("Where did you work?")
         assert "Acme" in reply

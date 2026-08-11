@@ -3,7 +3,7 @@ import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 
 /**
- * Field-level drift guard for the 27 wire models.
+ * Field-level drift guard for the 34 wire models.
  *
  * `types.test.ts` covers the closed enums and the module constants. It does
  * **not** cover model fields, and that gap is the same silently-wrong-mirror
@@ -61,7 +61,14 @@ function pythonModels(source: string): Record<string, Model> {
   return out;
 }
 
-/** The same, over `types.ts`. Doc comments start with `/` or `*`, never a name. */
+/**
+ * The same, over `types.ts`. Doc comments start with `/` or `*`, never a name.
+ *
+ * The trailing `;` is **optional** in the pattern. TypeScript does not require
+ * it — `total?: number` with no semicolon is a legal member — and requiring it
+ * here made such a field invisible: a frozen response model could grow a
+ * phantom key with this suite and `tsc --noEmit` both green.
+ */
 function tsInterfaces(source: string): Record<string, Model> {
   const lines = source.split("\n");
   const out: Record<string, Model> = {};
@@ -71,7 +78,7 @@ function tsInterfaces(source: string): Record<string, Model> {
     const fields: string[] = [];
     for (const line of lines.slice(i + 1)) {
       if (line === "}") break;
-      const field = /^ {2}([a-z_][a-z0-9_]*)\??: .+;$/.exec(line);
+      const field = /^ {2}([a-z_][a-z0-9_]*)\??: .+;?$/.exec(line);
       if (field) fields.push(field[1]!);
     }
     out[header[1]!] = { extends: header[2] ?? null, fields };
@@ -80,7 +87,7 @@ function tsInterfaces(source: string): Record<string, Model> {
 }
 
 /**
- * The frozen snapshot — the 27 wire models as `models.py` declares them.
+ * The frozen snapshot — the 34 wire models as `models.py` declares them.
  *
  * `extends: null` means the Python base is `_Model`, which has no fields of its
  * own (only `model_config`), so it has no TypeScript counterpart.
@@ -101,6 +108,7 @@ const FROZEN: Record<string, Model> = {
   ReplayView: { extends: null, fields: ["status", "reproduced", "trials", "pass_k", "pass_at_k", "expected_trials", "checks", "reason"] },
   FindingRow: { extends: null, fields: ["probe_id", "run_id", "objective_id", "confirmed", "probe_path", "category", "safety_critical", "persona_id", "playbook_id", "duplicate_of", "duplicate_reason", "replay_status", "created_at", "redacted"] },
   FindingDetail: { extends: "FindingRow", fields: ["probe_yaml", "provenance", "checks", "turns", "replay"] },
+  DiscoveryListPage: { extends: null, fields: ["items", "next_cursor"] },
   CategoryTally: { extends: null, fields: ["wins_a", "wins_b", "ties", "unsure", "flips", "criteria_judged", "flip_rate"] },
   HardMetrics: { extends: null, fields: ["latency_mean_a", "latency_mean_b", "latency_p95_a", "latency_p95_b", "invariant_failures_a", "invariant_failures_b", "trials_a", "trials_b"] },
   Scoreboard: { extends: null, fields: ["run_id", "pack_name", "created_at", "label_a", "label_b", "source_a", "source_b", "created_at_a", "created_at_b", "categories", "hard_metrics", "excluded_pairs", "judge_usd", "rubric_scores_untrusted", "redacted"] },
@@ -108,8 +116,14 @@ const FROZEN: Record<string, Model> = {
   TrendSeries: { extends: null, fields: ["pack_name", "probe_id", "metric", "points"] },
   CriterionCounts: { extends: null, fields: ["hits", "total"] },
   TrustReport: { extends: null, fields: ["pack_name", "judge_model", "agreement", "per_rubric_agreement", "per_criterion_agreement", "per_criterion_counts", "unmatched", "stale", "stale_reason", "calibrated_at", "threshold"] },
+  PackRow: { extends: null, fields: ["id", "name", "path", "version", "probe_count", "has_calibration"] },
+  PackListPage: { extends: null, fields: ["items", "next_cursor"] },
+  ValidationReport: { extends: null, fields: ["pack_id", "ok", "errors", "warnings"] },
+  PackAxes: { extends: null, fields: ["pack_id", "objectives", "personas", "playbooks", "max_usd_per_run"] },
   LaunchRequest: { extends: null, fields: ["mode", "pack_id", "confirm", "baseline_run_id", "run_id_a", "run_id_b", "max_usd", "objectives", "allow_uncalibrated"] },
+  LaunchResponse: { extends: null, fields: ["run_id"] },
   ControlRequest: { extends: null, fields: ["action"] },
+  ControlResponse: { extends: null, fields: ["run_id", "accepted"] },
   RedactionMeta: { extends: null, fields: ["enabled", "marker", "reveal_required"] },
   MetaResponse: { extends: null, fields: ["version", "runs_dir", "packs", "allow_discover", "redaction", "heartbeat_seconds"] },
   HealthResponse: { extends: null, fields: ["ok", "version"] },
@@ -140,11 +154,19 @@ describe("model fields match models.py verbatim", () => {
 });
 
 /**
- * Nullability, over response models only.
+ * Nullability, over response models only. **Two** assertions, not one.
  *
- * A Python `X | None` must be a TypeScript `X | null` — a required key holding
- * a nullable value. Getting this backwards is how "this run cannot tell you"
- * silently becomes "0".
+ * A Python `X | None` must be a TypeScript `X | null` — a *required key*
+ * holding a *nullable value*. Those are two independent claims, and folding
+ * them into one test is how this guard used to pass on the very fields it
+ * exists for: `version?: string` on `PackRow` was read as "nullable" and went
+ * green, as did `next_cursor?: string | null`. So the optional marker is now
+ * recorded separately and asserted to be absent, and `pythonNullable` compares
+ * only the value's nullability.
+ *
+ * The failure that motivates it: `next_cursor?: string | null` lets a page
+ * write `if (page.next_cursor)` and collapse absent, null and "" into one
+ * branch — the absent-vs-null distinction this contract is built on.
  *
  * Request models are exempt by design: `LaunchRequest.objectives` has a
  * non-null Python default (`[]`) but is genuinely optional for a browser to
@@ -169,24 +191,41 @@ describe("nullability matches models.py (response models)", () => {
     return out;
   }
 
-  function tsNullable(name: string): Record<string, boolean> {
+  /** The lines of one interface body, so the two readers cannot disagree. */
+  function tsBody(name: string): string[] {
     const lines = tsSource.split("\n");
     const start = lines.findIndex((l) =>
       new RegExp(`^export interface ${name}(?: extends \\w+)? \\{$`).test(l),
     );
+    const end = lines.slice(start + 1).findIndex((l) => l === "}");
+    return lines.slice(start + 1, start + 1 + end);
+  }
+
+  /** Value nullability only — the `?` marker is a separate claim, asserted below. */
+  function tsNullable(name: string): Record<string, boolean> {
     const out: Record<string, boolean> = {};
-    for (const line of lines.slice(start + 1)) {
-      if (line === "}") break;
-      const m = /^ {2}([a-z_][a-z0-9_]*)(\??): (.+);$/.exec(line);
-      if (m) out[m[1]!] = m[2] === "?" || /\| null/.test(m[3]!);
+    for (const line of tsBody(name)) {
+      const m = /^ {2}([a-z_][a-z0-9_]*)\??: (.+?);?$/.exec(line);
+      if (m) out[m[1]!] = /\| null/.test(m[2]!);
     }
     return out;
+  }
+
+  /** Keys declared `field?:` — none may exist on a response model. */
+  function tsOptionalKeys(name: string): string[] {
+    return tsBody(name)
+      .map((line) => /^ {2}([a-z_][a-z0-9_]*)\?: /.exec(line)?.[1])
+      .filter((f): f is string => f !== undefined);
   }
 
   for (const name of Object.keys(FROZEN)) {
     if (REQUEST_MODELS.has(name)) continue;
     it(`${name}: every '| None' is a '| null'`, () => {
       expect(tsNullable(name)).toEqual(pythonNullable(name));
+    });
+
+    it(`${name}: no optional key — FastAPI serialises defaults, so nothing is absent`, () => {
+      expect(tsOptionalKeys(name)).toEqual([]);
     });
   }
 });

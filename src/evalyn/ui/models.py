@@ -77,12 +77,14 @@ __all__ = [
     "Capabilities", "CheckView", "TranscriptTurn", "ProbeRow", "RunSummary",
     "RunDetail", "DiscoverySummary", "RunListPage", "TrialView", "GateVerdict",
     # discover
-    "ReplayView", "FindingRow", "FindingDetail",
+    "ReplayView", "FindingRow", "FindingDetail", "DiscoveryListPage",
     # compare + trends + trust
     "CategoryTally", "HardMetrics", "Scoreboard",
     "TrendPoint", "TrendSeries", "CriterionCounts", "TrustReport",
+    # packs
+    "PackRow", "PackListPage", "ValidationReport", "PackAxes",
     # write side
-    "LaunchRequest", "ControlRequest",
+    "LaunchRequest", "LaunchResponse", "ControlRequest", "ControlResponse",
     # server meta
     "RedactionMeta", "MetaResponse", "HealthResponse",
 ]
@@ -692,6 +694,31 @@ class FindingDetail(FindingRow):
     replay: ReplayView | None = None
 
 
+class DiscoveryListPage(_Model):
+    """`GET /api/discoveries` — the staged findings, enveloped like `RunListPage`.
+
+    An **envelope, not a bare array**, for the reason `RunListPage` is one: a
+    frozen top-level array can never grow a field, so the first thing this list
+    needs beyond its rows (a total, a "the run is still writing" flag, a page)
+    would be a breaking change on a contract that promises not to break.
+
+    Rows are `FindingRow` — the staged probe joined with its
+    `DiscoveryArtifact.findings[]` entry, exactly as `_discovery` builds them in
+    `ui/index.py`. `?objective=` filters them; the cursor is the same opaque
+    `(created_at, run_id)` composite `RunListPage` uses.
+    """
+
+    items: list[FindingRow] = []
+    next_cursor: str | None = None
+
+    @field_validator("next_cursor")
+    @classmethod
+    def _cursor_is_the_tie_safe_composite(cls, value: str | None) -> str | None:
+        if value is not None:
+            parse_cursor(value)   # raises on the tie-unsafe bare-timestamp form
+        return value
+
+
 # --------------------------------------------------------------------------
 # 8. Compare, trends, judge trust
 # --------------------------------------------------------------------------
@@ -803,7 +830,102 @@ class TrustReport(_Model):
 
 
 # --------------------------------------------------------------------------
-# 9. Write side
+# 8a. Packs — the start-time allowlist, and what a launch may select from
+# --------------------------------------------------------------------------
+
+class PackRow(_Model):
+    """One entry of `GET /api/packs`.
+
+    The list **is** the start-time allowlist built from
+    `evalyn ui --target <path>` — the complete set of packs a browser may name.
+    """
+
+    #: An **index into that allowlist, never a path**. It is the only pack
+    #: identifier a request may carry, which is what stops a body from pointing
+    #: the engine at an arbitrary file — `LaunchRequest` has no path field at
+    #: all, and `extra="forbid"` rejects a body that invents one.
+    id: str
+    #: What `LaunchRequest.confirm` must echo — the type-to-confirm interlock
+    #: that stops a drive-by `curl` from starting spend.
+    name: str
+    #: A **display-safe label**, `~`-collapsed like `MetaResponse.packs`, and
+    #: like those it is no longer a usable filesystem path. Never round-trip it
+    #: back into a `Path()`, and never send it back to the server: `id` is the
+    #: only thing that names a pack on the wire.
+    path: str
+    version: str | None = None
+    probe_count: int = 0
+    has_calibration: bool = False
+
+    @field_validator("path")
+    @classmethod
+    def _path_is_display_safe(cls, value: str) -> str:
+        # Collapsed *here*, exactly as `MetaResponse` does it, so a later task
+        # cannot forget. The redaction chokepoint would stop the leak, but it
+        # would stop it by writing `«redacted:home_path»` into the pack picker
+        # — a marker where the contract promised a readable label.
+        return display_path(value)
+
+
+class PackListPage(_Model):
+    """`GET /api/packs` — the allowlist, enveloped like `RunListPage`.
+
+    The allowlist is small enough that `next_cursor` is `None` in practice. The
+    envelope is here anyway because a **bare top-level array can never gain a
+    field**, and this list is the one most likely to want one (a count, a
+    per-pack error) once packs come from more than one `--target`.
+    """
+
+    items: list[PackRow] = []
+    next_cursor: str | None = None
+
+    @field_validator("next_cursor")
+    @classmethod
+    def _cursor_is_the_tie_safe_composite(cls, value: str | None) -> str | None:
+        if value is not None:
+            parse_cursor(value)   # raises on the tie-unsafe bare-timestamp form
+        return value
+
+
+class ValidationReport(_Model):
+    """`POST /api/packs/{pack_id}/validate`.
+
+    **Not a mirror of `evalyn.engine.validate.ValidationReport`**, which carries
+    only `ok`/`errors`/`warnings`. The extra `pack_id` is deliberate: the SPA
+    validates packs from a list and a response with no id in it cannot be
+    matched to the request that asked for it. Do not "fix" the discrepancy by
+    dropping the field — the engine dataclass owns the check, this model owns
+    the wire, and they are allowed to differ.
+    """
+
+    #: Echoes the path parameter, so an out-of-order response is attributable.
+    pack_id: str
+    ok: bool
+    errors: list[str] = []
+    warnings: list[str] = []
+
+
+class PackAxes(_Model):
+    """`GET /api/packs/{pack_id}/axes` — what a `discover` launch may select.
+
+    The three lists are the pack's own axes; a launch may pick a subset of
+    `objectives` (`LaunchRequest.objectives`), never a value that is not here.
+    """
+
+    pack_id: str
+    objectives: list[str] = []
+    personas: list[str] = []
+    playbooks: list[str] = []
+    #: `TargetSpec.budget.max_usd_per_run` verbatim — a plain float with a
+    #: default of 5.0, **never null**. It caps Evalyn's own judge-model spend
+    #: (target-side HTTP is not counted) and is metered **post-hoc**, so a run
+    #: can overshoot it; `0` disables the check entirely rather than forbidding
+    #: all spend. A launch is clamped down to this ceiling, never up.
+    max_usd_per_run: float = 5.0
+
+
+# --------------------------------------------------------------------------
+# 9. Write side — the request bodies, and the 202s that acknowledge them
 # --------------------------------------------------------------------------
 
 class LaunchRequest(_Model):
@@ -836,6 +958,19 @@ class LaunchRequest(_Model):
     allow_uncalibrated: bool = False
 
 
+class LaunchResponse(_Model):
+    """`POST /api/runs` on success — a 202, nothing has run yet.
+
+    The `run_id` is minted **before** the process starts, so the SPA can
+    subscribe to `/api/runs/{id}/events` immediately instead of polling `runs/`
+    for a file to appear. It is the **stem of the artifact that later appears**:
+    the id here and the id of the finished run are the same string, which is
+    what makes the subscription valid before the artifact exists.
+    """
+
+    run_id: RunId
+
+
 class ControlRequest(_Model):
     """`POST /api/runs/{id}/control`.
 
@@ -845,6 +980,21 @@ class ControlRequest(_Model):
     """
 
     action: ControlAction
+
+
+class ControlResponse(_Model):
+    """`POST /api/runs/{id}/control` on success.
+
+    **This 202 is not the acknowledgement.** `accepted=True` means only that
+    the request was well-formed and the control file was written; the matching
+    `control.*` SSE event is what says the run actually paused, resumed or
+    cancelled. A UI that flips to "paused" off this response is asserting
+    something no one has confirmed — and if no event lands within 60 s the
+    server escalates to `SIGTERM`, which is a different outcome entirely.
+    """
+
+    run_id: RunId
+    accepted: bool
 
 
 # --------------------------------------------------------------------------

@@ -587,6 +587,97 @@ def test_make_cursor_refuses_a_run_id_that_would_break_parsing():
 
 
 # --------------------------------------------------------------------------
+# the list endpoints are ENVELOPES, not bare arrays (R4-28), and the packs /
+# launch-ack models the cockpit needs
+# --------------------------------------------------------------------------
+
+def _pack_row(**over):
+    return m.PackRow(**{"id": "pack-0", "name": "example",
+                        "path": "~/Drive/Projects/evalyn/packs/example"} | over)
+
+
+@pytest.mark.parametrize("page", ["PackListPage", "DiscoveryListPage"])
+def test_the_other_two_list_endpoints_are_enveloped_like_run_list_page(page):
+    """A bare top-level array can never gain a field. Both lists get the same
+    `{items, next_cursor}` shape, and the same tie-safe cursor validator."""
+    cls = getattr(m, page)
+    assert cls().items == [] and cls().next_cursor is None
+    cursor = m.make_cursor("2026-08-05T10:11:12+00:00",
+                           "20260805T101112000000-1a2b3c4d-example-discover")
+    assert cls(next_cursor=cursor).next_cursor == cursor
+    with pytest.raises(ValidationError, match="cursor"):
+        cls(next_cursor="2026-08-05T10:11:12+00:00")
+
+
+def test_pack_row_carries_an_allowlist_index_and_a_display_safe_label():
+    row = _pack_row()
+    assert row.version is None and row.probe_count == 0
+    assert row.has_calibration is False
+    # `id` is the index into the `--target` allowlist; the *name* is what
+    # `LaunchRequest.confirm` must echo, and the two are not interchangeable.
+    assert m.LaunchRequest(mode="gate", pack_id=row.id, confirm=row.name).confirm \
+        == "example"
+
+
+def test_pack_row_path_is_made_display_safe_at_validation_time(monkeypatch):
+    """Like `MetaResponse.runs_dir`/`.packs` (R4-14), and for the same reason:
+    the guarantee is in the docstring, so it has to be in the model. Left to a
+    later task, the chokepoint turns the leak into `«redacted:home_path»` in the
+    pack picker — a marker where a readable label was promised."""
+    monkeypatch.setenv("HOME", "/Users/alice")
+    assert _pack_row(path="/Users/alice/Drive/packs/example").path \
+        == "~/Drive/packs/example"
+    # Idempotent, and a path outside home is left alone rather than mislabelled.
+    assert _pack_row(path="~/Drive/packs/example").path == "~/Drive/packs/example"
+    assert _pack_row(path="/opt/packs/example").path == "/opt/packs/example"
+
+
+def test_pack_list_page_items_are_pack_rows():
+    page = m.PackListPage(items=[_pack_row()])
+    assert page.items[0].name == "example"
+    with pytest.raises(ValidationError):
+        m.PackListPage(items=[{"id": "pack-0"}])          # name/path missing
+
+
+def test_validation_report_echoes_the_pack_id_the_engine_dataclass_lacks():
+    """Deliberately NOT a mirror of `engine.validate.ValidationReport`: the SPA
+    validates from a list and must attribute the response to its request."""
+    report = m.ValidationReport(pack_id="pack-0", ok=False, errors=["boom"])
+    assert report.pack_id == "pack-0" and report.warnings == []
+    with pytest.raises(ValidationError, match="pack_id"):
+        m.ValidationReport(ok=True)
+
+
+def test_pack_axes_budget_ceiling_is_a_plain_float_never_null():
+    """`TargetSpec.budget.max_usd_per_run` has a default and no null form —
+    `0` disables the check, which is not the same as "unknown"."""
+    assert m.PackAxes(pack_id="pack-0").max_usd_per_run == 5.0
+    assert m.PackAxes(pack_id="pack-0", max_usd_per_run=0).max_usd_per_run == 0
+    with pytest.raises(ValidationError):
+        m.PackAxes(pack_id="pack-0", max_usd_per_run=None)
+
+
+def test_launch_and_control_responses_carry_the_run_id_grammar():
+    """The launch `run_id` is the stem of the artifact that later appears, so it
+    must satisfy the same grammar as the id on that artifact's row."""
+    run_id = "20260804T081544953468-53e4125b-example"
+    assert m.LaunchResponse(run_id=run_id).run_id == run_id
+    assert m.ControlResponse(run_id=run_id, accepted=True).accepted is True
+    for bad in ("../etc/passwd", f"{run_id}.json"):
+        with pytest.raises(ValidationError):
+            m.LaunchResponse(run_id=bad)
+        with pytest.raises(ValidationError):
+            m.ControlResponse(run_id=bad, accepted=True)
+
+
+def test_control_response_is_not_the_acknowledgement():
+    """`accepted=True` says the request was well-formed, nothing more — the
+    `control.*` SSE event is the ack. Pinned so the docstring cannot rot."""
+    assert "not the acknowledgement" in m.ControlResponse.__doc__
+    assert m.EventName.control_paused.value.startswith("control.")
+
+
+# --------------------------------------------------------------------------
 # redaction marker (spec §7 item 6) — ONE format, no second
 # --------------------------------------------------------------------------
 
@@ -875,6 +966,10 @@ EXPECTED_STRUCTURE: dict[str, dict[str, tuple[str, bool]]] = {
         "turns": ("list[TranscriptTurn]", False),
         "replay": ("ReplayView | None", False),
     },
+    "DiscoveryListPage": {
+        "items": ("list[FindingRow]", False),
+        "next_cursor": ("str | None", False),
+    },
     "CategoryTally": {
         "wins_a": ("int", False),
         "wins_b": ("int", False),
@@ -936,6 +1031,33 @@ EXPECTED_STRUCTURE: dict[str, dict[str, tuple[str, bool]]] = {
         "calibrated_at": ("str | None", False),
         "threshold": ("float | None", False),
     },
+    "PackRow": {
+        "id": ("str", True),
+        "name": ("str", True),
+        "path": ("str", True),
+        "version": ("str | None", False),
+        "probe_count": ("int", False),
+        "has_calibration": ("bool", False),
+    },
+    "PackListPage": {
+        "items": ("list[PackRow]", False),
+        "next_cursor": ("str | None", False),
+    },
+    "ValidationReport": {
+        "pack_id": ("str", True),
+        "ok": ("bool", True),
+        "errors": ("list[str]", False),
+        "warnings": ("list[str]", False),
+    },
+    "PackAxes": {
+        "pack_id": ("str", True),
+        "objectives": ("list[str]", False),
+        "personas": ("list[str]", False),
+        "playbooks": ("list[str]", False),
+        # Not `float | None` — `TargetSpec.budget.max_usd_per_run` is a plain
+        # float with a default, and `0` (not null) is how it is disabled.
+        "max_usd_per_run": ("float", False),
+    },
     "LaunchRequest": {
         "mode": ("RunMode", True),
         "pack_id": ("str", True),
@@ -947,7 +1069,9 @@ EXPECTED_STRUCTURE: dict[str, dict[str, tuple[str, bool]]] = {
         "objectives": ("list[str]", False),
         "allow_uncalibrated": ("bool", False),
     },
+    "LaunchResponse": {"run_id": ("str", True)},
     "ControlRequest": {"action": ("ControlAction", True)},
+    "ControlResponse": {"run_id": ("str", True), "accepted": ("bool", True)},
     "RedactionMeta": {
         "enabled": ("bool", False),
         "marker": ("str", False),
@@ -1022,6 +1146,8 @@ RUN_ID_TYPED_FIELDS = {
     "FindingRow": {"run_id"},
     "FindingDetail": {"run_id"},
     "LaunchRequest": {"baseline_run_id", "run_id_a", "run_id_b"},
+    "LaunchResponse": {"run_id"},
+    "ControlResponse": {"run_id"},
 }
 
 

@@ -62,7 +62,8 @@ async def test_open_response_without_session_id_raises(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_solver_drops_seeded_input_message_from_transcript(toy_target, monkeypatch):
+async def test_solver_drops_seeded_input_message_from_transcript(toy_target, monkeypatch,
+                                                                 live_pack_dir):
     """PR #4 fix #5: Inspect seeds state.messages with Sample.input (the probe
     id). That fabricated 'user turn' must never reach the judged transcript —
     after solve, the messages are EXACTLY the real session turns."""
@@ -70,7 +71,7 @@ async def test_solver_drops_seeded_input_message_from_transcript(toy_target, mon
     from evalyn.scoring.transcript import assistant_turns, labeled_transcript
 
     monkeypatch.setenv("EVALYN_TARGET_URL", toy_target)
-    pack = load_pack(MINIPACK)
+    pack = load_pack(live_pack_dir(MINIPACK))
     state = TaskState(model="m", sample_id="inv-nonempty", epoch=1,
                       input="inv-nonempty",
                       messages=[ChatMessageUser(content="inv-nonempty")])
@@ -84,9 +85,9 @@ async def test_solver_drops_seeded_input_message_from_transcript(toy_target, mon
     assert assistant_turns(state) == [state.output.completion]
 
 
-def test_solver_drives_toy_target(toy_target, monkeypatch):
+def test_solver_drives_toy_target(toy_target, monkeypatch, live_pack_dir):
     monkeypatch.setenv("EVALYN_TARGET_URL", toy_target)
-    pack = load_pack(MINIPACK)
+    pack = load_pack(live_pack_dir(MINIPACK))
     ds = MemoryDataset([Sample(input="work", target="x",
                                metadata={"turns": ["Where did you work?"]})])
     task = Task(dataset=ds, solver=session_solver(pack), scorer=_capture())

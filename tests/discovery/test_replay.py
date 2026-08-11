@@ -67,10 +67,10 @@ def _copy_minipack(tmp_path: Path) -> Path:
 
 
 @pytest.fixture
-def live_pack(tmp_path, monkeypatch, toy_target):
+def live_pack(monkeypatch, toy_target, live_pack_dir):
     """A writable copy of the minipack, pointed at the live toy target."""
     monkeypatch.setenv("EVALYN_TARGET_URL", toy_target)
-    return load_pack(_copy_minipack(tmp_path))
+    return load_pack(live_pack_dir(MINIPACK))
 
 
 @pytest.fixture
@@ -387,7 +387,7 @@ async def test_replay_programmer_error_still_surfaces(
 
 
 async def test_replay_tier3_probe_uses_the_given_rubric_judge(
-        tmp_path, monkeypatch, toy_target, replay):
+        tmp_path, monkeypatch, toy_target, replay, live_pack_dir):
     """Replaying a probe that carries a rubric check drives the real tier-3
     scorer — here with `mockllm/model`, so the test costs nothing. The verdict
     still comes from the required check, and the log path is reported so the
@@ -397,7 +397,7 @@ async def test_replay_tier3_probe_uses_the_given_rubric_judge(
     GENERATION fails loudly on mockllm's unparseable reply, while an
     unparseable SCORE reply is the fail-closed `unsure` this asserts."""
     monkeypatch.setenv("EVALYN_TARGET_URL", toy_target)
-    root = _copy_minipack(tmp_path)
+    root = live_pack_dir(MINIPACK)
     (root / "rubrics").mkdir()
     (root / "rubrics" / "quality.md").write_text(QUALITY_RUBRIC)
     (root / "rubrics" / "quality.steps.json").write_text(

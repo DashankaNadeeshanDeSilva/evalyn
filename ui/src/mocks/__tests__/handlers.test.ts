@@ -2,15 +2,27 @@ import { describe, expect, it } from "vitest";
 
 import { CURSOR_SEPARATOR, parseCursor } from "../../api/types";
 import type {
+  ControlResponse,
+  DiscoveryListPage,
   ErrorEnvelope,
   FindingDetail,
+  LaunchResponse,
   MetaResponse,
+  PackAxes,
+  PackListPage,
   RunDetail,
   RunListPage,
   TrustReport,
+  ValidationReport,
 } from "../../api/types";
 import { MOCK_PAGE_SIZE } from "../handlers";
-import { RUN_ID_GATE, RUN_ID_LEGACY, RUN_SUMMARIES } from "../fixtures";
+import {
+  FINDING_ROWS,
+  PACKS,
+  RUN_ID_GATE,
+  RUN_ID_LEGACY,
+  RUN_SUMMARIES,
+} from "../fixtures";
 
 /**
  * These assertions are about the *contract*, not about MSW. Each one is a
@@ -166,6 +178,79 @@ describe("discover findings are redacted by default", () => {
     ).json()) as FindingDetail;
     expect(body.redacted).toBe(false);
     expect(body.probe_yaml).toContain("Acme Robotics");
+  });
+});
+
+describe("the list endpoints are envelopes, never bare arrays", () => {
+  // A page that does `(await res.json()).map(...)` works against a bare array
+  // and breaks the day the contract grows a field. Both lists carry the
+  // `RunListPage` shape from the start so that day never comes.
+
+  it("/api/packs returns {items, next_cursor}", async () => {
+    const body = (await (await get("/api/packs")).json()) as PackListPage;
+    expect(Array.isArray(body)).toBe(false);
+    expect(body.items.map((p) => p.id)).toEqual(PACKS.map((p) => p.id));
+    expect(body.next_cursor).toBeNull();
+    // `path` is a display-safe label. `id` is the only thing that names a pack.
+    for (const p of body.items) expect(p.path.startsWith("~")).toBe(true);
+  });
+
+  it("/api/discoveries returns {items, next_cursor} and filters by objective", async () => {
+    const body = (await (await get("/api/discoveries")).json()) as DiscoveryListPage;
+    expect(Array.isArray(body)).toBe(false);
+    expect(body.items).toHaveLength(FINDING_ROWS.length);
+    expect(body.items.length).toBeLessThanOrEqual(MOCK_PAGE_SIZE);
+    expect(body.next_cursor).toBeNull();
+
+    const pii = (await (
+      await get("/api/discoveries?objective=pii")
+    ).json()) as DiscoveryListPage;
+    expect(pii.items.map((f) => f.objective_id)).toEqual(["pii"]);
+  });
+
+  it("/api/discoveries rejects the tie-unsafe cursor exactly as /api/runs does", async () => {
+    const res = await get("/api/discoveries?before=2026-08-05T10:11:12.000000%2B00:00");
+    expect(res.status).toBe(404);
+    const body = (await res.json()) as ErrorEnvelope;
+    expect(body.error.code).toBe("not_found");
+    expect(body.error.detail).toContain(CURSOR_SEPARATOR);
+  });
+});
+
+describe("packs and the write-side acknowledgements", () => {
+  it("echoes the pack_id back on validate, so a response is attributable", async () => {
+    const body = (await (
+      await get("/api/packs/pack-0/validate", { method: "POST" })
+    ).json()) as ValidationReport;
+    expect(body.pack_id).toBe("pack-0");
+    expect(body.ok).toBe(true);
+  });
+
+  it("reports a budget ceiling that is a number, never null", async () => {
+    const body = (await (await get("/api/packs/pack-0/axes")).json()) as PackAxes;
+    expect(typeof body.max_usd_per_run).toBe("number");
+    expect(body.objectives.length).toBeGreaterThan(0);
+  });
+
+  it("mints the run_id in the 202, before anything has run", async () => {
+    const res = await get("/api/runs", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ mode: "gate", pack_id: "pack-0", confirm: "example" }),
+    });
+    expect(res.status).toBe(202);
+    const body = (await res.json()) as LaunchResponse;
+    // The stem of the artifact that later appears — the id a page subscribes to.
+    expect(body.run_id).toBe(RUN_ID_GATE);
+  });
+
+  it("answers control with accepted, which is NOT the acknowledgement", async () => {
+    const res = await get(`/api/runs/${RUN_ID_GATE}/control`, { method: "POST" });
+    expect(res.status).toBe(202);
+    const body = (await res.json()) as ControlResponse;
+    expect(body).toEqual({ run_id: RUN_ID_GATE, accepted: true });
+    // The `control.*` SSE event is the ack. Nothing here says the run paused.
+    expect(Object.keys(body)).not.toContain("status");
   });
 });
 
