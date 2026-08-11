@@ -573,22 +573,91 @@ def test_scrub_text_is_available_for_the_sse_tailer():
 # 6. `RedactingRoute` — the chokepoint itself
 # --------------------------------------------------------------------------
 #
-# **Deferred to Task 6 (controller instruction).** The route-table test — walk
-# `app.routes`, assert every `/api` route is a `RedactingRoute` or carries the
-# marker, and that the marked set is *exactly* `{"/api/meta", "/api/health"}` —
-# belongs in this file but cannot exist yet: it asserts over an app, and
-# `create_app` arrives in Task 6. The app factory's task inherits it. The tests
-# below cover the mechanism; only the census of the real route table is missing.
-#
-# **Task 6 also MUST mount `redacting_exception_handlers(...)` on the app, and
-# `route_class=RedactingRoute` alone is NOT sufficient.** `get_route_handler`
-# wraps the endpoint call only; `HTTPException` and every registered handler are
-# rendered by Starlette's `ExceptionMiddleware`, which sits *above* the route and
-# therefore never passes through the route class. An unhandled `HTTPException`
-# detail — routinely the operator's run directory under `$HOME` — would go out
-# unredacted. The census above should grow a second assertion: every one of
-# `HTTPException`, `RequestValidationError` and `Exception` is present in
-# `app.exception_handlers`. The handlers themselves are built and tested here.
+# The census of the real route table lives here (it was deferred out of Task 4
+# only because it asserts over an app, and `create_app` did not exist yet).
+# `RedactingRoute` is a stable singleton class object, which is what lets the
+# `isinstance` check below mean what it says.
+
+#: **Every route exempt from the chokepoint, in full.** The design spec pins
+#: this to two, and both are exempt for the same reason: they carry no run
+#: content at all. `/api/meta` still makes its own filesystem fields
+#: display-safe inside `MetaResponse` (R4-14) — exempt is not unexamined.
+#:
+#: Tasks 7, 11 and 20 each add routes to the same router. Adding one here is
+#: the one edit in this file that needs an argument attached to it; adding a
+#: redacting route needs nothing, which is the whole point of a chokepoint.
+NO_REDACT_ROUTES = {"/api/meta", "/api/health"}
+
+
+def _cockpit_app(runs_dir: Path):
+    from evalyn.ui.server import create_app
+
+    return create_app(runs_dir, [])
+
+
+def _api_routes(app) -> list:
+    """Every `/api` route the app will actually serve, however it was mounted.
+
+    `app.routes` is **not** the route table any more. From FastAPI 0.139
+    `include_router` is lazy: it leaves an `_IncludedRouter` placeholder in
+    `app.routes` and the real `APIRoute` objects stay on the original router,
+    reachable through `original_router`. A census that read `app.routes` alone
+    would have found one route here, declared the exempt set empty, and passed
+    — a green test certifying a route table it never looked at. Hence the walk,
+    and hence the "both known routes were found" assertion in the caller.
+    """
+    from fastapi.routing import APIRoute
+
+    found, stack = [], list(app.routes)
+    while stack:
+        route = stack.pop()
+        if isinstance(route, APIRoute):
+            if route.path.startswith("/api"):
+                found.append(route)
+            continue
+        original = getattr(route, "original_router", None)
+        if original is not None:
+            stack.extend(original.routes)
+    return found
+
+
+def test_every_api_route_is_redacting_and_exactly_two_are_exempt(tmp_path):
+    """The census: what the app actually mounts, not what it meant to.
+
+    A route that forgot the router, or an `@no_redact` someone added because a
+    body was awkward to scrub, is invisible to every other test in this file —
+    they all build their own app. This one reads the shipped route table.
+    """
+    from evalyn.ui.redact import RedactingRoute, is_no_redact
+
+    api_routes = _api_routes(_cockpit_app(tmp_path))
+    # Non-vacuity, and the tripwire for the next FastAPI that moves the route
+    # table again: if the walk stops finding these, it is finding nothing.
+    assert NO_REDACT_ROUTES <= {route.path for route in api_routes}
+
+    unprotected = sorted(route.path for route in api_routes
+                         if not isinstance(route, RedactingRoute))
+    assert unprotected == [], "mounted outside the /api router — redaction skipped"
+
+    exempt = {route.path for route in api_routes if is_no_redact(route.endpoint)}
+    assert exempt == NO_REDACT_ROUTES
+
+
+def test_the_app_mounts_the_handlers_that_render_above_the_route(tmp_path):
+    """`route_class=RedactingRoute` alone is NOT sufficient — C-T6b.
+
+    `get_route_handler` wraps the endpoint call only. `HTTPException` and every
+    registered handler are rendered by Starlette's `ExceptionMiddleware`, above
+    the route and therefore outside the route class entirely. Those bodies are
+    the ones carrying the operator's run directory under `$HOME`, so a route
+    census that stopped at the route class would certify a leak.
+    """
+    from fastapi.exceptions import RequestValidationError
+    from starlette.exceptions import HTTPException
+
+    handlers = _cockpit_app(tmp_path).exception_handlers
+    assert {HTTPException, RequestValidationError, Exception} <= set(handlers)
+
 
 def _app():
     from fastapi import APIRouter, FastAPI

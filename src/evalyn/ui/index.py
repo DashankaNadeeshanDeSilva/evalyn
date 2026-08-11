@@ -417,13 +417,27 @@ def _hard_metrics(raw: object) -> HardMetrics:
 # 5. The index
 # --------------------------------------------------------------------------
 
+#: How many parsed artifacts one index keeps. **A bound, not a tuning knob**
+#: (deferred finding F8): a cache entry holds the whole raw dict, transcripts
+#: (`probes[].trial_records`) included, and the server is a process an operator
+#: leaves running all afternoon over a directory that grows all afternoon.
+#: Unbounded, one sweep of a large `runs/` pinned every transcript in it into
+#: memory for the life of the process.
+#:
+#: Comfortably above the default page size (50) and above the corpus this was
+#: measured against, so the common case — page, click a row, page again — never
+#: evicts. R4-6 applies: that corpus size is an observation, never an assertion.
+CACHE_MAX_ENTRIES = 128
+
+
 class RunIndex:
     """A read-only view of one `runs/` directory. Cheap, cached, and unshakeable.
 
     Instantiate per server, not per request: the cache lives on the instance and
     is keyed on `(path, st_mtime_ns, st_size)`, so a second listing costs one
     `stat` per file and no parsing. Artifacts are immutable once written, which
-    is what makes that key sufficient.
+    is what makes that key sufficient — and bounded at `CACHE_MAX_ENTRIES`,
+    least-recently-used first, which is what stops it from being a slow leak.
     """
 
     def __init__(self, runs_dir: Path | str) -> None:
@@ -478,9 +492,16 @@ class RunIndex:
         key = (str(path), st.st_mtime_ns, st.st_size)
         cached = self._cache.get(str(path))
         if cached is not None and cached[0] == key:
+            # Move to the end: a plain dict preserves insertion order, so
+            # "oldest key" and "least recently used" are the same thing only if
+            # a hit re-inserts. Without this the bound is FIFO, and the entry a
+            # listing sweep evicts is the detail page the operator is watching.
+            self._cache[str(path)] = self._cache.pop(str(path))
             return cached[1]
         loaded = _read_artifact(path, run_id, mode)
         self._cache[str(path)] = (key, loaded)
+        while len(self._cache) > CACHE_MAX_ENTRIES:
+            self._cache.pop(next(iter(self._cache)))
         return loaded
 
     # -- process state -----------------------------------------------------
@@ -631,12 +652,27 @@ class RunIndex:
                                  else None),
             cancelled=sidecar.control is ControlAction.cancel,
         )
-        if isinstance(typed, RunArtifact):
-            return replace_detail(detail, probes=[_probe_row(p) for p in typed.probes])
-        if isinstance(typed, CompareArtifact):
-            return replace_detail(detail, compare=_scoreboard(run_id, typed))
-        if isinstance(typed, DiscoveryArtifact):
-            return replace_detail(detail, discovery=_discovery(run_id, typed))
+        # The mode-specific half is where the WIRE models are validated, and
+        # that is a second, later chance to fail than `_read_artifact`'s
+        # (F10). An artifact can load perfectly and still carry a *value* the
+        # contract does not admit — a check with `tier: 0`, `4` or `null` —
+        # and `ValidationError` out of `.get()` becomes a 500. A 500 is the one
+        # answer this module may not give: the run happened, the operator can
+        # see the file, and the contract is degradation, not failure. So the
+        # detail greys out with a reason, exactly as a shape-level surprise
+        # already does, and the endpoint has nothing left to get wrong.
+        try:
+            if isinstance(typed, RunArtifact):
+                return replace_detail(detail,
+                                      probes=[_probe_row(p) for p in typed.probes])
+            if isinstance(typed, CompareArtifact):
+                return replace_detail(detail, compare=_scoreboard(run_id, typed))
+            if isinstance(typed, DiscoveryArtifact):
+                return replace_detail(detail, discovery=_discovery(run_id, typed))
+        except Exception as exc:
+            return replace_detail(
+                detail, degraded=True, judge_usd=None,
+                degraded_reason=f"artifact could not be rendered: {_why(exc)}")
         return detail
 
 

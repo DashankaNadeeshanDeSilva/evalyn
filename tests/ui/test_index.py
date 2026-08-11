@@ -688,6 +688,95 @@ def test_a_reread_is_served_from_cache_until_the_file_changes(tmp_path):
     assert idx.list()[0].pack_name == "other"
 
 
+def _write_gate_runs(runs: Path, count: int) -> list[str]:
+    runs.mkdir(parents=True, exist_ok=True)
+    ids = []
+    for n in range(count):
+        rid = f"20260807T{n:06d}000000-deadbeef-example"
+        runs.joinpath(f"{rid}.json").write_text(
+            json.dumps(_gate_artifact().to_dict()))
+        ids.append(rid)
+    return ids
+
+
+def test_the_artifact_cache_is_bounded(tmp_path):
+    """F8. The cache retained every artifact it had ever loaded — *including*
+    `probes[].trial_records`, i.e. the transcripts.
+
+    That is unbounded growth keyed on "files this server has looked at", in a
+    process an operator leaves running all afternoon over a directory that
+    grows all afternoon. One full listing of a big `runs/` was enough to pin
+    every transcript in it into memory for the life of the server.
+    """
+    runs = tmp_path / "runs"
+    _write_gate_runs(runs, ix.CACHE_MAX_ENTRIES + 25)
+
+    idx = RunIndex(runs)
+    idx.list(limit=10_000)
+    assert len(idx._cache) <= ix.CACHE_MAX_ENTRIES
+
+
+def test_the_cache_evicts_least_recently_used_not_the_run_being_watched(tmp_path):
+    """Eviction order is the whole difference between a bound and a bug.
+
+    The detail page an operator is sitting on is re-read constantly while the
+    listing sweeps past it; a FIFO bound would evict exactly that entry and
+    re-parse it every poll.
+    """
+    runs = tmp_path / "runs"
+    ids = _write_gate_runs(runs, ix.CACHE_MAX_ENTRIES)
+    idx = RunIndex(runs)
+    idx.list(limit=10_000)
+
+    watched = runs / f"{ids[0]}.json"
+    idx._load(watched, ids[0], m.RunMode.gate)          # touch the oldest entry
+    _write_gate_runs(runs, ix.CACHE_MAX_ENTRIES + 5)    # force evictions
+    idx.list(limit=10_000)
+
+    assert str(watched) in idx._cache
+
+
+# --------------------------------------------------------------------------
+# 8b. `.get()` degrades on VALUE-level surprises too, not just shape (F10)
+# --------------------------------------------------------------------------
+
+def test_a_check_with_an_unknown_tier_degrades_the_detail_rather_than_500ing(
+        tmp_path):
+    """F10. `_read_artifact` catches everything the *loader* can throw, but the
+    wire models are validated later, in `.get()` — so an artifact that loads
+    fine and then carries `tier: 0` raised `ValidationError` straight out of
+    `.get()` and became a 500.
+
+    A 500 is the one answer this module may not give: the run happened, the
+    file is on disk, and "degradation, not failure" is the contract. The row
+    greys out with a reason (the wire's `unreadable_artifact`), exactly as a
+    shape-level surprise already did.
+    """
+    runs = _copy_fixtures(tmp_path / "runs")
+    path = runs / f"{GATE_ID}.json"
+    raw = json.loads(path.read_text())
+    # `tier` is a closed enum on the wire and a bare int in the artifact; 0 is
+    # the shape a future scoring tier would take.
+    raw["probes"][0]["checks"][0]["tier"] = 0
+    path.write_text(json.dumps(raw))
+
+    detail = RunIndex(runs).get(GATE_ID)
+
+    assert detail.degraded is True
+    assert detail.degraded_reason
+    assert detail.probes == []
+    # the row is still identifiable — a greyed detail page, not a blank one
+    assert detail.run_id == GATE_ID
+    assert detail.pack_name == "example"
+
+
+def test_a_readable_artifact_is_still_not_degraded(tmp_path):
+    """The other half of the pair: the guard above must not swallow good runs."""
+    detail = RunIndex(_copy_fixtures(tmp_path / "runs")).get(GATE_ID)
+    assert detail.degraded is False
+    assert detail.probes
+
+
 # --------------------------------------------------------------------------
 # 9. the real `runs/` directory — invariants, never a tally (R4-6)
 # --------------------------------------------------------------------------
