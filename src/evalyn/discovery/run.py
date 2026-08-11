@@ -79,6 +79,7 @@ from evalyn.discovery.meter import SpendMeter, reconcile
 from evalyn.discovery.objectives import get_objective
 from evalyn.discovery.replay import ReplayResult, replay_staged_probe
 from evalyn.discovery.task_builder import build_discovery_task
+from evalyn.engine.control import RunCancelled, RunController
 from evalyn.engine.events import NULL_SINK, EventSink, hunt_key
 from evalyn.engine.run import atomic_write_artifact, pack_fingerprint
 from evalyn.targets.loader import Pack
@@ -339,7 +340,8 @@ def _reconcile_path(path: str) -> float:
 
 async def run_discovery(pack: Pack, cfg: DiscoveryConfig, *,
                         run_id: str | None = None,
-                        sink: EventSink = NULL_SINK) -> DiscoveryArtifact:
+                        sink: EventSink = NULL_SINK,
+                        controller: RunController | None = None) -> DiscoveryArtifact:
     """Run one `discover` pass and return its record. Never raises on budget.
 
     `run_id` (keyword-only, `None` = mint as before) reaches the writer from the
@@ -351,6 +353,21 @@ async def run_discovery(pack: Pack, cfg: DiscoveryConfig, *,
     and for the same reason: the run-level events and the per-hunt ones have to
     come out of one stream, and the sink reaches the hunts as an explicit
     argument rather than ambient state (R4-43).
+
+    `controller` (keyword-only, `None` = nobody can pause or stop this run) is
+    polled at the **replay** boundary — each replay is a whole eval, so that is
+    where a cancel arriving mid-run saves real money. A cancel there raises
+    `RunCancelled` through the R8-5 durability wrap, which writes the partial
+    artifact (spend record intact) before re-raising; the CLI turns it into
+    exit 3, and the record is marked `partial`.
+
+    **Caveat, stated plainly:** the poll point *inside* a hunt
+    (`loop._drive`'s BOUNDS-FIRST block) exists and is tested, but the
+    controller cannot reach it from here. The only seam is
+    `build_discovery_task` -> `discovery_solver` -> `run_session`, and neither
+    of those two modules was in Task 19's scope. Until they take a `controller`
+    argument, a cancel during discover takes effect at the next replay, not at
+    the next agent step.
     """
     sink.emit("run.started", mode="discover", pack=pack.spec.name,
               objectives=list(cfg.objectives), agent_model=cfg.agent_model,
@@ -388,6 +405,7 @@ async def run_discovery(pack: Pack, cfg: DiscoveryConfig, *,
     confirmed_count = 0
     sessions_total = 0
     budget_stops = False
+    cancelled_stops = False
 
     staging_dir = Path(cfg.staging_dir) if cfg.staging_dir is not None \
         else pack.root / "discoveries"
@@ -409,7 +427,14 @@ async def run_discovery(pack: Pack, cfg: DiscoveryConfig, *,
         # OPERATOR disabled it was not work we failed to do — only a
         # budget-forced skip counts (`ReplaySkipped.budget`); folding both in
         # made `--no-replay` on a $0.01 run print the BUDGET banner.
-        partial = aborted or exhausted or budget_stops or (
+        # `cancelled_stops` (Task 19) belongs here and nowhere else. A hunt
+        # the operator stopped is NOT an error — `error_count` deliberately does
+        # not count it, because the CLI reads `error_count >= sessions_total` as
+        # "every hunt failed" and exits 3 on it — but it IS work this run did not
+        # do, which is exactly what `partial` means. Without this a cancelled
+        # discover run would print its findings with no banner at all, and
+        # absence would read as evidence of absence.
+        partial = aborted or exhausted or budget_stops or cancelled_stops or (
             eval_status != "success") or any(
             isinstance(f.replay, ReplaySkipped) and f.replay.budget
             for f in findings)
@@ -453,6 +478,8 @@ async def run_discovery(pack: Pack, cfg: DiscoveryConfig, *,
                 error_count += 1
             if session.stop_reason == "budget":
                 budget_stops = True
+            if session.stop_reason == "cancelled":
+                cancelled_stops = True
             if not (session.confirmed and session.confirmed.confirmed):
                 continue
 
@@ -476,6 +503,13 @@ async def run_discovery(pack: Pack, cfg: DiscoveryConfig, *,
                       probe_id=probe.id, probe_path=str(staged),
                       duplicate_of=dup.probe_id if dup else None)
 
+            # The replay phase's poll point: each replay is a whole eval, so
+            # this is where a cancel arriving during a long discover run
+            # actually saves money. A `RunCancelled` here propagates into the
+            # R8-5 handler below, which writes the partial artifact (spend
+            # record intact) before re-raising.
+            if controller is not None:
+                await controller.checkpoint(key=f"replay:{probe.id}")
             replay = await _replay_finding(pack, cfg, meter, probe.id, staged,
                                            log_root)
             sink.emit("replay.result", hunt_key=key, probe_id=probe.id,
@@ -505,7 +539,10 @@ async def run_discovery(pack: Pack, cfg: DiscoveryConfig, *,
                 persona_id=session.persona_id,
                 playbook_id=session.playbook_id,
             ))
-    except BaseException:
+    except BaseException as terminal:
+        cancelled = isinstance(terminal, RunCancelled)
+        if cancelled:
+            cancelled_stops = True
         # Write what we have, THEN let the original failure propagate. The
         # original is never LOST: a double failure (loop raises AND the fallback
         # write fails) still re-raises it, warning about the write. One caveat,
@@ -525,7 +562,10 @@ async def run_discovery(pack: Pack, cfg: DiscoveryConfig, *,
         # Terminal event on the failing path too, so a cockpit does not leave a
         # dead run spinning. Emitted after the write attempt and before the
         # re-raise; the original exception still propagates.
-        sink.emit("run.finished", mode="discover", status="error",
+        # `cancelled` is its own terminal status: the run stopped because it
+        # was told to, and a cockpit must not paint that red.
+        sink.emit("run.finished", mode="discover",
+                  status="cancelled" if cancelled else "error",
                   findings=len(findings), confirmed_count=confirmed_count,
                   sessions_total=sessions_total, error_count=error_count)
         raise

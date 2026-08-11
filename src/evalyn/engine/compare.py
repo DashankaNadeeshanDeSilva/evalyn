@@ -21,6 +21,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 from evalyn.engine.budget import BudgetExceeded, estimate_cost
+from evalyn.engine.control import RunCancelled, RunController
 from evalyn.engine.events import NULL_SINK, EventSink
 from evalyn.engine.run import RunArtifact, atomic_write_artifact, pack_fingerprint
 from evalyn.scoring.pairwise import judge_pair
@@ -167,7 +168,8 @@ async def run_compare(pack: Pack, art_a: RunArtifact, art_b: RunArtifact,
                       label_a: str = "A", label_b: str = "B",
                       source_a: str = "", source_b: str = "",
                       run_id: str | None = None,
-                      sink: EventSink = NULL_SINK) -> CompareArtifact:
+                      sink: EventSink = NULL_SINK,
+                      controller: RunController | None = None) -> CompareArtifact:
     sink.emit("run.started", mode="compare", pack=pack.spec.name,
               judge_model=judge_model, label_a=label_a, label_b=label_b,
               source_a=source_a, source_b=source_b, run_id=run_id)
@@ -193,6 +195,13 @@ async def run_compare(pack: Pack, art_a: RunArtifact, art_b: RunArtifact,
 
     async def _judge(probe_id: str, rid: str, epoch_a: int, epoch_b: int,
                      ta: str, tb: str, rng: random.Random):
+        # BEFORE the semaphore, not inside it. A pause taken inside would hold
+        # one of the four judge slots for its whole duration, so resuming would
+        # restart at a quarter throughput; taken here, every queued pair waits
+        # together and the semaphore is free the instant work resumes. It is
+        # also the last point before money is spent on this pair.
+        if controller is not None:
+            await controller.checkpoint(key=f"pair:{probe_id}#{rid}")
         async with sem:
             text, rhash = rubrics[rid]
             verdict = await judge_pair(text, rhash, ta, tb, judge_model,
@@ -236,7 +245,15 @@ async def run_compare(pack: Pack, art_a: RunArtifact, art_b: RunArtifact,
                                         random.Random(master.random())))
         probe_entries.append(entry)
 
-    verdicts = await asyncio.gather(*coros)
+    try:
+        verdicts = await asyncio.gather(*coros)
+    except RunCancelled as e:
+        # No artifact: a half-judged scoreboard is not a comparison of anything,
+        # and writing one would put a file on disk the cockpit would render as a
+        # result. The terminal event still goes out, or the run spins forever.
+        sink.emit("run.finished", mode="compare", status="cancelled",
+                  error=f"RunCancelled: {e}")
+        raise
 
     categories: dict[str, dict] = {}
     usage_acc: dict[str, dict[str, int]] = {}

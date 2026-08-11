@@ -17,6 +17,7 @@ from inspect_ai import eval as inspect_eval
 from inspect_ai.log import read_eval_log
 
 from evalyn.engine.budget import BudgetExceeded, estimate_cost
+from evalyn.engine.control import RunController
 from evalyn.engine.events import NULL_SINK, EventSink
 from evalyn.engine.task_builder import build_task
 from evalyn.scoring.checks import aggregate_trial
@@ -91,6 +92,18 @@ class RunArtifact:
     # checks came back unsure — judge-infra failures, distinct from product
     # failures. Sum of per-probe `unsure_trials`.
     total_unsure_trials: int = 0
+    # True when an operator cancelled this run mid-flight (Plan #4, Task 19).
+    # ADDITIVE with a default, the established pattern (cf. `expected_trials`,
+    # `eval_status`): `from_dict` raises on unknown keys, so a pre-#4 artifact
+    # simply has no such key and reads as `False` — "nobody cancelled it" —
+    # which is true of every artifact written before this field existed.
+    #
+    # It is what separates "the operator stopped this" from "the gate failed".
+    # A cancelled run's un-run probes come back `trials=0`, which the gate
+    # hard-fails as MISSING (fail-closed, and correct — a probe that never ran
+    # must never read as a pass); without this flag the cockpit and the
+    # operator have no way to tell that verdict apart from a real regression.
+    cancelled: bool = False
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -363,13 +376,22 @@ def run_gate(pack: Pack, judge_model: str = "mockllm/model",
              out_dir: str = "runs",
              cache_dir: str | Path | None = None,
              *, run_id: str | None = None,
-             sink: EventSink = NULL_SINK) -> RunArtifact:
+             sink: EventSink = NULL_SINK,
+             controller: RunController | None = None) -> RunArtifact:
     """Run the probe suite and write the artifact.
 
     `sink` is **opt-in and inert by default** (`NULL_SINK`): with no sink this
     function does exactly what it did before the event stream existed, which
     `tests/engine/test_events_noop.py` proves by artifact equality. Nothing here
     branches on the sink and nothing constructs one.
+
+    `controller` is opt-in the same way (`None` = nobody can pause or stop this
+    run, and nothing is read from disk). With one, pause **starts no new
+    samples** — samples already inside the solver run to completion and keep
+    spending — and cancel marks the artifact `cancelled` rather than raising:
+    the CLI turns that into exit 3, and `--update-baseline` refuses it. Raising
+    here would deny the caller the partial evidence, which on a cancelled run is
+    the only evidence there is.
     """
     sink.emit("run.started", mode="gate", pack=pack.spec.name,
               probes=len(pack.probes), judge_model=judge_model,
@@ -382,14 +404,21 @@ def run_gate(pack: Pack, judge_model: str = "mockllm/model",
     steps_cache = Path(cache_dir) if cache_dir is not None else Path(pack.root) / ".cache"
     task = build_task(pack, judge_model=judge_model,
                       rubric_judge_model=rubric_judge_model,
-                      cache_dir=steps_cache, sink=sink)
+                      cache_dir=steps_cache, sink=sink, controller=controller)
     logs = inspect_eval(task, model="mockllm/model", log_dir=log_dir, display="none")
     log = logs[0]
+    # An `EarlyStop`ped sample leaves `status == "success"` (measured, Task 0
+    # spike Q2), so this guard needs no cancel-shaped exception.
     if log.status != "success":
         raise RuntimeError(f"inspect eval did not succeed: status {log.status!r}")
     if log.samples is None and log.location:
         log = read_eval_log(log.location)
     probes = reduce_log_to_probes(log, pack, sink)
+    # One last look before the artifact is built. A cancel that lands after the
+    # final `schedule_sample` would otherwise be invisible — the run completed
+    # in full, but the operator did ask it to stop and the artifact must say so.
+    if controller is not None:
+        controller.refresh("run.reduced")
     art = RunArtifact(
         pack_name=pack.spec.name,
         pack_hash=pack_fingerprint(pack),
@@ -399,6 +428,7 @@ def run_gate(pack: Pack, judge_model: str = "mockllm/model",
         log_path=str(log.location) if log.location else log_dir,
         rubric_scores_untrusted=rubric_scores_untrusted,
         total_unsure_trials=sum(p.unsure_trials for p in probes),
+        cancelled=controller is not None and controller.cancelled,
     )
     art.judge_usd = _judge_usd(log)
     sink.emit("spend.updated", judge_usd=art.judge_usd,
@@ -422,7 +452,12 @@ def run_gate(pack: Pack, judge_model: str = "mockllm/model",
         # (house pattern: write-before-raise) so the evidence survives for
         # inspection. A partially-dead run still proceeds — per-probe
         # incompleteness is the gate's job (expected_trials / INCOMPLETE).
-        if probes and all(p.trials == 0 for p in probes):
+        # ...unless the operator cancelled it. `art.cancelled` makes that
+        # diagnosis FALSE: every sample was halted before it opened a session,
+        # so nothing errored and the target is very probably fine. Raising here
+        # would cost a cancelled run its exit code (3, not the setup-error 2)
+        # and hand the operator a wrong explanation for a stop they asked for.
+        if probes and not art.cancelled and all(p.trials == 0 for p in probes):
             raise RuntimeError(
                 "no probe collected a single scored trial — every session errored "
                 "(target down or misconfigured?); the run artifact was still "
@@ -438,7 +473,12 @@ def run_gate(pack: Pack, judge_model: str = "mockllm/model",
         sink.emit("run.finished", mode="gate", status="error",
                   error=f"{type(e).__name__}: {e}", judge_usd=art.judge_usd)
         raise
-    sink.emit("run.finished", mode="gate", status="ok",
+    # `cancelled` is its own terminal status, not `ok` and not `error`: the run
+    # did what it was told, and the cockpit must not render it as either a clean
+    # result or a failure. (The SPA reads `exit_code` off this event, not
+    # `status`, so this widening breaks nothing downstream.)
+    sink.emit("run.finished", mode="gate",
+              status="cancelled" if art.cancelled else "ok",
               judge_usd=art.judge_usd, probes=len(probes),
               total_unsure_trials=art.total_unsure_trials)
     return art
