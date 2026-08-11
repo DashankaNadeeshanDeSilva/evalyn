@@ -49,9 +49,17 @@ from typing import TYPE_CHECKING
 import evalyn
 from evalyn.targets.loader import load_pack
 from evalyn.ui.models import (
+    Capabilities,
+    ControlAction,
+    ControlRequest,
+    ControlResponse,
     GateVerdict,
     HealthResponse,
+    LaunchRequest,
+    LaunchResponse,
     MetaResponse,
+    PackAxes,
+    PackListPage,
     RedactionMeta,
     RunDetail,
     RunListPage,
@@ -65,7 +73,33 @@ from evalyn.ui.models import (
     make_cursor,
     parse_cursor,
 )
+from evalyn.ui.launcher import (
+    STDERR_FILENAME,
+    Busy,
+    RunLauncher,
+    pack_axes,
+    pack_id_for,
+    pack_rows,
+    refusal_for,
+)
+from evalyn.ui.paths import events_path, sidecar_dir
 from evalyn.ui.redact import Redactor, RedactingRoute, no_redact, redacting_exception_handlers
+from evalyn.ui.stream import DEFAULT_IDLE_TIMEOUT, event_stream
+
+# The ONE web-framework import at module scope, and it is here under duress.
+# `from __future__ import annotations` makes every annotation a string, and
+# FastAPI resolves a handler's hints against the *module* globals — so a
+# `Request` imported inside `create_app` is invisible to it, and the parameter
+# is silently read as a required **query parameter** instead. The SSE endpoint
+# then 422s on every request, which is exactly how a live run would have failed
+# on stage while every route-census test still passed.
+#
+# It costs nothing that was not already spent: starlette is a hard dependency
+# of fastapi, so this raises `ImportError` in precisely the same case the
+# in-function imports do, and `cli.py:801` already catches that and prints the
+# "install evalyn[ui]" sentence. `import evalyn.cli` still loads neither,
+# because it only imports this module inside the `ui` command body.
+from starlette.requests import Request
 
 if TYPE_CHECKING:                       # pragma: no cover - typing only
     from fastapi import FastAPI
@@ -196,7 +230,11 @@ def create_app(runs_dir: Path, packs: list[Path], *,
     for it on the command line, because discover spends real money.
     """
     from fastapi import APIRouter, FastAPI, HTTPException
-    from fastapi.responses import FileResponse, PlainTextResponse
+    from fastapi.responses import (
+        FileResponse,
+        PlainTextResponse,
+        StreamingResponse,
+    )
     from starlette.staticfiles import StaticFiles
 
     # Imported HERE, not at module scope: `index` pulls starlette in through
@@ -227,6 +265,19 @@ def create_app(runs_dir: Path, packs: list[Path], *,
     # collision-proofing `new_run_id` provides: two runs handed the same id
     # `os.replace`-clobber each other with no exists-check (C-T7).
     app.state.index = RunIndex(runs_dir)
+
+    # The allowlist, keyed by the id the browser addresses a pack with. Loaded
+    # once at start: `build_redactor` above has already proved every one of
+    # these loads, so a failure here is impossible by the time this runs, and
+    # the browser can never name a pack the operator did not.
+    app.state.packs_by_id = {
+        pack_id_for(loaded.spec.name): (loaded, path)
+        for loaded, path in ((load_pack(p), p) for p in packs)
+    }
+    app.state.launcher = RunLauncher(runs_dir)
+    #: Overridable so a test need not wait out the production backstop; the
+    #: stream's other two stops are what end a subscription in practice.
+    app.state.sse_idle_timeout = DEFAULT_IDLE_TIMEOUT
 
     # C-T6b: the second gate. `RedactingRoute` wraps the endpoint call only, so
     # without these the 404 body reading "no such run at /Users/alice/…" goes
@@ -408,8 +459,17 @@ def create_app(runs_dir: Path, packs: list[Path], *,
         a missing resource — the run happened and the operator can see the file.
         `RunNotFound` is the only 404, and `_resolved_artifact` has already
         raised it by the time this line runs.
+
+        **Except for a run that has not written its artifact yet**, which is
+        every launched run for its whole lifetime. See `_pending_detail`.
         """
-        _resolved_artifact(run_id)
+        try:
+            _resolved_artifact(run_id)
+        except HTTPException:
+            pending = _pending_detail(run_id)
+            if pending is None:
+                raise
+            return pending
         return app.state.index.get(run_id)
 
     @api.get("/runs/{run_id}/gate", response_model=GateVerdict)
@@ -529,6 +589,206 @@ def create_app(runs_dir: Path, packs: list[Path], *,
                                 and not isinstance(failures, bool) else 0),
             checks=[_check_view(check) for check in record.get("checks", [])
                     if isinstance(check, dict)])
+
+    # ----------------------------------------------------------------------
+    # Task 20 — the control surface. Registered on `api` BEFORE the router is
+    # included, because the `/api/{unmatched:path}` catch-all below is
+    # registered after it and would otherwise shadow every one of these.
+    # ----------------------------------------------------------------------
+
+    def _pack_or_404(pack_id: str):
+        found = app.state.packs_by_id.get(pack_id)
+        if found is None:
+            # The id is client input and is not echoed.
+            raise HTTPException(status_code=404, detail="no such pack")
+        return found
+
+    def _pending_detail(run_id: str) -> RunDetail | None:
+        """The detail of a run that has been launched but has written nothing.
+
+        **This is the single most load-bearing thing on the demo path.** The
+        launch console navigates to `/runs/<id>` the moment the 202 lands, and
+        the artifact does not exist until the run *finishes* — so without this,
+        `RunIndex.get` raises `RunNotFound`, the SPA renders its "could not be
+        read" alarm over a perfectly healthy run, and it never recovers: the
+        query client sets `retry: false`, and the only thing that would
+        invalidate the query lives inside the live panel, which never mounts.
+        `LiveRunPanel.tsx` names this exact case as a deferred check on the
+        pass that wires the launcher up; this is that pass.
+
+        `derive_status(None, sidecar)` is the *same* function the list uses, so
+        `running`, `paused`, `cancelled`, `interrupted` and `failed_to_start`
+        are decided in one place rather than invented a second time here.
+
+        Returns `None` — and therefore a genuine 404 — for an id this cockpit
+        never launched, so an arbitrary id is still "no such run".
+        """
+        from evalyn.ui.index import created_at_from_run_id, derive_status
+
+        if not is_run_id(run_id):
+            return None
+        try:
+            directory = sidecar_dir(runs_dir, run_id)
+        except ValueError:
+            return None
+        if not directory.is_dir():
+            return None
+
+        index = app.state.index
+        # The artifact path does not exist; it is only used to derive the
+        # sibling control and events names, which are pure string operations.
+        sidecar = index._sidecar(run_id, runs_dir / f"{run_id}.json")
+        live = app.state.launcher.reap()
+        return RunDetail(
+            run_id=run_id,
+            mode=mode_of(run_id),
+            pack_name=(live.pack_name
+                       if live is not None and live.run_id == run_id else None),
+            created_at=created_at_from_run_id(run_id),
+            status=derive_status(None, sidecar),
+            # Nothing is readable yet, and the SPA disables its affordances off
+            # these booleans rather than off truthiness.
+            capabilities=Capabilities(transcripts=False, trial_records=False,
+                                      hard_metrics=False),
+            cancelled=sidecar.control is ControlAction.cancel,
+        )
+
+    @api.get("/packs", response_model=PackListPage)
+    async def list_packs() -> PackListPage:
+        """The start-time allowlist — everything a launch may select from.
+
+        An envelope rather than a bare array, because a top-level array can
+        never grow a field. `next_cursor` is always `None`: the allowlist is as
+        long as the operator's `--target` flags.
+        """
+        return PackListPage(items=pack_rows(app.state.packs_by_id),
+                            next_cursor=None)
+
+    @api.get("/packs/{pack_id}/axes", response_model=PackAxes)
+    async def pack_axes_view(pack_id: str) -> PackAxes:
+        """What a `discover` launch may select, and the pack's own ceiling."""
+        loaded, _ = _pack_or_404(pack_id)
+        return pack_axes(pack_id, loaded)
+
+    @api.post("/runs", response_model=LaunchResponse, status_code=202)
+    async def launch_run(request: LaunchRequest) -> LaunchResponse:
+        """Start a run. **This is the endpoint that spends money.**
+
+        A 202, not a 200: nothing has run yet. The `run_id` is minted before
+        the process starts and is the stem of the artifact that will later
+        appear, which is what makes subscribing to `/events` valid immediately.
+
+        Every refusal is `launch_refused` (400) except a second concurrent
+        launch, which is `busy` (409) — `redact.py:686-693` already maps both.
+        A body naming a pack *path* never reaches here at all: `LaunchRequest`
+        has no such field and `extra="forbid"` rejects it upstream, which is
+        why nothing below looks for one.
+        """
+        found = app.state.packs_by_id.get(request.pack_id)
+        loaded, path = found if found is not None else (None, None)
+        why = refusal_for(request, pack=loaded, allow_discover=allow_discover)
+        if why is not None:
+            raise HTTPException(status_code=400, detail=why)
+        try:
+            run_id = app.state.launcher.launch(request, pack=loaded, pack_path=path)
+        except Busy as e:
+            raise HTTPException(status_code=409, detail=str(e)) from e
+        except OSError as e:
+            # The spawn itself failed. `meta.json` already says the child never
+            # started, so the run reads as `failed_to_start` rather than
+            # vanishing — and the operator gets a sentence, not a spinner.
+            raise HTTPException(
+                status_code=400,
+                detail=f"the run could not be started: {e.__class__.__name__}: {e}"
+            ) from e
+        return LaunchResponse(run_id=run_id)
+
+    @api.post("/runs/{run_id}/control", response_model=ControlResponse,
+              status_code=202)
+    async def control_run(run_id: str, request: ControlRequest) -> ControlResponse:
+        """Pause, resume or cancel — by writing the control file, and only that.
+
+        **The 202 is not the acknowledgement.** `accepted=True` says the
+        request was well-formed and the file was written; the matching
+        `control.*` SSE event is what says the run actually did it.
+
+        No signal is ever sent to the child, at any delay (R4-11). And note
+        that **pause does not stop spend**: in-flight samples finish and keep
+        billing. Nothing here may imply otherwise.
+        """
+        if not is_run_id(run_id):
+            raise HTTPException(status_code=404, detail="no such run")
+        known = (app.state.index.artifact_path(run_id) is not None
+                 or sidecar_dir(runs_dir, run_id).is_dir())
+        if not known:
+            raise HTTPException(status_code=404, detail=f"no such run: {run_id}")
+        app.state.launcher.control(run_id, request.action)
+        return ControlResponse(run_id=run_id, accepted=True)
+
+    @api.get("/runs/{run_id}/events")
+    async def run_events(run_id: str, request: Request):
+        """The live event stream, as `text/event-stream`.
+
+        Serves a finished run's history just as happily as a live one's tail —
+        the SPA subscribes without knowing which it has, and a finished stream
+        simply ends at `run.finished`.
+
+        `Last-Event-ID` is the browser's own resume protocol: `EventSource`
+        sends back the last `id:` it saw and the stream skips past it, so a
+        reconnect does not replay the run.
+
+        Scrubbed **here**, explicitly: `RedactingRoute` returns a streaming
+        response untouched by design (`redact.py:626-628`), so this is the one
+        `/api` route the chokepoint does not cover.
+        """
+        if not is_run_id(run_id):
+            raise HTTPException(status_code=404, detail="no such run")
+        known = (app.state.index.artifact_path(run_id) is not None
+                 or sidecar_dir(runs_dir, run_id).is_dir())
+        if not known:
+            raise HTTPException(status_code=404, detail=f"no such run: {run_id}")
+
+        try:
+            last_id = int(request.headers.get("last-event-id", "0"))
+        except ValueError:
+            # A header this server cannot read is a resume it cannot honour;
+            # replaying from the top is the safe direction (the consumer drops
+            # anything it has already folded in), losing nothing.
+            last_id = 0
+
+        redactor: Redactor = app.state.redactor
+        return StreamingResponse(
+            event_stream(events_path(runs_dir / f"{run_id}.json"),
+                         last_id=last_id,
+                         idle_timeout=app.state.sse_idle_timeout,
+                         is_disconnected=request.is_disconnected,
+                         scrub=redactor.scrub),
+            media_type="text/event-stream",
+            # `no-cache` because a cached event stream is a frozen run, and
+            # `no-transform` because a proxy that buffers it is the same bug.
+            headers={"Cache-Control": "no-cache, no-transform",
+                     "X-Accel-Buffering": "no",
+                     "Connection": "keep-alive"})
+
+    @api.get("/runs/{run_id}/stderr", response_class=PlainTextResponse)
+    async def run_stderr(run_id: str) -> PlainTextResponse:
+        """The child's stderr, verbatim.
+
+        For a run that died before writing an artifact this is the only place
+        the reason exists — a bad judge model, a missing key, a pack that
+        failed validation. Unlike the stream, this one *is* covered by the
+        redaction chokepoint, because it renders a body with `.body` set.
+        """
+        if not is_run_id(run_id):
+            raise HTTPException(status_code=404, detail="no such run")
+        log = sidecar_dir(runs_dir, run_id) / STDERR_FILENAME
+        if not log.is_file():
+            raise HTTPException(
+                status_code=404,
+                detail="no stderr for that run: it was not launched from this "
+                       "cockpit, or it has not written anything yet")
+        return PlainTextResponse(log.read_text(encoding="utf-8", errors="replace"),
+                                 media_type="text/plain; charset=utf-8")
 
     app.include_router(api)
 

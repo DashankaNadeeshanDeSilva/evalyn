@@ -71,6 +71,13 @@ packages = ["src/evalyn"]
 dev = [
     "pytest>=8",
     "pytest-asyncio>=0.23",
+    # Task 20 added a live-tailing SSE stream, which is the first thing in this
+    # suite that can *hang* rather than fail. Every blocking test carries its
+    # own `asyncio.wait_for` ceiling, but that only covers the hangs somebody
+    # anticipated; `--timeout` is the backstop for the ones nobody did. Passed
+    # in CI only (`--timeout=120`), where an unbounded hang is a six-hour job
+    # rather than a Ctrl-C.
+    "pytest-timeout>=2.3",
     "ruff>=0.5",
     # the smoke test reads this file with `tomllib`, which only exists from
     # 3.11 — without this the 3.10 leg of `requires-python` cannot run the suite

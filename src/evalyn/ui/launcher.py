@@ -104,6 +104,9 @@ class LiveRun:
     #: composes `out_dir/<run_id><suffix>.json`.
     engine_run_id: str
     mode: RunMode
+    #: The pack's own name, so the detail view of a run with no artifact yet
+    #: can still say what is running without re-reading the allowlist.
+    pack_name: str
     pid: int
     process: subprocess.Popen
     stderr_handle: Any
@@ -356,8 +359,9 @@ class RunLauncher:
 
         self._write_meta(run_id, launched=True, exit_code=None)
         self.live = LiveRun(run_id=run_id, engine_run_id=engine_run_id,
-                            mode=RunMode(request.mode), pid=process.pid,
-                            process=process, stderr_handle=handle)
+                            mode=RunMode(request.mode), pack_name=pack.spec.name,
+                            pid=process.pid, process=process,
+                            stderr_handle=handle)
         return run_id
 
     # -- control -----------------------------------------------------------

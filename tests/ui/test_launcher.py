@@ -780,3 +780,372 @@ def test_the_sidecar_files_are_written_by_rename_never_in_place(tmp_path, pack):
     assert all(path.endswith(".tmp") for path in direct), direct
     assert meta not in direct
     assert control not in direct
+
+
+# --------------------------------------------------------------------------
+# 12. The endpoints — through the real app, over the real allowlist
+# --------------------------------------------------------------------------
+#
+# `asgi_client` speaks ASGI in-process: no socket, no port, and no
+# `fastapi.testclient` (which warns at import). Every app below has its
+# launcher's spawn seam replaced with an inert child before any test can reach
+# `POST /api/runs`, because the production seam would start a paid evaluation.
+
+def cockpit(runs_dir: Path, *, allow_discover: bool = False,
+            child: list[str] | None = None):
+    """The real app over the real `packs/example`, with an inert child."""
+    from evalyn.ui.server import create_app
+
+    app = create_app(runs_dir, [EXAMPLE_PACK], allow_discover=allow_discover)
+    spawned: list[dict] = []
+
+    def spawn(argv, *, env, stderr, cwd=None):
+        spawned.append({"argv": argv, "env": env})
+        return subprocess.Popen(child or INERT, env=env, stderr=stderr,
+                                start_new_session=True)
+
+    app.state.launcher._spawn = spawn
+    app.state.spawned = spawned
+    app.state.sse_idle_timeout = 0.3
+    return app
+
+
+def launch_body(**overrides) -> dict:
+    body = {"mode": "gate", "pack_id": pack_id_for("example"), "confirm": "example"}
+    body.update(overrides)
+    return body
+
+
+def reap_app(app) -> None:
+    live = app.state.launcher.live
+    if live is not None:
+        live.process.wait(timeout=60)
+        app.state.launcher.reap()
+
+
+# -- packs -----------------------------------------------------------------
+
+async def test_packs_lists_the_allowlist_as_an_envelope(tmp_path, asgi_client):
+    """An envelope, never a bare array — a top-level array cannot grow a
+    field, and this is the list most likely to want one."""
+    app = cockpit(tmp_path)
+    async with asgi_client(app) as client:
+        response = await client.get("/api/packs")
+    assert response.status_code == 200
+    body = response.json()
+    assert set(body) == {"items", "next_cursor"}
+    assert body["next_cursor"] is None
+    assert [row["name"] for row in body["items"]] == ["example"]
+    assert body["items"][0]["probe_count"] > 0
+
+
+async def test_a_pack_row_never_carries_a_usable_filesystem_path(tmp_path, asgi_client):
+    """`PackRow.path` is a display label. Its own validator collapses `~`, and
+    the id — the only thing that goes back to the server — is opaque."""
+    app = cockpit(tmp_path)
+    async with asgi_client(app) as client:
+        row = (await client.get("/api/packs")).json()["items"][0]
+    assert str(Path.home()) not in row["path"]
+    assert "/" not in row["id"]
+
+
+async def test_the_pack_id_is_the_same_across_a_restart(tmp_path, asgi_client):
+    """Two independently built apps — the closest in-process analogue of the
+    server being stopped and started — must address the same pack by the same
+    id, or a bookmarked launch URL silently names a different pack."""
+    async with asgi_client(cockpit(tmp_path)) as client:
+        first = (await client.get("/api/packs")).json()["items"][0]["id"]
+    async with asgi_client(cockpit(tmp_path)) as client:
+        second = (await client.get("/api/packs")).json()["items"][0]["id"]
+    assert first == second
+
+
+async def test_axes_reports_the_packs_own_ceiling_and_its_markdown_axes(
+        tmp_path, asgi_client):
+    app = cockpit(tmp_path)
+    pack_id = pack_id_for("example")
+    async with asgi_client(app) as client:
+        response = await client.get(f"/api/packs/{pack_id}/axes")
+    assert response.status_code == 200
+    body = response.json()
+    assert body["pack_id"] == pack_id
+    # `packs/example/target.yaml` sets `max_usd_per_run: 1.00`.
+    assert body["max_usd_per_run"] == 1.0
+    assert body["personas"] == ["curious-auditor"]
+    assert body["playbooks"] == ["trust-then-pivot"]
+    assert body["objectives"]
+
+
+async def test_axes_for_an_unknown_pack_is_a_not_found_envelope(tmp_path, asgi_client):
+    async with asgi_client(cockpit(tmp_path)) as client:
+        response = await client.get("/api/packs/pack-nope/axes")
+    assert response.status_code == 404
+    assert response.json()["error"]["code"] == "not_found"
+
+
+# -- launch ----------------------------------------------------------------
+
+async def test_launch_answers_202_with_the_run_id(tmp_path, asgi_client):
+    app = cockpit(tmp_path)
+    async with asgi_client(app) as client:
+        response = await client.post("/api/runs", json=launch_body())
+    reap_app(app)
+    assert response.status_code == 202
+    assert set(response.json()) == {"run_id"}
+    assert response.json()["run_id"].endswith("-example")
+
+
+@pytest.mark.parametrize("body,because", [
+    pytest.param(launch_body(pack_id="pack-nope"), "allowlist", id="unknown-pack"),
+    pytest.param(launch_body(confirm="Example"), "confirm", id="wrong-confirm"),
+    pytest.param(launch_body(mode="discover"), "--allow-discover", id="discover-not-allowed"),
+])
+async def test_the_three_refusals_are_all_launch_refused(tmp_path, asgi_client,
+                                                         body, because):
+    app = cockpit(tmp_path)                       # allow_discover=False
+    async with asgi_client(app) as client:
+        response = await client.post("/api/runs", json=body)
+    assert response.status_code == 400
+    assert response.json()["error"]["code"] == "launch_refused"
+    assert because in response.json()["error"]["message"]
+    assert app.state.spawned == [], "a refused launch must spawn nothing"
+
+
+async def test_a_pack_path_in_the_body_is_refused_by_the_contract(tmp_path, asgi_client):
+    """R4-5: `extra="forbid"` is the guard, not a hand-rolled path check.
+    `LaunchRequest` has no path field, so a body carrying one is rejected
+    upstream of the handler — which is why nothing in the handler looks."""
+    app = cockpit(tmp_path)
+    async with asgi_client(app) as client:
+        response = await client.post(
+            "/api/runs", json=launch_body(target=str(EXAMPLE_PACK)))
+    assert response.status_code == 422
+    assert response.json()["error"]["code"] == "launch_refused"
+    assert app.state.spawned == []
+
+
+async def test_a_second_concurrent_launch_is_409_busy(tmp_path, asgi_client):
+    app = cockpit(tmp_path, child=INERT_SLEEPER)
+    async with asgi_client(app) as client:
+        first = await client.post("/api/runs", json=launch_body())
+        second = await client.post("/api/runs", json=launch_body())
+    try:
+        assert first.status_code == 202
+        assert second.status_code == 409
+        assert second.json()["error"]["code"] == "busy"
+        assert len(app.state.spawned) == 1
+    finally:
+        app.state.launcher.live.process.kill()
+        reap_app(app)
+
+
+async def test_the_launch_clamps_the_browsers_figure_down_to_the_packs_ceiling(
+        tmp_path, asgi_client):
+    """End-to-end §10.4: the pack's ceiling is 1.00, the browser asks for 99."""
+    app = cockpit(tmp_path, allow_discover=True)
+    async with asgi_client(app) as client:
+        response = await client.post(
+            "/api/runs", json=launch_body(mode="discover", max_usd=99.0))
+    reap_app(app)
+    assert response.status_code == 202
+    argv = app.state.spawned[0]["argv"]
+    assert argv[argv.index("--max-usd") + 1] == "1.0"
+    assert "99.0" not in argv
+
+
+async def test_a_figure_under_the_ceiling_is_not_raised_to_meet_it(
+        tmp_path, asgi_client):
+    app = cockpit(tmp_path, allow_discover=True)
+    async with asgi_client(app) as client:
+        response = await client.post(
+            "/api/runs", json=launch_body(mode="discover", max_usd=0.25))
+    reap_app(app)
+    assert response.status_code == 202
+    argv = app.state.spawned[0]["argv"]
+    assert argv[argv.index("--max-usd") + 1] == "0.25"
+
+
+async def test_the_launched_run_id_is_the_stem_of_the_artifact_that_appears(
+        tmp_path, asgi_client):
+    """§10.5, through the real endpoint: the id in the 202 body and the stem of
+    the file that later lands are the same string."""
+    writer = [sys.executable, "-c",
+              "import os, pathlib; "
+              "pathlib.Path(os.environ['OUT'], os.environ['EVALYN_RUN_ID'] + '.json')"
+              ".write_text('{\"schema_version\": 1, \"probes\": []}')"]
+    app = cockpit(tmp_path, child=writer)
+    os.environ["OUT"] = str(tmp_path)
+    try:
+        async with asgi_client(app) as client:
+            response = await client.post("/api/runs", json=launch_body())
+        reap_app(app)
+    finally:
+        del os.environ["OUT"]
+    run_id = response.json()["run_id"]
+    assert (tmp_path / f"{run_id}.json").exists()
+    async with asgi_client(app) as client:
+        detail = await client.get(f"/api/runs/{run_id}")
+    assert detail.status_code == 200
+    assert detail.json()["run_id"] == run_id
+
+
+# -- the live detail, which is the demo's own path -------------------------
+
+async def test_a_launched_run_has_a_detail_before_any_artifact_exists(
+        tmp_path, asgi_client):
+    """**The demo path.** The launch console navigates to `/runs/<id>` the
+    moment the 202 lands, and the artifact does not exist until the run
+    finishes. A 404 here makes the SPA render its "could not be read" alarm
+    over a healthy live run — and it never recovers, because the query client
+    does not retry and the only thing that would invalidate the query lives
+    inside the live panel, which never mounts.
+    """
+    app = cockpit(tmp_path, child=INERT_SLEEPER)
+    async with asgi_client(app) as client:
+        run_id = (await client.post("/api/runs", json=launch_body())).json()["run_id"]
+        detail = await client.get(f"/api/runs/{run_id}")
+    try:
+        assert not (tmp_path / f"{run_id}.json").exists()
+        assert detail.status_code == 200
+        body = detail.json()
+        assert body["run_id"] == run_id
+        assert body["status"] == "running"
+        assert body["pack_name"] == "example"
+        assert body["capabilities"] == {"transcripts": False, "trial_records": False,
+                                        "hard_metrics": False}
+    finally:
+        app.state.launcher.live.process.kill()
+        reap_app(app)
+
+
+async def test_a_run_this_cockpit_never_launched_is_still_a_real_404(
+        tmp_path, asgi_client):
+    """The discriminator: the pending-detail fallback must not turn every
+    unknown id into a 200."""
+    async with asgi_client(cockpit(tmp_path)) as client:
+        response = await client.get("/api/runs/20260101T000000000000-deadbeef-nope")
+    assert response.status_code == 404
+    assert response.json()["error"]["code"] == "not_found"
+
+
+async def test_a_launched_run_that_died_reads_as_interrupted_not_running(
+        tmp_path, asgi_client):
+    app = cockpit(tmp_path, child=[sys.executable, "-c", "raise SystemExit(2)"])
+    async with asgi_client(app) as client:
+        run_id = (await client.post("/api/runs", json=launch_body())).json()["run_id"]
+        reap_app(app)
+        detail = await client.get(f"/api/runs/{run_id}")
+    assert detail.status_code == 200
+    assert detail.json()["status"] == "interrupted"
+
+
+# -- control ---------------------------------------------------------------
+
+@pytest.mark.parametrize("action", ["pause", "resume", "cancel"])
+async def test_control_answers_202_and_writes_the_file(tmp_path, asgi_client, action):
+    app = cockpit(tmp_path, child=INERT_SLEEPER)
+    async with asgi_client(app) as client:
+        run_id = (await client.post("/api/runs", json=launch_body())).json()["run_id"]
+        response = await client.post(f"/api/runs/{run_id}/control",
+                                     json={"action": action})
+    try:
+        assert response.status_code == 202
+        assert response.json() == {"run_id": run_id, "accepted": True}
+        body = json.loads(
+            control_path(tmp_path / f"{run_id}.json").read_text(encoding="utf-8"))
+        assert body == {"action": action}
+    finally:
+        app.state.launcher.live.process.kill()
+        reap_app(app)
+
+
+async def test_control_on_an_unknown_run_is_404(tmp_path, asgi_client):
+    async with asgi_client(cockpit(tmp_path)) as client:
+        response = await client.post(
+            "/api/runs/20260101T000000000000-deadbeef-nope/control",
+            json={"action": "cancel"})
+    assert response.status_code == 404
+    assert response.json()["error"]["code"] == "not_found"
+
+
+async def test_control_refuses_an_action_that_is_not_in_the_closed_set(
+        tmp_path, asgi_client):
+    app = cockpit(tmp_path, child=INERT_SLEEPER)
+    async with asgi_client(app) as client:
+        run_id = (await client.post("/api/runs", json=launch_body())).json()["run_id"]
+        response = await client.post(f"/api/runs/{run_id}/control",
+                                     json={"action": "stop"})
+    try:
+        assert response.status_code == 422
+        assert not control_path(tmp_path / f"{run_id}.json").exists()
+    finally:
+        app.state.launcher.live.process.kill()
+        reap_app(app)
+
+
+# -- events and stderr -----------------------------------------------------
+
+async def test_events_serves_a_finished_stream_with_the_sse_headers(
+        tmp_path, asgi_client):
+    """Over a stream that already ends in `run.finished`, so it terminates by
+    construction — `httpx.ASGITransport` buffers the whole body before it
+    returns, so a non-terminating stream here would deadlock the suite."""
+    app = cockpit(tmp_path)
+    async with asgi_client(app) as client:
+        run_id = (await client.post("/api/runs", json=launch_body())).json()["run_id"]
+        reap_app(app)
+        (tmp_path / f"{run_id}.events.jsonl").write_text(
+            json.dumps({"seq": 1, "type": "run.started", "data": {"mode": "gate"}})
+            + "\n"
+            + json.dumps({"seq": 2, "type": "run.finished", "data": {"exit_code": 0}})
+            + "\n", encoding="utf-8")
+        response = await client.get(f"/api/runs/{run_id}/events")
+    assert response.status_code == 200
+    assert response.headers["content-type"].startswith("text/event-stream")
+    assert "no-cache" in response.headers["cache-control"]
+    assert response.text.startswith("id: 1\nevent: run.started\n")
+    assert "event: run.finished" in response.text
+
+
+async def test_events_honours_last_event_id(tmp_path, asgi_client):
+    app = cockpit(tmp_path)
+    async with asgi_client(app) as client:
+        run_id = (await client.post("/api/runs", json=launch_body())).json()["run_id"]
+        reap_app(app)
+        (tmp_path / f"{run_id}.events.jsonl").write_text(
+            json.dumps({"seq": 1, "type": "run.started", "data": {}}) + "\n"
+            + json.dumps({"seq": 2, "type": "run.finished", "data": {}}) + "\n",
+            encoding="utf-8")
+        response = await client.get(f"/api/runs/{run_id}/events",
+                                    headers={"Last-Event-ID": "1"})
+    assert "id: 1" not in response.text
+    assert "id: 2" in response.text
+
+
+async def test_events_for_an_unknown_run_is_404(tmp_path, asgi_client):
+    async with asgi_client(cockpit(tmp_path)) as client:
+        response = await client.get(
+            "/api/runs/20260101T000000000000-deadbeef-nope/events")
+    assert response.status_code == 404
+    assert response.json()["error"]["code"] == "not_found"
+
+
+async def test_stderr_serves_what_the_child_printed(tmp_path, asgi_client):
+    noisy = [sys.executable, "-c",
+             "import sys; sys.stderr.write('evalyn gate: setup error: nope\\n')"]
+    app = cockpit(tmp_path, child=noisy)
+    async with asgi_client(app) as client:
+        run_id = (await client.post("/api/runs", json=launch_body())).json()["run_id"]
+        reap_app(app)
+        response = await client.get(f"/api/runs/{run_id}/stderr")
+    assert response.status_code == 200
+    assert response.headers["content-type"].startswith("text/plain")
+    assert "setup error: nope" in response.text
+
+
+async def test_stderr_for_a_run_this_cockpit_never_launched_is_404(
+        tmp_path, asgi_client):
+    async with asgi_client(cockpit(tmp_path)) as client:
+        response = await client.get(
+            "/api/runs/20260101T000000000000-deadbeef-nope/stderr")
+    assert response.status_code == 404
