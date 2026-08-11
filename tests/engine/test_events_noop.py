@@ -6,8 +6,12 @@ it guards is what runs a live, paid gate on stage; the promise is that with no
 proofs, in the order they matter:
 
 1. **The instrumentation is real** — an `_ExplodingSink` makes every mode raise,
-   and a recording sink shows each named call site actually fired. Without this
-   the other three tests are satisfied by an engine that emits nothing at all.
+   and a recording sink shows each named call site actually fired, the right
+   number of times. Without this the other three tests are satisfied by an
+   engine that emits nothing at all. (R4-56: those per-site checks assert
+   MULTIPLICITY, not just presence — a `set(names) >= {...}` is structurally
+   blind to a missing DUPLICATE — and every expected count is derived from the
+   run's own artifact or pack, never written as a literal.)
 2. **Constructor interdiction** — with `JsonlSink` monkeypatched to a sentinel
    that raises on construction, a default run of all three modes never touches
    it. This is only provable because the sink is a *parameter* (R4-43).
@@ -23,6 +27,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+from collections import Counter
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -293,11 +298,37 @@ async def test_exploding_sink_makes_discover_raise(discover_pack, tmp_path,
 @pytest.mark.filterwarnings("ignore:no price entry")
 def test_gate_fires_every_named_call_site(gate_pack, tmp_path):
     sink = _RecordingSink()
-    _gate(gate_pack, tmp_path, sink=sink)
-    assert set(sink.names) >= {
-        "run.started", "trial.started", "turn.sent", "turn.received",
-        "trial.finished", "probe.scored", "spend.updated", "artifact.written",
-        "run.finished"}
+    art = _gate(gate_pack, tmp_path, sink=sink)
+    # HOW MANY, not merely whether. A `set(names) >= {...}` cannot see a
+    # MISSING DUPLICATE: restrict `trial.started` to the first epoch and the
+    # name is still there, so the set is still satisfied while half the trials
+    # went unannounced. Every count below is DERIVED from the run's own
+    # observable shape — the artifact it wrote and the pack it was given —
+    # never written as a literal, so a pack with more probes, epochs or turns
+    # keeps this true without editing.
+    #
+    # `expected_trials` is what the reducer recorded as the epoch count the
+    # task actually ran for every probe (task_builder's `Epochs(k)`).
+    n_probes = len(art.probes)
+    k = max(p.expected_trials for p in art.probes)
+    n_samples = n_probes * k
+    n_turns = sum(len(p.turns) for p in gate_pack.probes) * k
+    expected = {
+        "run.started": 1,
+        "trial.started": n_samples,
+        "turn.sent": n_turns,
+        "turn.received": n_turns,
+        "trial.finished": n_samples,
+        "probe.scored": n_probes,
+        "spend.updated": 1,
+        "artifact.written": 1,
+        "run.finished": 1,
+    }
+    counts = Counter(sink.names)
+    # Subset-keyed like the `>=` this replaced: a future event name (the Task 19
+    # `control.*` acks) must not red this file, only a wrong MULTIPLICITY of a
+    # name the gate already promises.
+    assert {n: counts.get(n, 0) for n in expected} == expected, counts
     trial_keys = {f["trial_key"] for n, f in sink.events
                   if n.startswith(("trial.", "turn."))}
     # R4-9: the probe id comes from metadata["id"], never the ordinal sample_id
@@ -307,9 +338,19 @@ def test_gate_fires_every_named_call_site(gate_pack, tmp_path):
 
 def test_compare_fires_every_named_call_site(compare_pack, offline_judge, tmp_path):
     sink = _RecordingSink()
-    _run_compare(compare_pack, tmp_path, sink=sink)
-    assert set(sink.names) >= {"run.started", "pair.judged", "spend.updated",
-                               "run.finished"}
+    art = _run_compare(compare_pack, tmp_path, sink=sink)
+    # Counts, not presence — see the gate test above for why. `pair.judged`
+    # fires once per (pair x rubric) inside the semaphore, and the compare
+    # artifact records both factors per probe, so the expectation is read back
+    # off the run's own output rather than hardcoded.
+    n_pairs = sum(e["pairs_judged"] * len(e["rubrics"]) for e in art.probes)
+    expected = {"run.started": 1, "pair.judged": n_pairs,
+                "spend.updated": 1, "run.finished": 1}
+    counts = Counter(sink.names)
+    assert {n: counts.get(n, 0) for n in expected} == expected, counts
+    # ...and a plan that judged nothing would satisfy any count-based check
+    # trivially, so pin that this run really did judge something.
+    assert n_pairs > 0
 
 
 @pytest.mark.filterwarnings("ignore:no price entry")
@@ -317,12 +358,39 @@ async def test_discover_fires_every_named_call_site(discover_pack, tmp_path,
                                                     monkeypatch):
     _scripted_brain(monkeypatch, _confirming_script())
     sink = _RecordingSink()
-    await discovery_run.run_discovery(
+    art = await discovery_run.run_discovery(
         discover_pack, _discovery_cfg(tmp_path, staging_dir=None), sink=sink)
     assert set(sink.names) >= {
         "run.started", "agent.step", "agent.reply", "confirm.result",
         "finding.staged", "replay.result", "spend.updated", "artifact.written",
         "run.finished"}
+    # ...and HOW MANY of each, derived from the artifact this run wrote. A
+    # `set()` cannot see a missing duplicate; the per-finding pair below is the
+    # one that scales with the run, and `len(art.findings)` is the run's own
+    # count of them.
+    n_findings = len(art.findings)
+    expected = {"run.started": 1, "finding.staged": n_findings,
+                "replay.result": n_findings, "artifact.written": 1,
+                "run.finished": 1}
+    counts = Counter(sink.names)
+    assert {n: counts.get(n, 0) for n in expected} == expected, counts
+    assert n_findings > 0, "the scripted hunt staged nothing to count"
+    # `agent.step` is the multiplicity the loop drives, and the artifact does
+    # not record a step count — so the check is a STRUCTURAL one against the
+    # other events' own step numbers: the steps announced must be contiguous
+    # from 1, and every step that produced a reply or a confirmation must be
+    # among them. Restricting the in-loop `agent.step` emit to its first
+    # iteration leaves the name present (the set assertion above still passes)
+    # but strands the propose step's `confirm.result` with no announced step,
+    # which this reds on.
+    announced = [f["step"] for n, f in sink.events if n == "agent.step"]
+    assert announced == list(range(1, len(announced) + 1)), announced
+    followed = {f["step"] for n, f in sink.events
+                if n in {"agent.reply", "confirm.result"}}
+    assert followed, "no step produced a reply or a confirmation"
+    assert followed <= set(announced), (
+        f"steps {sorted(followed - set(announced))} produced a reply or a "
+        f"confirmation but never announced an agent.step: {announced}")
     # A name-SET assertion is structurally blind to a missing DUPLICATE: discover
     # emits `spend.updated` twice, and deleting either site leaves the name
     # present from the other, so the set above stays satisfied. Assert the
