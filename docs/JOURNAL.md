@@ -1770,3 +1770,59 @@ this probe**; the transcript goes on the projector and plainly shows a refusal.
 Plan #4's parked findings are recorded in the SDD ledger rather than duplicated here, and are
 handed to the plan's final whole-branch review. Triage them there, per the standing rule that each
 plan's register is triaged at its final review.
+
+## Plan #4 scope and ordering — RATIFIED BY THE MAINTAINER 2026-08-11 (session 8)
+
+**This is a maintainer decision, not a controller convenience. Do not silently re-order it, and do
+not treat the deferred pages as abandoned.**
+
+### The order of work
+
+1. **Tasks 19 and 20 first — wired up and rehearsed.** Pause/resume/cancel in the engine, then the
+   launcher, control channel, SSE stream and the pack-list endpoints. This is the demo, and it is
+   the part that still holds unknowns: the SPA has only ever talked to mock endpoints, so the
+   wiring pass (real browser → real server) is where surprises will surface.
+2. **Then Tasks 12–17, in this priority order:** **Trends → Judge Trust → Discoveries → Compare.**
+
+**If time runs out, it runs out on Compare** — deliberately, because Compare is the only one of the
+four with nothing to show.
+
+### Why that order, measured on disk 2026-08-11 rather than assumed
+
+An earlier claim in this session that the deferred pages "would be empty" was **wrong and is
+retracted**. `PRODUCT.md`'s note about an empty `discoveries/` folder is about `packs/example/`
+only, and was over-generalised. The real corpus:
+
+| page | data on disk |
+|---|---|
+| Trends | **78** gate runs on `example`, **7 on the injection pack being demoed** |
+| Discoveries | **2** real findings (`packs/twincore/discoveries/*.yaml`) + **2** discover run artifacts |
+| Judge Trust | reads the same run corpus |
+| Compare | **0 compare artifacts.** Genuinely empty |
+
+Trends ranks first because 7 runs of the *demo pack* reinforce the demo's own claim: the failure is
+recurrent, not a one-off.
+
+**Caution on Discoveries:** its findings come from a live product and include a PII-leak finding
+(the file R4-3 forbids copying into fixtures). The redaction chokepoint covers it, but that page
+must be **looked at on screen** before it goes near a projector.
+
+### Dropped, by maintainer decision
+
+**`POST /api/packs/{pack_id}/validate` is DROPPED** — not deferred. Two things already cover it:
+
+- **A pack that will not load is fatal at server startup** (`src/evalyn/ui/server.py:169-187`,
+  ruling R4-18). That is deliberate: the redactor learns each pack's declared secrets from the pack,
+  so starting without one would mean serving with a redaction hole. It fails in the operator's
+  terminal, before the talk. **Do not "fix" this into a warning.**
+- `./packs/twincore-injection/demo.sh preflight` — free, no model calls.
+
+What is given up is the in-cockpit "validate before you spend" button, which matters more to the
+future CI audience than to the maintainer on their own machine. The engine-side checker
+(`evalyn.engine.validate`) already exists, so this stays cheap to add later if it is ever wanted.
+
+### Also cut for the demo (no demo value, all release hygiene)
+
+Task 21 steps 4–7: the Playwright smoke test, the CI `ui-e2e` job, the docs + `v0.5.0` version bump,
+and the wheel test. **Task 21 step 6 must not run until the plan actually finishes** — it would
+claim a release that does not exist.
