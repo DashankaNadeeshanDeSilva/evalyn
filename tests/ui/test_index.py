@@ -716,24 +716,36 @@ def test_the_artifact_cache_is_bounded(tmp_path):
     assert len(idx._cache) <= ix.CACHE_MAX_ENTRIES
 
 
-def test_the_cache_evicts_least_recently_used_not_the_run_being_watched(tmp_path):
-    """Eviction order is the whole difference between a bound and a bug.
+def test_the_cache_evicts_least_recently_used_not_first_inserted(tmp_path):
+    """Eviction ORDER is the whole difference between a bound and a bug.
 
-    The detail page an operator is sitting on is re-read constantly while the
-    listing sweeps past it; a FIFO bound would evict exactly that entry and
-    re-parse it every poll.
+    The detail page an operator is sitting on is re-read every poll while the
+    listing sweeps past it. Under a FIFO bound that entry is evicted on
+    schedule regardless, and re-parsed — transcripts and all — every time.
+
+    So the test touches the entry FIFO would evict next and then forces exactly
+    one eviction: under LRU the touched entry survives and its neighbour goes,
+    under FIFO the reverse. Anything less specific passes under both.
     """
     runs = tmp_path / "runs"
+    # `list()` walks candidates newest-id first, so the HIGHEST id is inserted
+    # first and is therefore FIFO's next victim.
     ids = _write_gate_runs(runs, ix.CACHE_MAX_ENTRIES)
     idx = RunIndex(runs)
     idx.list(limit=10_000)
+    assert len(idx._cache) == ix.CACHE_MAX_ENTRIES, "the cache must start full"
 
-    watched = runs / f"{ids[0]}.json"
-    idx._load(watched, ids[0], m.RunMode.gate)          # touch the oldest entry
-    _write_gate_runs(runs, ix.CACHE_MAX_ENTRIES + 5)    # force evictions
-    idx.list(limit=10_000)
+    watched = runs / f"{ids[-1]}.json"                  # inserted first
+    neighbour = runs / f"{ids[-2]}.json"                # inserted second
+    idx._load(watched, ids[-1], m.RunMode.gate)         # ...and re-read now
 
-    assert str(watched) in idx._cache
+    newcomer_id = "20260807T999999000000-deadbeef-example"
+    newcomer = runs / f"{newcomer_id}.json"
+    newcomer.write_text(json.dumps(_gate_artifact().to_dict()))
+    idx._load(newcomer, newcomer_id, m.RunMode.gate)    # exactly one eviction
+
+    assert str(watched) in idx._cache, "the entry being watched was evicted"
+    assert str(neighbour) not in idx._cache, "the least-recently-used one stayed"
 
 
 # --------------------------------------------------------------------------

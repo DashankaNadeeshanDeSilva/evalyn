@@ -331,17 +331,15 @@ async def test_the_hashed_bundle_assets_are_served(runs_dir, asgi_client):
 # 5. `serve` — loopback only
 # --------------------------------------------------------------------------
 
-def test_serve_refuses_any_host_that_is_not_loopback(runs_dir):
-    """Not a preference. This server reads `runs/` and (Task 19) spawns
-    processes; on a conference wifi `0.0.0.0` hands both to the room."""
-    from evalyn.ui.server import serve
+def _stub_the_server(monkeypatch) -> dict:
+    """Neutralise `uvicorn.run` and `webbrowser.open` for a `serve()` call.
 
-    for host in ("0.0.0.0", "::", "192.168.1.7", "localhost"):
-        with pytest.raises(ValueError, match="127.0.0.1"):
-            serve(runs_dir=runs_dir, packs=[], host=host)
-
-
-def test_serve_binds_loopback_and_honours_no_open(runs_dir, monkeypatch):
+    Not optional politeness: without the stub this test only passes because the
+    refusal happens *before* `uvicorn.run`, so a mutation that deleted the
+    refusal would not fail — it would bind `0.0.0.0` and hang the suite
+    forever. A test whose failure mode is "runs until someone notices" is not
+    a test. (Observed: the mutation harness for this task hung on exactly that.)
+    """
     import uvicorn
     import webbrowser
 
@@ -350,14 +348,43 @@ def test_serve_binds_loopback_and_honours_no_open(runs_dir, monkeypatch):
                         lambda app, **kw: calls.update(kw, app=app))
     monkeypatch.setattr(webbrowser, "open",
                         lambda url: calls.setdefault("opened", url))
+    return calls
 
+
+def test_serve_refuses_any_host_that_is_not_loopback(runs_dir, monkeypatch):
+    """Not a preference. This server reads `runs/` and (Task 19) spawns
+    processes; on a conference wifi `0.0.0.0` hands both to the room."""
     from evalyn.ui.server import serve
 
-    serve(runs_dir=runs_dir, packs=[], port=0, open_browser=False)
+    calls = _stub_the_server(monkeypatch)
+    for host in ("0.0.0.0", "::", "192.168.1.7", "localhost"):
+        with pytest.raises(ValueError, match="127.0.0.1"):
+            serve(runs_dir=runs_dir, packs=[], host=host)
+    assert calls == {}, "refused, and refused before anything was bound or opened"
+
+
+def test_serve_binds_loopback_and_honours_no_open(runs_dir, monkeypatch):
+    from evalyn.ui.server import serve
+
+    calls = _stub_the_server(monkeypatch)
+    # A real port, not 0: with `--port 0` the browser is skipped anyway (the
+    # assigned port is not known until uvicorn logs it), so port 0 would make
+    # the `--no-open` assertion below pass for the wrong reason.
+    serve(runs_dir=runs_dir, packs=[], port=8765, open_browser=False)
 
     assert calls["host"] == "127.0.0.1"
-    assert calls["port"] == 0
+    assert calls["port"] == 8765
     assert "opened" not in calls, "--no-open must not launch a browser"
+
+
+def test_serve_opens_the_browser_when_it_was_not_told_not_to(runs_dir, monkeypatch):
+    """The other half of the pair — otherwise `--no-open` would be satisfied by
+    a build that never opens a browser at all."""
+    from evalyn.ui.server import serve
+
+    calls = _stub_the_server(monkeypatch)
+    serve(runs_dir=runs_dir, packs=[], port=8765)
+    assert calls["opened"] == "http://127.0.0.1:8765/"
 
 
 # --------------------------------------------------------------------------
@@ -431,6 +458,10 @@ def test_the_ui_command_reports_an_unloadable_pack_as_a_setup_error(
 
     from evalyn.cli import app
 
+    # Same reason as `_stub_the_server`: unstubbed, this test passes only
+    # because the refusal happens before `uvicorn.run`, and a build that failed
+    # open would bind port 8765 and hang the suite instead of failing it.
+    _stub_the_server(monkeypatch)
     result = CliRunner().invoke(app, [
         "ui", "--runs-dir", str(runs_dir),
         "--target", str(tmp_path / "not-a-pack"), "--no-open",
