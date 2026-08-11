@@ -33,7 +33,7 @@ import type {
  * mount, but API calls are not assets — they are absolute so a client-side
  * route like `/runs/<id>` cannot turn `api/meta` into `/runs/api/meta`.
  */
-const API_ROOT = "/api";
+export const API_ROOT = "/api";
 
 /** A non-2xx response, parsed. `code` is the thing worth switching on. */
 export class ApiFailure extends Error {
