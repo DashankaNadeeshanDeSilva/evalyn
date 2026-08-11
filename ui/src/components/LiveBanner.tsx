@@ -10,7 +10,6 @@ import type {
 import {
   IconAlert,
   IconBarred,
-  IconCheck,
   IconLive,
   IconPause,
   IconQuery,
@@ -71,18 +70,34 @@ const PHASE_WORDS: Record<RunPhase, string> = {
 };
 
 /**
- * The mark for the phase. `finished` splits on how the run **ended**, but
- * **every rendition says "finished"** — the verdict is the gate banner's job
- * below, and a cross up here would claim a gate failure for a run that was
- * cancelled, or for a clean run whose gate simply went red.
+ * The mark for the phase. **Every rendition of `finished` says "finished"** —
+ * the verdict is the gate banner's job below, and a cross up here would claim a
+ * gate failure for a run that was cancelled, or for a clean run whose gate
+ * simply went red.
  *
- * The check therefore says "this run completed", not "this run passed". It is
- * `status: "ok"` off `run.finished` and nothing else. The alarm is reserved for
- * `status: "error"` — a run that did not finish what it started — and a status
- * the stream never sent draws the unresolved mark rather than either.
+ * ## The window never draws the gate's check, and that is a surface rule
+ *
+ * `IconCheck` means one thing on this surface: **the gate held**. It is the
+ * banner's mark, in the pass colour, at the largest type on the run detail
+ * page — and the window sits directly above that banner, so in the demo case
+ * both are on screen at once: a run that completed cleanly whose gate went red.
+ * A check up here over a cross down there is one screen disagreeing with itself
+ * at projector distance, however defensible each mark is in its own file. The
+ * check was drawn here for one round and is refused now.
+ *
+ * So the terminal mark carries **valence, and nothing else**: the alarm for
+ * `status: "error"` — a run that did not finish what it started — and the
+ * unresolved mark for every other ending. It does not distinguish `"ok"` from a
+ * status the stream never sent, because that distinction is the outcome word
+ * below and a mark that drew it would be a second verdict on a screen that
+ * already has one.
  *
  * Before the wiring pass this read `exit_code === 0`, a key `run.finished` has
  * never carried, so **every** finished run drew the alarm.
+ *
+ * No ink changes with any of this: the mark inherits the one measured foreground
+ * of the window's phase line, so the hand-measured inventory the contrast guard
+ * cannot see (see the header above) is untouched.
  */
 function phaseMark(
   phase: RunPhase,
@@ -98,14 +113,7 @@ function phaseMark(
     case "cancelling":
       return IconBarred;
     case "finished":
-      switch (finishStatus) {
-        case "ok":
-          return IconCheck;
-        case "error":
-          return IconAlert;
-        case null:
-          return IconQuery;
-      }
+      return finishStatus === "error" ? IconAlert : IconQuery;
   }
 }
 
