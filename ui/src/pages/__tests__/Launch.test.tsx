@@ -220,6 +220,36 @@ describe("the launch console", () => {
     expect(screen.getByText(/evalyn ui --target/)).toBeInTheDocument();
   });
 
+  /**
+   * The regression the browser caught and nothing held.
+   *
+   * An input's border is the **only** thing identifying it as a control, so
+   * WCAG 1.4.11 applies at 3:1. The first draft used chassis-400, which
+   * measures **2.30** on the face — the step `ScenarioTable` already documents
+   * as too light for a control's edge. chassis-500 measures **4.03**.
+   *
+   * This is asserted here rather than in the contrast guard on purpose: that
+   * guard reads `text-` and `bg-` prefixes only and structurally cannot see a
+   * border, and widening it to a general border axis is a design decision with
+   * real cost, not a fix (ruling R4-24, and the same parking as before).
+   */
+  it("bounds its text fields with an edge that clears the 3:1 bar", async () => {
+    const user = userEvent.setup();
+    renderLaunch();
+
+    await armGate(user);
+    expect(screen.getByLabelText(/Type example/).getAttribute("class")).toContain(
+      "border-chassis-500",
+    );
+
+    await user.click(screen.getByRole("button", { name: /^discover/ }));
+    expect(
+      screen
+        .getByLabelText(/most this discover run may spend/)
+        .getAttribute("class"),
+    ).toContain("border-chassis-500");
+  });
+
   it("renders a refused launch with a glyph, not colour alone", async () => {
     const user = userEvent.setup();
     server.use(
