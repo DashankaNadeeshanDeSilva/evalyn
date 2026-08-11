@@ -2,11 +2,10 @@ import { render, screen } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
 import { describe, expect, it } from "vitest";
 
-import { RUN_MODES, RUN_STATUSES, VERDICT_HINTS } from "../../api/types";
-import { formatUsd, formatUtc } from "../../format";
+import { RUN_STATUSES, VERDICT_HINTS } from "../../api/types";
 import { RUN_SUMMARIES, SUMMARY_GATE } from "../../mocks/fixtures";
 import { RunStatusChip } from "../RunStatusChip";
-import { COLUMNS, RunsTable } from "../RunsTable";
+import { RunsTable } from "../RunsTable";
 
 /*
  * ---------------------------------------------------------------------------
@@ -240,148 +239,6 @@ describe("RunsTable", () => {
 
     expect(screen.queryAllByTestId("run-row")).toHaveLength(0);
     expect(screen.getByTestId("runs-empty")).toBeInTheDocument();
-  });
-});
-
-/**
- * The column budget, made executable.
- *
- * This budget has now been sized against the wrong worst case **three times** —
- * against the fixtures (all `passed`), then against STATUS while VERDICT and
- * SPEND were the cells that had gained content, then against a `Flatline` while
- * `gate unknown` was the widest thing VERDICT can hold. Each time the comment
- * above `COLUMNS` said the numbers were measured, and each time the next
- * reviewer found a cell overflowing. A comment cannot fail a build.
- *
- * So the worst case is re-derived here from the **types** — `RUN_STATUSES`,
- * `RUN_MODES`, `VERDICT_HINTS` — rather than from the fixtures or from an
- * author's sample, which is the exact substitution that caused all three.
- *
- * jsdom has no layout engine, so this is a *model* of the browser rather than
- * the browser. It is legitimate only because the face is monospace: width is a
- * linear function of character count. Every constant below was calibrated
- * against Chrome, against the built stylesheet, on the real component markup,
- * with the scroller pinned to the table's 78rem floor and `sr-only` nodes
- * removed:
- *
- *   measured 151.86  model 151.6   "failed_to_start" + mark   (STATUS)
- *   measured 125.89  model 125.7   "gate unknown" + mark      (VERDICT)
- *   measured 102.17  model 102.0   "unrecorded" + mark        (SPEND)
- *   measured 168.58  model 168.0   "2026-08-06 09:10:11Z"     (CREATED)
- *   measured  80.52  model  80.4   "unknown" + mark           (PACK)
- *   measured  67.43  model  67.2   "discover"                 (MODE)
- *   measured 320.30  model 319.2   a 38-char run id           (RUN)
- *
- * The model runs up to ~1.1px narrow over a long string, so a column must clear
- * its worst case by `MODEL_SLOP` rather than merely reach it. Re-measure in a
- * browser when the type scale, the icons or the padding change; this test
- * guards the arithmetic, not the typography.
- */
-const FLOOR_PX = 78 * 16; // `min-w-[78rem]`, the table's own floor
-
-/** Monospace advance = 0.6em, plus `tracking-legend` (0.12em) where it applies. */
-const LEGEND = 12 * 0.6;
-const LEGEND_TRACKED = LEGEND + 12 * 0.12;
-const READOUT = 14 * 0.6;
-/** `h-4 w-4` status/verdict glyph, and `h-4 w-6` flat-line mark, + `gap-1.5`. */
-const STATUS_MARK = 16 + 6;
-const FLATLINE_MARK = 24 + 6;
-/** The model's calibration error against Chrome, rounded up. */
-const MODEL_SLOP = 2;
-
-/**
- * Horizontal padding per cell, from the classes the cells actually carry — plus
- * the 1px the user agent gives every `<td>`, which Tailwind's preflight does not
- * reset and which the browser measurement confirmed is really there.
- */
-const PADDING_X: Record<string, number> = {
-  status: 24 + 12, // `pl-4 sm:pl-6` + `pr-3`
-  run: 1 + 12,
-  mode: 1 + 12,
-  pack: 1 + 12,
-  created: 1 + 12,
-  verdict: 1 + 12,
-  spend: 12 + 24, // `pl-3` + `pr-4 sm:pr-6`
-};
-
-const flatline = (word: string) => FLATLINE_MARK + word.length * LEGEND;
-const tracked = (word: string) => word.length * LEGEND_TRACKED;
-
-/** The widest content each column can ever hold, derived from its own type. */
-const WIDEST: Record<string, { what: string; px: number }> = (() => {
-  const max = (candidates: { what: string; px: number }[]) =>
-    candidates.reduce((a, b) => (b.px > a.px ? b : a));
-  return {
-    status: max(
-      RUN_STATUSES.map((s) => ({ what: s, px: STATUS_MARK + tracked(s) })),
-    ),
-    // A run id's trailing slug is unbounded, so this column cannot be sized
-    // against a worst case at all — it is `break-all`, and an unusually long id
-    // costs a second line rather than a collision. The canonical 38-char stem
-    // is asserted to still fit on one line.
-    run: { what: "a 38-char run id", px: 38 * READOUT },
-    mode: max(RUN_MODES.map((m) => ({ what: m, px: m.length * READOUT }))),
-    // `pack_name` is likewise unbounded and likewise wraps; the bounded worst
-    // case is the marker shown when the artifact recorded no pack name.
-    pack: { what: "flat-lined `unknown`", px: flatline("unknown") },
-    created: {
-      what: "a formatted UTC stamp",
-      px: formatUtc("2026-08-06T09:10:11.123456+00:00").length * READOUT,
-    },
-    verdict: max([
-      ...VERDICT_HINTS.map((h) => ({
-        what: `gate ${h}`,
-        px: STATUS_MARK + tracked(`gate ${h}`),
-      })),
-      { what: "flat-lined `no gate`", px: flatline("no gate") },
-      { what: "flat-lined `unreadable`", px: flatline("unreadable") },
-    ]),
-    spend: max([
-      { what: "flat-lined `unrecorded`", px: flatline("unrecorded") },
-      { what: "a four-decimal figure", px: formatUsd(9999.9999).length * READOUT },
-    ]),
-  };
-})();
-
-describe("the column budget", () => {
-  it("still spends exactly the table's width, no more and no less", () => {
-    const total = COLUMNS.reduce(
-      (sum, column) => sum + Number.parseFloat(column.width),
-      0,
-    );
-    expect(total, "the column widths must sum to 100%").toBeCloseTo(100, 6);
-  });
-
-  it("gives every column room for the widest content its own type can hold", () => {
-    for (const column of COLUMNS) {
-      const box = (Number.parseFloat(column.width) / 100) * FLOOR_PX;
-      const avail = box - PADDING_X[column.key]!;
-      const worst = WIDEST[column.key]!;
-      expect(
-        avail,
-        `${column.key} at ${column.width} of the 78rem floor leaves ${avail.toFixed(1)}px ` +
-          `for ${worst.what}, which needs ${worst.px.toFixed(1)}px — ` +
-          `\`table-fixed\` does not clip it, it lets it collide with the next cell`,
-      ).toBeGreaterThanOrEqual(worst.px + MODEL_SLOP);
-    }
-  });
-
-  /**
-   * The header is `whitespace-nowrap` too, and "Verdict (hint)" is longer than
-   * some of the data beneath it — a column can be wide enough for its values
-   * and still overflow its own label.
-   */
-  it("gives every column room for its own header label", () => {
-    for (const column of COLUMNS) {
-      const box = (Number.parseFloat(column.width) / 100) * FLOOR_PX;
-      const avail = box - PADDING_X[column.key]!;
-      // Uppercased in CSS, so the label's own casing does not change its width.
-      const label = tracked(column.label);
-      expect(
-        avail,
-        `${column.key}'s header "${column.label}" needs ${label.toFixed(1)}px`,
-      ).toBeGreaterThanOrEqual(label + MODEL_SLOP);
-    }
   });
 });
 

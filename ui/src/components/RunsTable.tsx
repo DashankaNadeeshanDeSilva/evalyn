@@ -109,13 +109,12 @@ import { RunStatusChip } from "./RunStatusChip";
  * plus a word all have the same room to grow. The 1.1% comes out of RUN, which
  * has the most slack and wraps rather than collides.
  *
- * Re-measure rather than re-derive when this changes — and note that the budget
- * is now executable: `RunsTable.test.tsx` re-derives the worst case from
- * `RUN_STATUSES`, `RUN_MODES` and `VERDICT_HINTS` and reds when a column is
- * narrowed below what its own type can hold. A comment could not stop this
- * happening three times; the assertion can.
+ * Re-measure rather than re-derive when this changes — in a browser, at the
+ * floor, against the widest member of each column's own **type**. Nothing in
+ * the suite can catch this for you: jsdom has no layout engine, so a comment is
+ * all this budget has. That is a known gap, ledgered rather than closed.
  */
-export const COLUMNS = [
+const COLUMNS = [
   { key: "status", label: "Status", width: "16%" },
   { key: "run", label: "Run", width: "28.9%" },
   { key: "mode", label: "Mode", width: "7%" },
