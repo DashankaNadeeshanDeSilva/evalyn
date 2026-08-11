@@ -232,9 +232,20 @@ export function runEventsReducer(
   input: RunEventsInput,
 ): RunEventsState {
   if ("connection" in input) {
-    return input.connection === state.connection
+    /*
+     * A terminal run's connection is settled, and the transition is ignored.
+     *
+     * Measured in a browser, not reasoned about: when the server closes a
+     * finished stream, `EventSource` reports the teardown through `onerror`
+     * with `readyState` still `CONNECTING` — it is already scheduling the
+     * reconnect this hook is one render away from cancelling. Taking that at
+     * face value put "Reconnecting" under the word FINISHED, which is an alarm
+     * about a socket that was closed on purpose.
+     */
+    const settled = state.phase === "finished" ? "closed" : input.connection;
+    return settled === state.connection
       ? state
-      : { ...state, connection: input.connection };
+      : { ...state, connection: settled };
   }
 
   const { seq, name, data } = input;

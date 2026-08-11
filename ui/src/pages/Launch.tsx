@@ -143,6 +143,18 @@ function Detent({
   );
 }
 
+/**
+ * The two text fields' shared boundary, measured by hand.
+ *
+ * An input's border is the **only** thing identifying it as a control, so
+ * WCAG 1.4.11 applies at 3:1. The first draft used chassis-400, which measures
+ * **2.30** on the face — the exact choice `ScenarioTable` already documents as
+ * too light for a control's edge, made again here and caught by looking at the
+ * page rather than by any guard, since the contrast test reads `text-` and
+ * `bg-` prefixes only. chassis-500 measures **4.03**.
+ */
+const FIELD_EDGE = "border border-chassis-500 bg-chassis-25";
+
 function Legend({ children }: { children: string }) {
   return (
     <h2 className="text-legend uppercase tracking-legend text-chassis-600">
@@ -349,7 +361,7 @@ export function Launch() {
               step="0.01"
               value={maxUsd}
               onChange={(event) => setMaxUsd(event.target.value)}
-              className="mt-2 w-40 border border-chassis-400 bg-chassis-25 px-2 py-1.5 text-readout tabular-nums text-chassis-900"
+              className={`mt-2 w-40 ${FIELD_EDGE} px-2 py-1.5 text-readout tabular-nums text-chassis-900`}
             />
             <p className="mt-2 max-w-[70ch] text-legend text-chassis-600">
               {ceiling === null
@@ -376,7 +388,7 @@ export function Launch() {
             spellCheck={false}
             value={confirm}
             onChange={(event) => setConfirm(event.target.value)}
-            className="mt-2 w-72 max-w-full border border-chassis-400 bg-chassis-25 px-2 py-1.5 text-readout text-chassis-900"
+            className={`mt-2 w-72 max-w-full ${FIELD_EDGE} px-2 py-1.5 text-readout text-chassis-900`}
           />
         </fieldset>
 

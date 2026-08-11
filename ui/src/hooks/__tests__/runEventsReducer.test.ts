@@ -208,6 +208,23 @@ describe("runEventsReducer", () => {
     expect(spent.judgeUsd).toBeCloseTo(0.25, 5);
   });
 
+  /**
+   * Found by rendering the finished run in a browser, not by reasoning.
+   *
+   * The scripted stream ends and the server closes it; `EventSource` reports
+   * that teardown through `onerror` with `readyState` still `CONNECTING`,
+   * because it is already scheduling the reconnect this hook is about to
+   * cancel. The window therefore read **"Reconnecting"** under the word
+   * FINISHED — an alarm about a socket that was closed on purpose.
+   */
+  it("does not raise a reconnect alarm over a run that already finished", () => {
+    const finished = applyAll(initialRunEventsState, SCRIPT);
+    const teardown = runEventsReducer(finished, { connection: "reconnecting" });
+
+    expect(teardown.connection).toBe("closed");
+    expect(teardown.phase).toBe("finished");
+  });
+
   it("takes a connection transition without touching the sequence", () => {
     const state = applyAll(initialRunEventsState, SCRIPT.slice(0, 2));
     const dropped = runEventsReducer(state, { connection: "reconnecting" });
