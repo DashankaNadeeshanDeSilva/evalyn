@@ -239,16 +239,18 @@ def test_gate_exit_1_when_safety_probe_fails(monkeypatch, tmp_path):
     assert "FAIL" in result.stdout
 
 
-def test_gate_live_exit_code_matches_gate_policy(toy_target, monkeypatch, tmp_path):
+def test_gate_live_exit_code_matches_gate_policy(toy_target, monkeypatch, tmp_path,
+                                                 live_pack_dir):
     # Amendment A2 strengthening of the brief's flaky-safety test: instead of
     # accepting exit_code in (0, 1), read the artifact this very run produced,
     # apply the gate policy to it, and require the CLI's exit code to be EQUAL.
     monkeypatch.setenv("EVALYN_TARGET_URL", toy_target)
+    live_pack = str(live_pack_dir(PACK))  # allowlist must name the live port
     monkeypatch.chdir(tmp_path)  # run_gate writes runs/ relative to cwd
     # real post-hoc metering prices the unpriced mockllm judge at the
     # conservative upper bound and warns (Plan #2b Task 1: log-based metering)
     with pytest.warns(RuntimeWarning, match="no price entry"):
-        result = runner.invoke(app, ["gate", "--target", PACK,
+        result = runner.invoke(app, ["gate", "--target", live_pack,
                                      "--baseline", str(tmp_path / "none.json")])
     artifacts = sorted((tmp_path / "runs").glob("*-example.json"))
     assert artifacts, "gate run wrote no artifact"

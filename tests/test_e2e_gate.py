@@ -52,10 +52,11 @@ def _assert_leak_independent_invariants(art: RunArtifact) -> None:
         assert probe.checks, f"probe {probe.id}: representative checks missing"
 
 
-def test_full_gate_flow_records_passk_divergence(toy_target, monkeypatch, tmp_path):
+def test_full_gate_flow_records_passk_divergence(toy_target, monkeypatch, tmp_path,
+                                                 live_pack_dir):
     monkeypatch.setenv("EVALYN_TARGET_URL", toy_target)
+    pack = load_pack(live_pack_dir(PACK))
     monkeypatch.chdir(tmp_path)  # run_gate writes runs/ relative to cwd
-    pack = load_pack(PACK)
     # real post-hoc metering prices the unpriced mockllm judge at the
     # conservative upper bound and warns (Plan #2b Task 1: log-based metering)
     with pytest.warns(RuntimeWarning, match="no price entry"):
@@ -87,11 +88,11 @@ def test_full_gate_flow_records_passk_divergence(toy_target, monkeypatch, tmp_pa
     assert result.exit_code == (1 if result.failures else 0)
 
 
-def test_cli_gate_exit_code_equals_policy_verdict_live(toy_target, tmp_path):
+def test_cli_gate_exit_code_equals_policy_verdict_live(toy_target, tmp_path, live_pack_dir):
     """A2 at true e2e scope: real process, real exit code, live target."""
     env = {**os.environ, "EVALYN_TARGET_URL": toy_target}
     proc = subprocess.run(
-        [EVALYN_BIN, "gate", "--target", PACK,
+        [EVALYN_BIN, "gate", "--target", str(live_pack_dir(PACK)),
          "--baseline", str(tmp_path / "none.json")],
         cwd=tmp_path, env=env, capture_output=True, text=True, timeout=300)
 
@@ -105,28 +106,34 @@ def test_cli_gate_exit_code_equals_policy_verdict_live(toy_target, tmp_path):
     assert ("FAIL" if expected.exit_code else "PASS") in proc.stdout
 
 
-def test_cli_validate_pack_live(toy_target, tmp_path):
+def test_cli_validate_pack_live(toy_target, tmp_path, live_pack_dir):
     env = {**os.environ, "EVALYN_TARGET_URL": toy_target}
     proc = subprocess.run(
-        [EVALYN_BIN, "validate-pack", PACK],
+        [EVALYN_BIN, "validate-pack", str(live_pack_dir(PACK))],
         cwd=tmp_path, env=env, capture_output=True, text=True, timeout=300)
     assert proc.returncode == 0, proc.stderr + proc.stdout
 
 
 # --- calibration paths, at true e2e scope (real process, live toy target) ----
 
-RUBRIC_TARGET_YAML = """\
+def _rubric_target_yaml(base_url: str) -> str:
+    """The rubric pack, built around the live target's URL (dynamic port).
+
+    `base_url` is the 127.0.0.1 spelling `toy_target` yields; the allowlist
+    carries the localhost spelling too, as the shipped packs do.
+    """
+    return f"""\
 name: rubpack
 sessions:
-  open:    { method: POST, path: /session }
-  message: { method: POST, path: /chat, stream: sse, event_format: vercel-ai }
-auth: { kind: none }
-judge: { rubric_model: mockllm/model }
+  open:    {{ method: POST, path: /session }}
+  message: {{ method: POST, path: /chat, stream: sse, event_format: vercel-ai }}
+auth: {{ kind: none }}
+judge: {{ rubric_model: mockllm/model }}
 env:
-  base_url: ${EVALYN_TARGET_URL:-http://127.0.0.1:8899}
+  base_url: ${{EVALYN_TARGET_URL:-{base_url}}}
 allowlist:
-  - http://127.0.0.1:8899
-  - http://localhost:8899
+  - {base_url}
+  - {base_url.replace("127.0.0.1", "localhost")}
 invariants:
   - id: non-empty
 """
@@ -154,12 +161,12 @@ Score each criterion 1-5.
 
 
 @pytest.fixture
-def rubric_pack(tmp_path):
+def rubric_pack(tmp_path, toy_target):
     """A pack with a rubric check and a STALE calibration.json (the recorded
     rubric hash never matches the real rubrics/quality.md hash)."""
     pack_dir = tmp_path / "rubpack"
     pack_dir.mkdir()
-    (pack_dir / "target.yaml").write_text(RUBRIC_TARGET_YAML)
+    (pack_dir / "target.yaml").write_text(_rubric_target_yaml(toy_target))
     (pack_dir / "probes").mkdir()
     (pack_dir / "probes" / "p.yaml").write_text(RUBRIC_PROBES)
     (pack_dir / "rubrics").mkdir()

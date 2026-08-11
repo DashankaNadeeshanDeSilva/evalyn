@@ -118,6 +118,16 @@ def toy_target():
 
 
 @pytest.fixture
+def retarget_to_toy(toy_target):
+    """`retarget_yaml` bound to this session's live target — for packs whose
+    target.yaml is a literal in the test file rather than a directory on disk.
+    """
+    def _retarget(text: str) -> str:
+        return retarget_yaml(text, toy_target)
+    return _retarget
+
+
+@pytest.fixture
 def live_pack_dir(tmp_path, toy_target):
     """Factory: copy an on-disk pack into tmp and point it at `toy_target`.
 
