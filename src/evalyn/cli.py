@@ -45,8 +45,45 @@ EVENTS_HELP = ("Write a live JSONL event stream next to the run artifact "
                "default, and off means nothing is written and no sink is even "
                "constructed.")
 
+#: `--control` help text, shared by the three modes so it cannot drift.
+CONTROL_HELP = ("Poll a control file next to the run artifact "
+                "(`runs/<run_id>....control.json`) for pause/resume/cancel, "
+                "for `evalyn ui`. Off by default, and off means no controller "
+                "is constructed and nothing is ever read. NOTE: pause starts "
+                "no NEW trials — trials already in flight run to completion "
+                "and keep spending.")
+
 #: Artifact filename suffix per mode — the same suffixes the writers use.
 _MODE_SUFFIX = {"gate": "", "compare": "-compare", "discover": "-discover"}
+
+
+def _artifact_path(mode: str, out_dir: str, run_id: str) -> Path:
+    """Where this run's artifact will land. The sidecar layout derives from it."""
+    return Path(out_dir) / f"{run_id}{_MODE_SUFFIX[mode]}.json"
+
+
+def _open_control(control: bool, *, mode: str, pack_name: str, out_dir: str,
+                  run_id: str | None, sink):
+    """`(controller | None, run_id)`. Without `--control` this is `(None, …)`.
+
+    Constructed only when asked for, exactly like `_open_sink`: with the flag
+    off nothing is imported and nothing is read, so a default run cannot be
+    slowed, paused or stopped by a stale control file anybody left on disk.
+
+    The path is **derived** through `ui.paths.control_path`, never hand-built —
+    Task 2 owns the sidecar layout.
+    """
+    if not control:
+        return None, run_id
+    from evalyn.engine.control import RunController
+    from evalyn.engine.run import new_run_id
+    from evalyn.ui.paths import control_path
+
+    if run_id is None:
+        run_id = new_run_id(pack_name)
+    return (RunController(control_path(_artifact_path(mode, out_dir, run_id)),
+                          sink),
+            run_id)
 
 
 def _open_sink(events: bool, *, mode: str, pack_name: str, out_dir: str,
@@ -73,7 +110,7 @@ def _open_sink(events: bool, *, mode: str, pack_name: str, out_dir: str,
 
     if run_id is None:
         run_id = new_run_id(pack_name)
-    artifact = Path(out_dir) / f"{run_id}{_MODE_SUFFIX[mode]}.json"
+    artifact = _artifact_path(mode, out_dir, run_id)
     return (events_mod.JsonlSink(events_path(artifact), run_id=run_id, mode=mode),
             run_id)
 
@@ -100,6 +137,7 @@ def gate(
     out_dir: str = typer.Option(
         "runs", "--out-dir", help="Directory the run artifact is written to."),
     events: bool = typer.Option(False, "--events", help=EVENTS_HELP),
+    control: bool = typer.Option(False, "--control", help=CONTROL_HELP),
     debug: bool = typer.Option(
         False, "--debug",
         help="Re-raise errors with full tracebacks instead of clean exit-2 messages."),
@@ -173,12 +211,16 @@ def gate(
             raise
         typer.echo(f"gate: setup error: --events stream unavailable: {e}", err=True)
         raise typer.Exit(2)
+    controller, run_id = _open_control(control, mode="gate",
+                                       pack_name=pack.spec.name, out_dir=out_dir,
+                                       run_id=run_id, sink=sink)
 
     try:
         art = run_mod.run_gate(pack, judge_model=judge_model,
                                rubric_judge_model=rubric_judge_model,
                                rubric_scores_untrusted=rubric_untrusted,
-                               out_dir=out_dir, run_id=run_id, sink=sink)
+                               out_dir=out_dir, run_id=run_id, sink=sink,
+                               controller=controller)
     except BudgetExceeded as e:
         if debug:
             raise
@@ -204,6 +246,13 @@ def gate(
         if art.rubric_scores_untrusted:
             problems.append("its rubric scores are UNTRUSTED "
                             "(--allow-uncalibrated run)")
+        if art.cancelled:
+            # The zero-trials entry below catches the COMMON cancel, but not
+            # the one that matters here: cancel after every probe has already
+            # scored produces a fully-populated, fully-passing artifact that
+            # the other two entries have nothing to say about — and blessing it
+            # would freeze a baseline taken from a run the operator stopped.
+            problems.append("the run was CANCELLED mid-flight (partial)")
         zero_trials = sorted(p.id for p in art.probes if p.trials == 0)
         if zero_trials:
             problems.append("probe(s) with zero scored trials: "
@@ -252,6 +301,20 @@ def gate(
 
     result = evaluate_gate(art, baseline_art)
     typer.echo(result.report_md)
+    if art.cancelled:
+        # Exit 3 (run-invalid), NEVER the gate's own 0/1. A cancelled run did
+        # not measure what it set out to measure, so neither verdict is true of
+        # it: reporting PASS would be a lie about coverage, and reporting FAIL
+        # would blame the product for probes that never ran. The report above is
+        # still printed — the partial evidence is worth reading — but the exit
+        # code says "this run is not a verdict". Deliberately AFTER the
+        # --update-baseline block, which refuses a cancelled artifact with
+        # exit 2 (setup refusal) rather than reaching here at all.
+        typer.echo(
+            "gate: the run was CANCELLED by an operator — this artifact is "
+            "PARTIAL and its verdict is not a gate result (exit 3). Probes "
+            "that never ran read as MISSING above.", err=True)
+        raise typer.Exit(3)
     raise typer.Exit(result.exit_code)
 
 
@@ -272,6 +335,7 @@ def compare(
     out_dir: str = typer.Option(
         "runs", "--out-dir", help="Directory the compare artifact is written to."),
     events: bool = typer.Option(False, "--events", help=EVENTS_HELP),
+    control: bool = typer.Option(False, "--control", help=CONTROL_HELP),
     seed: int = typer.Option(
         None, "--seed", help="Seed for the judge's order-controlled draw-2 orders."),
     debug: bool = typer.Option(
@@ -285,6 +349,7 @@ def compare(
 
     from evalyn.engine import compare as cmp_mod
     from evalyn.engine.budget import BudgetExceeded
+    from evalyn.engine.control import RunCancelled
     from evalyn.engine.run import RunArtifact
     from evalyn.engine.task_builder import _model_family
     from evalyn.engine.validate import validate_pack
@@ -357,6 +422,9 @@ def compare(
             raise
         typer.echo(f"compare: setup error: --events stream unavailable: {e}", err=True)
         raise typer.Exit(2)
+    controller, run_id = _open_control(control, mode="compare",
+                                       pack_name=pack.spec.name, out_dir=out_dir,
+                                       run_id=run_id, sink=sink)
 
     try:
         art = asyncio.run(cmp_mod.run_compare(
@@ -364,7 +432,8 @@ def compare(
             cache_dir=Path(target) / ".cache",
             rubric_scores_untrusted=rubric_untrusted, seed=seed,
             out_dir=out_dir, label_a=label_a, label_b=label_b,
-            source_a=a, source_b=b, run_id=run_id, sink=sink))
+            source_a=a, source_b=b, run_id=run_id, sink=sink,
+            controller=controller))
     # Unlike `gate`, this block cannot take a `finally`: the sink has to stay
     # open through `write_compare_artifact` below, the one place that can
     # honestly emit `artifact.written`. So each failing exit closes it here
@@ -376,6 +445,18 @@ def compare(
         typer.echo(f"compare: budget exceeded: {e} — the compare artifact is "
                    f"on disk under {out_dir}/ for inspection", err=True)
         raise typer.Exit(2)
+    except RunCancelled as e:
+        # Exit 3 (run-invalid), like gate's: the judging was stopped part-way,
+        # so the scoreboard that would have been written is not a comparison of
+        # anything. Before the ValueError arm below — `RunCancelled` is not a
+        # `ValueError`, but keeping the deliberate stop first makes the reading
+        # order match the precedence.
+        sink.close()
+        if debug:
+            raise
+        typer.echo(f"compare: CANCELLED by an operator: {e} — no compare "
+                   f"artifact was written (exit 3)", err=True)
+        raise typer.Exit(3)
     except ValueError as e:  # locked preconditions (pack hash, transcripts)
         sink.close()
         if debug:
@@ -539,6 +620,7 @@ def discover(
         None, "--staging-dir", help="Where confirmed probes stage (default: <pack>/discoveries/)."),
     out_dir: str = typer.Option("runs", "--out-dir"),
     events: bool = typer.Option(False, "--events", help=EVENTS_HELP),
+    control: bool = typer.Option(False, "--control", help=CONTROL_HELP),
     seed: int = typer.Option(None, "--seed"),
     dry_run: bool = typer.Option(False, "--dry-run"),
     debug: bool = typer.Option(False, "--debug"),
@@ -551,6 +633,7 @@ def discover(
     from evalyn.discovery.objectives import OBJECTIVES
     from evalyn.discovery.personas import load_personas, load_playbooks
     from evalyn.discovery.task_builder import plan_hunts
+    from evalyn.engine.control import RunCancelled
     from evalyn.engine.validate import validate_pack
     from evalyn.targets.loader import resolve_base_url
 
@@ -738,10 +821,27 @@ def discover(
         typer.echo(f"discover: setup error: --events stream unavailable: {e}",
                    err=True)
         raise typer.Exit(2)
+    controller, run_id = _open_control(control, mode="discover",
+                                       pack_name=pack.spec.name,
+                                       out_dir=str(cfg.out_dir), run_id=run_id,
+                                       sink=sink)
 
     try:
         art = asyncio.run(discovery_run.run_discovery(pack, cfg, run_id=run_id,
-                                                      sink=sink))
+                                                      sink=sink,
+                                                      controller=controller))
+    except RunCancelled as e:
+        if debug:
+            raise
+        # Exit 3, the same code the generic arm below gives, but a truthful
+        # sentence: this run was stopped on purpose, it is not broken. R8-5's
+        # partial-artifact write has already run, so the spend record survives.
+        typer.echo(f"discover: CANCELLED by an operator: {e}\n"
+                   f"  the run is PARTIAL (exit 3) — it SPENT before it was "
+                   f"stopped. A partial run record (spend + any findings made "
+                   f"before the cancel) was written under {cfg.out_dir}/ as "
+                   f"the newest `*-discover.json`.", err=True)
+        raise typer.Exit(3)
     except Exception as e:
         if debug:
             raise

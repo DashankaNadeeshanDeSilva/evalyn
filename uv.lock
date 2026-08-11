@@ -550,7 +550,7 @@ requires-dist = [
     { name = "click", specifier = ">=8.2" },
     { name = "fastapi", marker = "extra == 'ui'", specifier = ">=0.119" },
     { name = "httpx", specifier = ">=0.27" },
-    { name = "inspect-ai", specifier = ">=0.3.249" },
+    { name = "inspect-ai", specifier = ">=0.3.249,<0.4" },
     { name = "openai", specifier = ">=1.0" },
     { name = "pydantic", specifier = ">=2" },
     { name = "pyyaml", specifier = ">=6" },

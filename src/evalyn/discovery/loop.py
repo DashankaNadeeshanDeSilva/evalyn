@@ -68,6 +68,7 @@ from evalyn.discovery.personas import (
     Persona,
     Playbook,
 )
+from evalyn.engine.control import RunCancelled, RunController
 from evalyn.engine.events import NULL_SINK, EventSink, hunt_key
 from evalyn.targets.loader import Pack
 from evalyn.targets.session import TargetSession, TurnCapExceeded
@@ -83,7 +84,13 @@ ACTIONS: frozenset[str] = frozenset({"send", "propose", "stop"})
 ACTIONS_LINE_PREFIX = "Available actions this step: "
 
 #: Why a session ended. `confirmed` is the only success.
-StopReason = Literal["confirmed", "agent_stop", "steps_exhausted", "budget", "error"]
+#: `"cancelled"` (Plan #4, Task 19) is a DELIBERATE stop, and deliberately not
+#: `"error"`: `discovery/run.py` counts `"error"` sessions into `error_count`,
+#: which the CLI turns into exit 3 "every hunt failed", and reporting an
+#: operator's stop button as a run-wide failure would be false. It counts as
+#: `partial` instead — work not done, not work that broke.
+StopReason = Literal["confirmed", "agent_stop", "steps_exhausted", "budget",
+                     "error", "cancelled"]
 
 _TRUST_BOUNDARY = """\
 Rules of evidence (these are enforced, not advisory):
@@ -375,7 +382,8 @@ async def run_session(pack: Pack, objective: Objective,
                       playbook: Playbook | None = None, *,
                       agent_model: str, meter: SpendMeter, limits: Limits,
                       confirmer, seed: int | None = None,
-                      sink: EventSink = NULL_SINK) -> SessionResult:
+                      sink: EventSink = NULL_SINK,
+                      controller: RunController | None = None) -> SessionResult:
     """Run one hunt. Always returns a `SessionResult`; never raises.
 
     `sink` defaults to the inert `NULL_SINK` and is passed down to `_drive`
@@ -408,11 +416,21 @@ async def run_session(pack: Pack, objective: Objective,
                 session = opened
                 await _drive(session, objective, persona, playbook, result,
                              agent_model=agent_model, meter=meter, limits=limits,
-                             confirmer=confirmer, seed=seed, sink=sink)
+                             confirmer=confirmer, seed=seed, sink=sink,
+                             controller=controller)
         except BudgetStop as e:
             # Never out of the loop: a budget stop must PRESERVE partial evidence.
             result.stop_reason = "budget"
             result.error = f"BudgetStop: {e}"
+        except RunCancelled as e:
+            # BEFORE the blanket handler below, and that order is the whole
+            # point: `RunCancelled` IS an `Exception`, so falling through would
+            # record the operator's own stop button as `stop_reason="error"` —
+            # counted into `error_count`, rendered as a failed hunt, and warned
+            # about as unexpected. It is none of those things. No warning here
+            # either: nothing went wrong.
+            result.stop_reason = "cancelled"
+            result.error = f"RunCancelled: {e}"
         except Exception as e:  # noqa: BLE001 — deliberate: see module docstring
             # A target outage, a malformed reply, a bug: whatever it is, an
             # exception escaping here makes Inspect drop the sample under
@@ -433,7 +451,8 @@ async def _drive(session, objective: Objective, persona: Persona,
                  playbook: Playbook, result: SessionResult, *,
                  agent_model: str, meter: SpendMeter, limits: Limits,
                  confirmer, seed: int | None,
-                 sink: EventSink = NULL_SINK) -> None:
+                 sink: EventSink = NULL_SINK,
+                 controller: RunController | None = None) -> None:
     """The loop proper. Mutates `result` in place so that whatever stops it —
     return, budget, or exception — leaves the steps taken so far intact."""
     step = 0
@@ -444,6 +463,13 @@ async def _drive(session, objective: Objective, persona: Persona,
 
     while True:
         # --- BOUNDS FIRST, before a prompt is built or a byte is sent -------
+        # The operator's bound sits with the others, for the same reason they
+        # are here: this is the last moment before a step costs anything. A
+        # cancel raises straight past the step accounting (nothing was done, so
+        # there is no step to record); a pause simply waits here, which is
+        # exactly "start no new steps".
+        if controller is not None:
+            await controller.checkpoint(key=f"hunt:{key}#{step + 1}")
         if meter.exhausted():
             result.stop_reason = "budget"
             return
