@@ -1,28 +1,24 @@
 import { QueryClientProvider } from "@tanstack/react-query";
-import { act, render, screen, waitFor } from "@testing-library/react";
+import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { describe, expect, it } from "vitest";
 
 import { createQueryClient } from "../../api/client";
-import type { EventName, RunStatus } from "../../api/types";
+import type { RunStatus } from "../../api/types";
 import { RUN_ID_GATE } from "../../mocks/fixtures";
+import {
+  FakeEventSource,
+  onlySocket,
+  useFakeEventSource,
+} from "../../test/fakeEventSource";
 import { LiveRunPanel } from "../LiveRunPanel";
 
 /**
  * The seam: a real socket's events, folded into the one inset window.
  *
- * ## Why there is a fake here at all
- *
- * **jsdom ships no `EventSource`** — `typeof window.EventSource` is `undefined`
- * under the pinned jsdom 29 — so this is not a case of preferring a double to
- * the real thing. Without one, the only untested code on the live path would be
- * exactly the part most likely to be wrong: named SSE events never reach
- * `onmessage`, so a listener registered the obvious way receives nothing at all
- * and the window sits silent forever while the run completes.
- *
- * The fake implements only what the hook actually uses, and nothing it does not:
- * construction with a URL, `addEventListener` by event name, `close()`, and a
- * `readyState` with the one constant the error branch reads.
+ * The fake `EventSource` and the reason it has to exist are in
+ * `src/test/fakeEventSource.ts`; `RunDetailPage.test.tsx` drives the same one,
+ * so the hook test and the page test cannot drift apart.
  *
  * ## DEFERRED — owed to Tasks 18, 19 and 20
  *
@@ -34,54 +30,7 @@ import { LiveRunPanel } from "../LiveRunPanel";
  * `hooks/useRunEvents.ts` and `components/LiveRunPanel.tsx`.
  */
 
-type Frame = MessageEvent<string>;
-
-class FakeEventSource {
-  static readonly CLOSED = 2;
-  static instances: FakeEventSource[] = [];
-
-  readyState = 0;
-  closed = false;
-  onopen: (() => void) | null = null;
-  onerror: (() => void) | null = null;
-  private readonly listeners = new Map<string, ((event: Frame) => void)[]>();
-
-  constructor(readonly url: string) {
-    FakeEventSource.instances.push(this);
-  }
-
-  addEventListener(name: string, handler: (event: Frame) => void) {
-    const existing = this.listeners.get(name) ?? [];
-    this.listeners.set(name, [...existing, handler]);
-  }
-
-  close() {
-    this.closed = true;
-    this.readyState = FakeEventSource.CLOSED;
-  }
-
-  /** One server frame: `id:` is the seq, exactly as the sink writes it. */
-  emit(seq: number, name: EventName, data: Record<string, unknown>) {
-    const frame = new MessageEvent(name, {
-      data: JSON.stringify(data),
-      lastEventId: String(seq),
-    }) as Frame;
-    act(() => {
-      for (const handler of this.listeners.get(name) ?? []) handler(frame);
-    });
-  }
-}
-
-const realEventSource = globalThis.EventSource;
-
-beforeEach(() => {
-  FakeEventSource.instances = [];
-  (globalThis as { EventSource?: unknown }).EventSource = FakeEventSource;
-});
-
-afterEach(() => {
-  (globalThis as { EventSource?: unknown }).EventSource = realEventSource;
-});
+useFakeEventSource();
 
 function renderPanel(status: RunStatus) {
   return render(
@@ -91,11 +40,7 @@ function renderPanel(status: RunStatus) {
   );
 }
 
-function socket(): FakeEventSource {
-  const one = FakeEventSource.instances[0];
-  expect(one, "nothing subscribed to the run's event stream").toBeDefined();
-  return one!;
-}
+const socket = onlySocket;
 
 describe("the live run panel", () => {
   it("subscribes to the run's own stream while a process is attached", () => {
