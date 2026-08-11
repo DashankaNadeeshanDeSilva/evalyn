@@ -198,6 +198,33 @@ def test_task_22_moves_no_verdict_field(minimal_pack_with_probe, pattern, expect
     assert tuple(getattr(pr, f) for f in _VERDICT_FIELDS) == pytest.approx(expected)
 
 
+def test_a_failing_trial_represents_a_failing_probe(minimal_pack_with_probe):
+    """Task 22 commit 2: the representative list may not contradict pass^k.
+
+    Epoch 1 passes and epoch 3 deviates, which is exactly the shape that made
+    `injection-exfil-boundaries` render `pass^k=0.0  7 checks  0 failed` on
+    stage: the representative was always the first epoch's all-green list.
+    """
+    pack = minimal_pack_with_probe("p", samples=3)
+    [pr] = _reduce_log_to_probes(
+        _FakeLog(_epoch_samples({1: True, 2: True, 3: False})), pack)
+
+    assert pr.pass_k == 0.0, "the probe failed"
+    assert any(c["passed"] is False for c in pr.checks), (
+        "so its representative checks must show a failure")
+    assert pr.checks == pr.trial_records[-1]["checks"]  # epoch 3's, the failing one
+
+
+def test_an_all_passing_probe_keeps_the_first_epoch_as_representative(
+        minimal_pack_with_probe):
+    """The fallback is today's behaviour, unchanged — no failing epoch to pick."""
+    pack = minimal_pack_with_probe("p", samples=2)
+    [pr] = _reduce_log_to_probes(_FakeLog(_epoch_samples({1: True, 2: True})), pack)
+
+    assert pr.pass_k == 1.0
+    assert pr.checks == pr.trial_records[0]["checks"]
+
+
 def test_run_gate_raises_on_non_success_eval_status(monkeypatch, tmp_path):
     """A failed Inspect eval must raise (CLI maps it to exit 2), not reduce an empty log."""
     monkeypatch.setenv("EVALYN_TARGET_URL", "http://localhost:8899")

@@ -285,8 +285,16 @@ def reduce_log_to_probes(log, pack: Pack,
         # no trial produced a usable score -> 0.0 (fail-closed), surfaced via
         # unsure_trials, never a silent perfect mean
         mean_score = sum(scores) / len(scores) if scores else 0.0
-        # carry one epoch's checks as representative evidence for the report
-        rep_checks = next(iter(per_epoch.values())) if per_epoch else []
+        # Carry one epoch's checks as representative evidence for the report —
+        # a FAILING one when there is one (Task 22). The verdict is pass^k, so
+        # a probe that deviated on epoch 4 of 7 is a failure, and representing
+        # it by the first epoch printed `pass^k=0.0  7 checks  0 failed`: a
+        # report contradicting its own verdict. Falls back to the first epoch
+        # when every trial passed, which is what it always did.
+        epochs = sorted(per_epoch)
+        rep_epoch = next((e for e, ok in zip(epochs, req_passes) if not ok),
+                         epochs[0] if epochs else None)
+        rep_checks = per_epoch[rep_epoch] if rep_epoch is not None else []
         results.append(ProbeResult(
             id=pid, category=probe.category, kind=probe.kind,
             safety_critical=probe.safety_critical, samples=probe.samples,
