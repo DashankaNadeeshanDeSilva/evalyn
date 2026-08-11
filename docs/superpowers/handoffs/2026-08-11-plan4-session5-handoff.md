@@ -106,9 +106,25 @@ over the single surviving trial and shown green.
 
 ## 3. Where things stand
 
-**Branch `feat/plan4-ui`**, cut from `dev`. **Pushed. No PR.**
-**Branch `feat/plan4-ui-frontend`** (worktree `../Evalyn_frontend_lane`). **Pushed. NOT merged** —
-merging needs a maintainer ask.
+**MERGED AND IN SYNC as of 2026-08-11.** `feat/plan4-ui-frontend` was merged into `feat/plan4-ui`
+(`6c2800e`, `--no-ff`) and the frontend lane was then fast-forwarded to the same commit. **Both
+branches and both worktrees now sit at `6c2800e`, and both are pushed.** No PR.
+
+The merge was taken at a deliberately chosen moment: both tasks complete, nothing in flight, and the
+**committed bundle quiescent** — it is minified, so a conflict there is unmergeable, and the safe
+window closes the moment a frontend task starts. Verified beforehand as **zero overlapping files**
+between the two sides.
+
+**Verified after the merge:** Python **1138 passed** (cold `__pycache__`, `-W error::RuntimeWarning`),
+`ruff` clean, frontend **177 passed / 10 files**, `tsc --noEmit` clean.
+
+**Expected working-tree noise in the main worktree** — leave both alone:
+`M docs/superpowers/handoffs/2026-08-07-plan4-ui-kickoff.md` (the maintainer's own unstaged edit) and
+`?? ci/baseline-twincore-injection.TAINTED-blessed-a-FAIL.json` (deliberately quarantined, see §2).
+
+> ⚠️ **`ui/node_modules` exists ONLY in `../Evalyn_frontend_lane`.** The main worktree has the `ui/`
+> source but no install, so `npm run test` there fails with `vitest: command not found` — that is not
+> a broken merge. Run frontend commands in the frontend worktree, or `npm ci` in the main one first.
 
 | Task | State |
 |---|---|
