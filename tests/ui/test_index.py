@@ -748,6 +748,37 @@ def test_the_cache_evicts_least_recently_used_not_first_inserted(tmp_path):
     assert str(neighbour) not in idx._cache, "the least-recently-used one stayed"
 
 
+def test_a_refreshed_entry_is_the_most_recent_not_the_next_victim(tmp_path):
+    """The MISS path needs the same treatment, and it is the one that matters.
+
+    The test above only exercises a cache *hit*. Re-assigning an existing key
+    keeps its original position in a dict, so an artifact that was re-read
+    because it changed on disk stayed exactly where it was and was evicted
+    next — having just been parsed. Immutable artifacts never take this path;
+    a **running** run's artifact is the one that changes, and it is the one an
+    operator is watching while it does.
+    """
+    runs = tmp_path / "runs"
+    ids = _write_gate_runs(runs, ix.CACHE_MAX_ENTRIES)
+    idx = RunIndex(runs)
+    idx.list(limit=10_000)
+
+    refreshed = runs / f"{ids[-1]}.json"                # inserted first
+    neighbour = runs / f"{ids[-2]}.json"                # inserted second
+    st = refreshed.stat()
+    refreshed.write_text(json.dumps(_gate_artifact().to_dict()))
+    os.utime(refreshed, ns=(st.st_atime_ns, st.st_mtime_ns + 1_000_000))
+    idx._load(refreshed, ids[-1], m.RunMode.gate)       # a MISS, then a re-parse
+
+    newcomer_id = "20260807T999998000000-deadbeef-example"
+    newcomer = runs / f"{newcomer_id}.json"
+    newcomer.write_text(json.dumps(_gate_artifact().to_dict()))
+    idx._load(newcomer, newcomer_id, m.RunMode.gate)    # exactly one eviction
+
+    assert str(refreshed) in idx._cache, "evicted the artifact it had just parsed"
+    assert str(neighbour) not in idx._cache
+
+
 # --------------------------------------------------------------------------
 # 8b. `.get()` degrades on VALUE-level surprises too, not just shape (F10)
 # --------------------------------------------------------------------------

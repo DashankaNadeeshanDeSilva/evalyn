@@ -499,6 +499,12 @@ class RunIndex:
             self._cache[str(path)] = self._cache.pop(str(path))
             return cached[1]
         loaded = _read_artifact(path, run_id, mode)
+        # `pop` first: assigning to a key a dict already has keeps its ORIGINAL
+        # position, so a just-re-parsed artifact would stay wherever it was and
+        # be the next thing evicted. Immutable artifacts never take this path,
+        # but a *running* run's artifact is precisely the one that changes on
+        # disk — and it is the one being watched.
+        self._cache.pop(str(path), None)
         self._cache[str(path)] = (key, loaded)
         while len(self._cache) > CACHE_MAX_ENTRIES:
             self._cache.pop(next(iter(self._cache)))
