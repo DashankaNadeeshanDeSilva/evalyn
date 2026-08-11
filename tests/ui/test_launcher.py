@@ -1215,10 +1215,11 @@ async def test_a_child_that_exited_unreaped_is_a_phantom_running_row(
     **Why it is not fixed here.** Telling the two apart needs evidence that
     does not exist: `meta.json` carries only `launched` and `exit_code`
     (`ui/paths.py`), never a pid, and `RunIndex` holds no reference to the
-    launcher. Adding a pid plus a liveness probe means a schema change and
-    `os.kill`, which R4-11 forbids anywhere in this repository; a reaper or a
-    heartbeat is new infrastructure, which R4-27 forbids in a fix; and having
-    `list()` reap would make a `GET` write. Reporting these rows as
+    launcher. Recording a pid and then asking the operating system whether it
+    is still there means both a schema change and the one family of process
+    calls R4-11 keeps out of this repository entirely; a reaper or a heartbeat
+    is new infrastructure, which R4-27 forbids in a fix; and having `list()`
+    reap would make a `GET` write. Reporting these rows as
     `interrupted` instead is not available either — it would relabel a
     genuinely live run, which is the whole thing F5 exists to show, and for a
     run left behind by a *previous* server `running` may be perfectly true:
