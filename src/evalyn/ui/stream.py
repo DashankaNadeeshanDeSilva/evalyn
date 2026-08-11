@@ -209,7 +209,15 @@ async def event_stream(
                     if (isinstance(seq, int) and not isinstance(seq, bool)
                             and seq > last_id):
                         if scrub is not None:
-                            record = {**record, "data": scrub(record.get("data"))}
+                            # The WHOLE record, not just `data`. The event
+                            # name reaches the wire too (`event: <type>`), and
+                            # scrubbing only the payload left a secret in the
+                            # name going out verbatim. `seq` is an int and
+                            # passes through untouched, so `id:` — the resume
+                            # cursor — cannot be rewritten by redaction.
+                            scrubbed = scrub(record)
+                            if isinstance(scrubbed, dict):
+                                record = scrubbed
                         frame = sse_frame(record)
                         if frame is not None:
                             last_id = seq
