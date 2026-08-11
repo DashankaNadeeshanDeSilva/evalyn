@@ -811,6 +811,20 @@ def create_app(runs_dir: Path, packs: list[Path], *,
                  or sidecar_dir(runs_dir, run_id).is_dir())
         if not known:
             raise HTTPException(status_code=404, detail=f"no such run: {run_id}")
+
+        # Asked of current truth, not of whatever `meta.json` last happened to
+        # record (T-A2). A child that has exited but that nothing has reaped
+        # keeps `exit_code: null`, so without this the endpoint answered
+        # `202 accepted: true` for a process that was already gone and left an
+        # orphan control file in `runs/` — measured on the running app, where
+        # the list and this endpoint then disagreed until somebody opened a
+        # detail page and reaped as a side effect. `reap()` is existing
+        # infrastructure and already runs from `_pending_detail`, a GET; this
+        # is a POST, which writes by definition. It cannot relabel a live run:
+        # `poll()` has to return an exit code for the slot to be released, and
+        # `self.live` is `None` for a run left behind by a previous server, so
+        # such a run stays live and still takes control actions.
+        app.state.launcher.reap()
         if not _run_is_live(run_id):
             raise HTTPException(status_code=409, detail=_NOT_LIVE)
 
@@ -828,6 +842,12 @@ def create_app(runs_dir: Path, packs: list[Path], *,
         # `discover`, whose artifacts have no such field, a file left inside
         # the window does still relabel the run. That is a recorded
         # limitation, not a covered case.
+        #
+        # Reaped again for the reason the pre-write check is: a run can end
+        # inside that window by *exiting* as readily as by writing an artifact,
+        # and a child that exited with nothing written leaves the artifact
+        # check nothing to find.
+        app.state.launcher.reap()
         if not _run_is_live(run_id):
             control_path(runs_dir / f"{run_id}.json").unlink(missing_ok=True)
             raise HTTPException(status_code=409, detail=_NOT_LIVE)

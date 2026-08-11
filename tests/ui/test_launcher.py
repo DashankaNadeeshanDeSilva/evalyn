@@ -1290,29 +1290,25 @@ async def test_a_child_that_exited_unreaped_is_a_phantom_running_row(
     child that has exited but that nothing has reaped keeps `exit_code: null`
     in `meta.json`, and `derive_status` documents outright that an unrecorded
     exit code is indistinguishable from a live one. So the row reads `running`
-    and the control endpoint answers `202 accepted: true` for a process that no
-    longer exists — the T20-d(a) shape, surfacing one layer up.
+    for a process that no longer exists.
 
-    **Why it is not fixed here.** Telling the two apart needs evidence that
-    does not exist: `meta.json` carries only `launched` and `exit_code`
-    (`ui/paths.py`), never a pid, and `RunIndex` holds no reference to the
-    launcher. Recording a pid and then asking the operating system whether it
-    is still there means both a schema change and the one family of process
-    calls R4-11 keeps out of this repository entirely; a reaper or a heartbeat
-    is new infrastructure, which R4-27 forbids in a fix; and having `list()`
-    reap would make a `GET` write. Reporting these rows as
-    `interrupted` instead is not available either — it would relabel a
-    genuinely live run, which is the whole thing F5 exists to show, and for a
-    run left behind by a *previous* server `running` may be perfectly true:
-    `start_new_session=True` means the child outlives its parent, and
-    `launcher.py` already documents on-disk `running` as **advisory** for
-    exactly that reason.
+    **Why the row is still not fixed.** Telling the two apart from the read
+    path needs evidence that does not exist: `meta.json` carries only
+    `launched` and `exit_code` (`ui/paths.py`), never a pid, and `RunIndex`
+    holds no reference to the launcher. Reporting these rows as `interrupted`
+    instead is not available either — it would relabel a genuinely live run,
+    which is the whole thing F5 exists to show, and for a run left behind by a
+    *previous* server `running` may be perfectly true: `start_new_session=True`
+    means the child outlives its parent, and `launcher.py` already documents
+    on-disk `running` as **advisory** for exactly that reason.
 
-    Two runs, identical except for the reap, so it cannot go vacuous and the
-    cost of the missing step is the only thing that differs between them. They
-    have to be two: the phantom's 202 writes a control file, and with no
-    artifact that file is then the only evidence the run leaves — so the same
-    run could not afterwards demonstrate the honest arm.
+    **What is fixed: the control endpoint no longer shares the phantom's
+    view** (T-A2). It used to answer `202 accepted: true` here and leave an
+    orphan control file behind for a child that had already exited, so the list
+    and the control surface disagreed until somebody happened to open a detail
+    page — a *GET* — and reaped as a side effect. The `POST` now asks the
+    liveness question of current truth, and the reap it does on the way in also
+    settles the row, so the two endpoints agree from that moment on.
     """
     app = cockpit(tmp_path, child=INERT)
 
@@ -1323,30 +1319,22 @@ async def test_a_child_that_exited_unreaped_is_a_phantom_running_row(
         unreaped = (await client.post("/api/runs",
                                       json=launch_body())).json()["run_id"]
         app.state.launcher.live.process.wait(timeout=60)     # dead, NOT reaped
-        # Neither `GET /api/runs` nor the control endpoint reaps, so nothing
-        # here ever records the exit code.
+        # `GET /api/runs` does not reap, so the exit code is still unrecorded
+        # here and the row cannot tell this run from a live one.
         phantom = (await client.get("/api/runs")).json()["items"]
-        still_accepted = await client.post(f"/api/runs/{unreaped}/control",
-                                           json={"action": "cancel"})
-        app.state.launcher.reap()                # only to free the slot below
-
-        reaped = (await client.post("/api/runs",
-                                    json=launch_body())).json()["run_id"]
-        app.state.launcher.live.process.wait(timeout=60)
-        app.state.launcher.reap()                            # the missing step
-        honest = (await client.get("/api/runs")).json()["items"]
-        refused = await client.post(f"/api/runs/{reaped}/control",
+        refused = await client.post(f"/api/runs/{unreaped}/control",
                                     json={"action": "cancel"})
+        settled = (await client.get("/api/runs")).json()["items"]
 
-    assert status_of(phantom, unreaped) == "running", "the limitation"
-    assert still_accepted.status_code == 202, "202 for a process that is gone"
-    assert control_path(tmp_path / f"{unreaped}.json").exists(), \
-        "and an orphan control file with nothing alive to read it"
+    assert status_of(phantom, unreaped) == "running", \
+        "the limitation, and it is on the read path only"
 
-    assert status_of(honest, reaped) == "interrupted", "once reaped, honest"
     assert refused.status_code == 409
     assert refused.json()["error"]["code"] == "busy"
-    assert not control_path(tmp_path / f"{reaped}.json").exists()
+    assert not control_path(tmp_path / f"{unreaped}.json").exists(), \
+        "no orphan control file for a child that is already gone"
+    assert status_of(settled, unreaped) == "interrupted", \
+        "and the two endpoints agree from there on"
 
 
 async def test_the_pending_details_cancelled_flag_tracks_the_operators_click(
@@ -1749,6 +1737,33 @@ async def test_a_control_action_on_a_run_whose_child_exited_is_refused(
     assert not control_path(tmp_path / f"{run_id}.json").exists()
 
 
+async def test_asking_liveness_of_current_truth_cannot_relabel_a_live_run(
+        tmp_path, asgi_client):
+    """T-A2's discriminator, and the reason the fix is safe.
+
+    The control endpoint now reaps before it decides, which is only acceptable
+    because `reap()` cannot touch a run that is still going: it releases the
+    slot exactly when `poll()` returns an exit code, and a child that is
+    running has none. Proved on a real child rather than argued — the run keeps
+    its slot, its 202 and its control file across the very call that reaps.
+    """
+    app = cockpit(tmp_path, child=INERT_SLEEPER)
+    async with asgi_client(app) as client:
+        run_id = (await client.post("/api/runs", json=launch_body())).json()["run_id"]
+        response = await client.post(f"/api/runs/{run_id}/control",
+                                     json={"action": "cancel"})
+        held = app.state.launcher.live
+    try:
+        assert response.status_code == 202
+        assert held is not None and held.run_id == run_id, \
+            "the reap did not take the slot from a child that is still running"
+        assert control_path(tmp_path / f"{run_id}.json").exists()
+    finally:
+        # The same teardown every other sleeper test in this file uses.
+        app.state.launcher.live.process.kill()
+        reap_app(app)
+
+
 @pytest.mark.parametrize("action", ["pause", "resume", "cancel"])
 async def test_a_run_that_is_still_in_flight_still_takes_every_action(
         tmp_path, asgi_client, action):
@@ -1910,6 +1925,52 @@ async def test_a_run_that_finishes_DURING_the_write_has_its_file_removed(
         "the file written inside the race window was left on disk"
     assert detail.json()["status"] == "passed"
     assert detail.json()["cancelled"] is False
+
+
+def child_that_runs_until(stop: Path) -> list[str]:
+    """A child that waits for *stop* to appear and then exits 0.
+
+    It ends itself, on a file — the same one-way channel the engine's control
+    file is — so a test can place a child's exit exactly where it needs it
+    without reaching for anything from the process-control family this
+    repository keeps out (R4-11).
+    """
+    return [sys.executable, "-c",
+            "import os, sys, time\n"
+            "while not os.path.exists(sys.argv[1]): time.sleep(0.01)\n",
+            str(stop)]
+
+
+async def test_a_child_that_exits_DURING_the_write_leaves_no_file_either(
+        tmp_path, asgi_client):
+    """The post-write arm, for a run that ends without writing an artifact.
+
+    Its sibling above forces the artifact to land inside `control()`, which the
+    artifact check alone can see. This forces the *child* to end there instead,
+    with nothing written — the shape a cancelled or crashed run leaves — which
+    only a liveness question asked of current truth can notice. Without the
+    reap on that second check the endpoint answers 202 and leaves a control
+    file in `runs/` that nothing will ever read.
+    """
+    stop = tmp_path / "stop-the-child"
+    app = cockpit(tmp_path, child=child_that_runs_until(stop))
+    async with asgi_client(app) as client:
+        run_id = (await client.post("/api/runs", json=launch_body())).json()["run_id"]
+        real_control = app.state.launcher.control
+
+        def control_then_the_child_ends(rid, action):
+            real_control(rid, action)
+            stop.write_text("", encoding="utf-8")
+            app.state.launcher.live.process.wait(timeout=60)
+
+        app.state.launcher.control = control_then_the_child_ends
+        response = await client.post(f"/api/runs/{run_id}/control",
+                                     json={"action": "cancel"})
+
+    assert response.status_code == 409
+    assert response.json()["error"]["code"] == "busy"
+    assert not control_path(tmp_path / f"{run_id}.json").exists(), \
+        "the file written inside the window was left for a child that is gone"
 
 
 # --------------------------------------------------------------------------
