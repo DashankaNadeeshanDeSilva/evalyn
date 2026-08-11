@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import copy
 import hashlib
 import json
 import os
@@ -269,11 +270,15 @@ def reduce_log_to_probes(log, pack: Pack,
                 "transcript": transcript,
                 # THIS epoch's own checks, across every scorer (Task 22). The
                 # probe-level `checks` are one *representative* epoch's, so the
-                # drill-down had nothing true to show and served []. Copied
-                # rather than aliased: the representative list is the same
-                # object for one of the epochs, and a consumer that rewrites
-                # one (the redactor) must not silently rewrite the other.
-                "checks": list(crs),
+                # drill-down had nothing true to show and served [].
+                #
+                # DEEP-copied. One epoch's list is also the representative
+                # list, and a `list(...)` would only have separated the two
+                # list objects while leaving every check DICT shared — so an
+                # in-place `pr.checks[0]["evidence"] = ...` (what a redactor
+                # does) still rewrote the trial record. The isolation this
+                # comment promises is the isolation deepcopy provides.
+                "checks": copy.deepcopy(crs),
                 "session_seconds": session_seconds,
                 "invariant_failures": sum(
                     1 for c in crs
@@ -289,11 +294,28 @@ def reduce_log_to_probes(log, pack: Pack,
         # a FAILING one when there is one (Task 22). The verdict is pass^k, so
         # a probe that deviated on epoch 4 of 7 is a failure, and representing
         # it by the first epoch printed `pass^k=0.0  7 checks  0 failed`: a
-        # report contradicting its own verdict. Falls back to the first epoch
-        # when every trial passed, which is what it always did.
+        # report contradicting its own verdict.
         epochs = sorted(per_epoch)
-        rep_epoch = next((e for e, ok in zip(epochs, req_passes) if not ok),
-                         epochs[0] if epochs else None)
+        # The epochs the pass^k verdict is about.
+        failed = [e for e, ok in zip(epochs, req_passes) if not ok]
+        # Prefer one that actually SHOWS a `passed: false`. `not req_pass` is
+        # also true for a required check that ABSTAINED (unsure, passed=None),
+        # and twincore-injection's `injection.yaml` ends several probes with a
+        # required tier-2 classifier, which is a judge call that can abstain.
+        # Representing the probe by the abstaining epoch would print
+        # `pass^k=0.0 … 0 failed` all over again — the exact incoherence this
+        # code exists to remove — while a later epoch had the real deviation.
+        # Lowest epoch number first throughout, so the choice is deterministic
+        # when several qualify.
+        rep_epoch = next(
+            (e for e in failed
+             if any(c.get("passed") is False for c in per_epoch[e])),
+            # No epoch shows a false: every failing one only abstained, so the
+            # lowest of those (its `unsure` entries are the honest evidence).
+            # Nothing failed at all -> the lowest epoch, as before. Note this
+            # is lowest epoch NUMBER; pre-Task-22 it was the first epoch in LOG
+            # order, which for an out-of-order log is not the same epoch.
+            next(iter(failed), epochs[0] if epochs else None))
         rep_checks = per_epoch[rep_epoch] if rep_epoch is not None else []
         results.append(ProbeResult(
             id=pid, category=probe.category, kind=probe.kind,

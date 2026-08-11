@@ -167,16 +167,24 @@ def test_each_trial_record_carries_that_epochs_own_checks(minimal_pack_with_prob
                for checks in by_epoch.values() for c in checks)
 
 
-def test_a_trial_records_checks_are_not_aliased_to_the_representative_list(
+def test_a_trial_records_checks_are_isolated_from_the_representative_list(
         minimal_pack_with_probe):
-    """Sharing one list object between `checks` and a `trial_records` entry
-    would make a redactor that rewrites the drill-down silently rewrite the
-    report as well. They serialise the same; they must not BE the same."""
+    """A redactor that rewrites the drill-down must not silently rewrite the
+    report as well. They serialise the same; they must not BE the same.
+
+    The in-place mutation is the whole test: a shallow `list(crs)` separates
+    the two *lists* and passes an `is not` assertion while leaving every check
+    **dict** shared, so the write below still lands in both.
+    """
     pack = minimal_pack_with_probe("p", samples=1)
     [pr] = _reduce_log_to_probes(_FakeLog(_epoch_samples({1: False})), pack)
+    record_checks = pr.trial_records[0]["checks"]
 
-    assert pr.checks == pr.trial_records[0]["checks"]
-    assert pr.checks is not pr.trial_records[0]["checks"]
+    assert pr.checks == record_checks
+    assert pr.checks is not record_checks
+    pr.checks[0]["evidence"] = "[redacted]"
+    assert record_checks[0]["evidence"] == "", (
+        "the trial record was rewritten through the representative list")
 
 
 @pytest.mark.parametrize("pattern, expected", [
@@ -215,14 +223,53 @@ def test_a_failing_trial_represents_a_failing_probe(minimal_pack_with_probe):
     assert pr.checks == pr.trial_records[-1]["checks"]  # epoch 3's, the failing one
 
 
-def test_an_all_passing_probe_keeps_the_first_epoch_as_representative(
+def test_an_all_passing_probe_keeps_the_lowest_epoch_as_representative(
         minimal_pack_with_probe):
-    """The fallback is today's behaviour, unchanged — no failing epoch to pick."""
+    """The fallback: no failing epoch to pick, so the lowest-numbered one."""
     pack = minimal_pack_with_probe("p", samples=2)
     [pr] = _reduce_log_to_probes(_FakeLog(_epoch_samples({1: True, 2: True})), pack)
 
     assert pr.pass_k == 1.0
     assert pr.checks == pr.trial_records[0]["checks"]
+
+
+def test_an_abstaining_epoch_never_represents_a_probe_that_really_failed(
+        minimal_pack_with_probe):
+    """**Fix round I1.** `not req_pass` is true for an ABSTAINED required
+    check as well as a failed one, so selecting on it picked epoch 1 here —
+    an epoch with no `passed: false` in it — and printed `pass^k=0.0 … 0
+    failed` on stage all over again, with the real deviation on epoch 3 left
+    unshown.
+
+    Not hypothetical for the demo: `packs/twincore-injection/probes/
+    injection.yaml:257` is a `type: classifier, required: true` check, i.e. a
+    tier-2 judge call, and abstaining is exactly what a judge call does when
+    it cannot decide.
+    """
+    pack = minimal_pack_with_probe("p", samples=3)
+    [pr] = _reduce_log_to_probes(
+        _FakeLog(_epoch_samples({1: None, 2: True, 3: False})), pack)
+
+    assert pr.pass_k == 0.0 and pr.unsure_trials == 1
+    assert not any(c["passed"] is False for c in pr.trial_records[0]["checks"]), (
+        "epoch 1 must be the abstainer this test is about")
+    assert any(c["passed"] is False for c in pr.checks), (
+        "the abstaining epoch was chosen over the one that really failed")
+    assert pr.checks == pr.trial_records[-1]["checks"]  # epoch 3's
+
+
+def test_an_all_abstaining_probe_is_represented_by_its_abstention(
+        minimal_pack_with_probe):
+    """No epoch shows a `passed: false`, so there is no failure to show and
+    inventing one would be worse. The lowest failing epoch's `unsure` entries
+    are the honest evidence — and they are what the badge renders."""
+    pack = minimal_pack_with_probe("p", samples=2)
+    [pr] = _reduce_log_to_probes(
+        _FakeLog(_epoch_samples({1: True, 2: None})), pack)
+
+    assert pr.pass_k == 0.0 and pr.unsure_trials == 1
+    assert pr.checks == pr.trial_records[1]["checks"]   # epoch 2, the abstainer
+    assert [c["unsure"] for c in pr.checks] == [True]
 
 
 def test_run_gate_raises_on_non_success_eval_status(monkeypatch, tmp_path):
