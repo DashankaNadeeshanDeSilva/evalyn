@@ -60,11 +60,19 @@ async function toFailure(res: Response): Promise<ApiFailure> {
     const body = (await res.json()) as ErrorEnvelope;
     const err = body.error;
     if (err && typeof err.message === "string") {
-      // `?? null` makes the declared `string | null` actually true. The server
-      // renders every envelope with `exclude_none=True`, so a refusal with no
-      // extra context omits `detail` rather than sending null — and a caller
-      // that trusted the declared type printed the word "undefined" at the end
-      // of every real refusal it rendered.
+      /*
+       * `?? null` makes the declared `string | null` actually true, and this is
+       * the **only** place that coalesce may live.
+       *
+       * The server renders every envelope with `exclude_none=True`, so a
+       * refusal with no extra context omits `detail` rather than sending null,
+       * and a renderer that trusted the declared type printed the word
+       * "undefined" at the end of every real refusal. Normalising here — the
+       * one seam every failure passes through, and the only place `ApiFailure`
+       * is constructed — leaves every consumer with the two states the type
+       * promises. Repeating the guard at a call site would be unreachable code
+       * that also stops this one from being caught when it is deleted.
+       */
       return new ApiFailure(res.status, err.code, err.message, err.detail ?? null);
     }
   } catch {
