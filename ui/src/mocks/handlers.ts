@@ -51,6 +51,7 @@ import {
   PACKS,
   RUN_DETAILS,
   RUN_ID_GATE,
+  RUN_ID_RUNNING,
   RUN_SUMMARIES,
   SCOREBOARD,
   TREND_SERIES,
@@ -325,7 +326,20 @@ export const handlers = [
     if (body["mode"] === "discover" && !META.allow_discover) {
       return fail("launch_refused", "discover requires --allow-discover");
     }
-    const launched: LaunchResponse = { run_id: RUN_ID_GATE };
+    /*
+     * A **pending** run, which is the whole point of the 202.
+     *
+     * The id is minted before the child process starts, so what comes back
+     * names a run with no artifact on disk and a sidecar status of `running` —
+     * `RUN_DETAILS[RUN_ID_RUNNING]` is exactly that run.
+     *
+     * This used to return the already-finished `RUN_ID_GATE`. The consequence
+     * was not a wrong figure but a **missing screen**: `LiveRunPanel` latches
+     * `watched` from the status it arrives on, so every launch in every test
+     * landed on a terminal run and the one inset window never mounted once. The
+     * live path had no coverage at all, and nothing said so.
+     */
+    const launched: LaunchResponse = { run_id: RUN_ID_RUNNING };
     return HttpResponse.json(launched, { status: 202 });
   }),
 

@@ -7,9 +7,15 @@ import { describe, expect, it } from "vitest";
 
 import { createQueryClient } from "../../api/client";
 import type { PackListPage } from "../../api/types";
-import { META, PACKS, RUN_ID_GATE } from "../../mocks/fixtures";
+import { META, PACKS, RUN_ID_RUNNING } from "../../mocks/fixtures";
 import { server } from "../../mocks/server";
+import { onlySocket, useFakeEventSource } from "../../test/fakeEventSource";
 import { Launch } from "../Launch";
+import { RunDetailPage } from "../RunDetailPage";
+
+// The live window only exists if something can subscribe to a stream, and jsdom
+// ships no `EventSource`.
+useFakeEventSource();
 
 /**
  * The launch console — the one page that spends money.
@@ -54,13 +60,16 @@ function renderLaunch() {
   );
 }
 
-/** Captures the body the page actually sends, and answers the way Task 20 will. */
+/**
+ * Captures the body the page actually sends, and answers the way the real
+ * launcher does: a **pending** id, minted before the child process starts.
+ */
 function captureLaunch(): { body: Record<string, unknown> | null } {
   const captured: { body: Record<string, unknown> | null } = { body: null };
   server.use(
     http.post("/api/runs", async ({ request }) => {
       captured.body = (await request.json()) as Record<string, unknown>;
-      return HttpResponse.json({ run_id: RUN_ID_GATE }, { status: 202 });
+      return HttpResponse.json({ run_id: RUN_ID_RUNNING }, { status: 202 });
     }),
   );
   return captured;
@@ -333,6 +342,46 @@ describe("the launch console", () => {
     // This is the sentence the operator reads when a launch fails on stage.
     expect(alarm.textContent).not.toContain("undefined");
     expect(alarm.textContent).not.toContain("()");
+  });
+
+  /**
+   * The coverage hole the mock dug, and the one the wiring pass fell into.
+   *
+   * `POST /api/runs` returned the **already-finished** `RUN_ID_GATE`, so every
+   * launch this suite has ever performed navigated to a terminal run:
+   * `LiveRunPanel` latched `watched = false` and returned `null`, and the one
+   * inset window **has never mounted in a launch test**. The real server mints
+   * a pending id — the stem of an artifact that does not exist yet — and the
+   * panel mounts on arrival, which is the whole shape of the demo's first
+   * minute.
+   *
+   * Nothing is overridden below: the default handler is under test, because the
+   * default handler is what lied.
+   */
+  it("lands on a run that is still on the air, with the live window mounted", async () => {
+    const user = userEvent.setup();
+    render(
+      <QueryClientProvider client={createQueryClient()}>
+        <MemoryRouter initialEntries={["/launch"]}>
+          <Routes>
+            <Route path="/launch" element={<Launch />} />
+            {/* The real page, not a stub: the question is whether what the
+                launcher hands back is a run this surface can watch. */}
+            <Route path="/runs/:runId" element={<RunDetailPage />} />
+          </Routes>
+        </MemoryRouter>
+      </QueryClientProvider>,
+    );
+
+    await armGate(user);
+    await user.click(screen.getByTestId("safety-key"));
+
+    expect(await screen.findByTestId("live-window")).toBeInTheDocument();
+    expect(onlySocket().url).toBe(
+      `/api/runs/${encodeURIComponent(RUN_ID_RUNNING)}/events`,
+    );
+    // And no verdict is demanded of an artifact that does not exist yet.
+    expect(screen.getByTestId("gate-banner-pending")).toBeInTheDocument();
   });
 
   it("renders a refused launch with a glyph, not colour alone", async () => {

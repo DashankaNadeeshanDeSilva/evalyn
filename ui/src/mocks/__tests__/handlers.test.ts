@@ -312,8 +312,20 @@ describe("packs and the write-side acknowledgements", () => {
     });
     expect(res.status).toBe(202);
     const body = (await res.json()) as LaunchResponse;
-    // The stem of the artifact that later appears — the id a page subscribes to.
-    expect(body.run_id).toBe(RUN_ID_GATE);
+    // The stem of the artifact that later appears — the id a page subscribes
+    // to. It must name a run that has NOT finished: the id is minted before the
+    // child starts, and a launcher that answered with a terminal run would send
+    // the browser to a page with nothing to watch. This handler used to answer
+    // with the finished RUN_ID_GATE, which is why no test ever mounted the live
+    // window after a launch.
+    const detail = (await (
+      await get(`/api/runs/${body.run_id}`)
+    ).json()) as RunDetail;
+    expect(detail.status).toBe("running");
+    expect(
+      detail.probes,
+      "a run whose artifact does not exist yet cannot have probe rows",
+    ).toEqual([]);
   });
 
   it("answers control with accepted, which is NOT the acknowledgement", async () => {
