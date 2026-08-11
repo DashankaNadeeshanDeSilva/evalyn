@@ -48,6 +48,7 @@ from evalyn.engine.control import (
     RunController,
     early_stopping_supported,
 )
+from evalyn.discovery import run as discovery_run_mod
 from evalyn.engine.run import ProbeResult, RunArtifact, run_gate
 from evalyn.targets.loader import load_pack
 # Task 18's blank list and its `_write_gate_pack` are REUSED, not re-derived:
@@ -936,3 +937,363 @@ def test_the_early_stopping_seam_exists_in_the_pinned_version():
     """A live check against the version actually installed, so a bad bump is
     caught here rather than by a pause button that silently does nothing."""
     assert early_stopping_supported() is True
+
+
+# ==========================================================================
+# 12. FIX ROUND 1 — the wiring itself, which nothing used to test
+#
+# Review findings I1/I2/I3. The control channel worked end-to-end, but every
+# test drove it by passing a controller straight to `run_gate` / `run_compare`
+# / `run_session`, so the seam the COCKPIT uses — CLI flag to engine argument —
+# was invisible: deleting `controller=controller` from `cli.gate`, or replacing
+# compare's and discover's `_open_control` with `controller = None`, left the
+# whole suite green. On 2026-08-14 that argument is the Pause button.
+# ==========================================================================
+
+class _Sentinel(RuntimeError):
+    """Raised by the recorders below, so the CLI unwinds after recording."""
+
+
+def _cli(app_args, monkeypatch, tmp_path):
+    from typer.testing import CliRunner
+
+    from evalyn.cli import app
+
+    monkeypatch.chdir(tmp_path)
+    return CliRunner().invoke(app, app_args)
+
+
+@pytest.fixture
+def compare_cli_pack(tmp_path):
+    """A rubric pack plus two artifacts on disk — enough for `compare` to run."""
+    from evalyn.engine.run import pack_fingerprint
+
+    d = tmp_path / "cmppack"
+    (d / "probes").mkdir(parents=True)
+    (d / "rubrics").mkdir()
+    (d / "target.yaml").write_text(
+        "name: cmp\nsessions:\n  open: {method: POST, path: /session}\n"
+        "  message: {method: POST, path: /chat}\n"
+        "env: {base_url: http://localhost:8899}\n"
+        "allowlist: [http://localhost:8899]\n")
+    (d / "rubrics" / "tone.md").write_text("# Tone rubric\n## Calm\nStays calm.\n")
+    (d / "probes" / "p.yaml").write_text(
+        "- id: r1\n  category: chat\n  turns: [hi]\n  checks:\n"
+        "    - { type: rubric, rubric: tone, required: true }\n")
+    pack = load_pack(str(d))
+    paths = []
+    for i, created in enumerate(("2026-08-01T00:00:00+00:00",
+                                 "2026-08-02T00:00:00+00:00")):
+        art = RunArtifact(
+            pack_name="cmp", pack_hash=pack_fingerprint(pack),
+            judge_model="mockllm/model", created_at=created,
+            probes=[ProbeResult(
+                id="r1", category="chat", kind="regression",
+                safety_critical=False, samples=1, trials=1,
+                trial_records=[{"epoch": 0, "transcript": "User: hi",
+                                "session_seconds": 1.0,
+                                "invariant_failures": 0}])],
+            log_path="runs/logs")
+        p = tmp_path / f"side{i}.json"
+        p.write_text(json.dumps(art.to_dict()))
+        paths.append(str(p))
+    return d, paths
+
+
+def _gate_argv(pack_dir, tmp_path):
+    return ["gate", "--target", str(pack_dir), "--out-dir", str(tmp_path / "runs"),
+            "--baseline", str(tmp_path / "none.json")]
+
+
+def _compare_argv(pack_dir, sides, tmp_path):
+    return ["compare", "--target", str(pack_dir), "--a", sides[0], "--b", sides[1],
+            "--out-dir", str(tmp_path / "runs"), "--allow-uncalibrated",
+            "--rubric-judge-model", "openai/gpt-4o"]
+
+
+def _discover_argv(pack_dir, tmp_path):
+    return ["discover", "--target", str(pack_dir), "--out-dir",
+            str(tmp_path / "runs"), "--objective", "prompt-injection-bypass",
+            "--staging-dir", str(tmp_path / "staging"),
+            "--agent-model", "openai/gpt-5-mini"]
+
+
+@pytest.fixture
+def cli_seam(request, tmp_path, monkeypatch, cli_pack, compare_cli_pack,
+             discover_cli_pack):
+    """`(argv, install_recorder)` for one mode.
+
+    `install_recorder` patches the ONE engine entry point that mode's CLI calls
+    and returns the list its keyword arguments land in — so the assertion is
+    about what the CLI actually handed over, not about what it constructed.
+    """
+    mode = request.param
+    cmp_dir, sides = compare_cli_pack
+
+    def _install(target_module, name, *, is_async):
+        calls = []
+
+        if is_async:
+            async def _rec(*a, **kw):
+                calls.append(kw)
+                raise _Sentinel(name)
+        else:
+            def _rec(*a, **kw):
+                calls.append(kw)
+                raise _Sentinel(name)
+
+        monkeypatch.setattr(target_module, name, _rec)
+        return calls
+
+    if mode == "gate":
+        from evalyn.engine import run as run_mod
+        return (_gate_argv(cli_pack, tmp_path),
+                lambda: _install(run_mod, "run_gate", is_async=False))
+    if mode == "compare":
+        from evalyn.engine import compare as cmp_mod
+        return (_compare_argv(cmp_dir, sides, tmp_path),
+                lambda: _install(cmp_mod, "run_compare", is_async=True))
+    from evalyn.discovery import run as drun
+    return (_discover_argv(discover_cli_pack, tmp_path),
+            lambda: _install(drun, "run_discovery", is_async=True))
+
+
+@pytest.mark.parametrize("cli_seam", ["gate", "compare", "discover"],
+                         indirect=True)
+def test_the_cli_hands_its_controller_to_the_engine(cli_seam, tmp_path,
+                                                    monkeypatch):
+    """I1. The seam the cockpit's Pause button travels down.
+
+    Both halves matter and neither alone is worth anything: WITHOUT `--control`
+    the engine must receive `None` (inertness), and WITH it the engine must
+    receive the object — a controller that is constructed and then not passed is
+    a stop button wired to nothing, which is exactly the state three separate
+    one-line deletions left the suite green in.
+    """
+    argv, install = cli_seam
+
+    calls = install()
+    _cli(argv, monkeypatch, tmp_path)
+    assert calls, "the CLI never reached the engine entry point at all"
+    assert calls[0].get("controller") is None, (
+        "a run with no --control was handed a controller")
+
+    calls = install()
+    _cli([*argv, "--control"], monkeypatch, tmp_path)
+    assert calls, "the CLI never reached the engine entry point at all"
+    assert calls[0].get("controller") is not None, (
+        "--control constructed a controller and then did not hand it over — "
+        "the stop button is wired to nothing")
+
+
+def test_a_control_file_cancel_stops_a_real_gate_cli_run(cli_pack, tmp_path,
+                                                          monkeypatch):
+    """I1, end to end and with nothing patched: the demo path.
+
+    The cancel is written to the DERIVED sidecar path before the run starts —
+    the same file the cockpit's server writes — and the run is a real
+    `evalyn gate --control` against the toy target.
+    """
+    from evalyn.engine.run import new_run_id
+    from evalyn.ui.paths import control_path
+
+    runs = tmp_path / "runs"
+    runs.mkdir()
+    rid = new_run_id("evpack")
+    monkeypatch.setenv("EVALYN_RUN_ID", rid)
+    cp = control_path(runs / f"{rid}.json")
+    cp.write_text(json.dumps({"action": "cancel"}))
+
+    result = _cli([*_gate_argv(cli_pack, tmp_path), "--control"], monkeypatch,
+                  tmp_path)
+
+    assert result.exit_code == 3, result.output
+    written = json.loads((runs / f"{rid}.json").read_text())
+    assert written["cancelled"] is True
+    assert all(p["trials"] == 0 for p in written["probes"]), (
+        "the cancel never reached the scheduler — every probe still ran")
+
+
+@pytest.mark.parametrize("mode", ["compare", "discover"])
+def test_the_cli_turns_a_RunCancelled_into_exit_3(mode, tmp_path, monkeypatch,
+                                                   compare_cli_pack,
+                                                   discover_cli_pack):
+    """I1. `gate` reports a cancel through `RunArtifact.cancelled`; compare and
+    discover have nothing to return, so they raise — and the two `except
+    RunCancelled` arms are what turn that into the run-invalid exit code rather
+    than the setup-error 2, which would tell CI to fix its config and retry."""
+    cmp_dir, sides = compare_cli_pack
+
+    async def _cancel(*a, **kw):
+        raise RunCancelled("stopped at pair:r1#tone")
+
+    if mode == "compare":
+        from evalyn.engine import compare as cmp_mod
+        monkeypatch.setattr(cmp_mod, "run_compare", _cancel)
+        argv = _compare_argv(cmp_dir, sides, tmp_path)
+    else:
+        from evalyn.discovery import run as drun
+        monkeypatch.setattr(drun, "run_discovery", _cancel)
+        argv = _discover_argv(discover_cli_pack, tmp_path)
+
+    result = _cli([*argv, "--control"], monkeypatch, tmp_path)
+    assert result.exit_code == 3, result.output
+    assert "CANCELLED" in result.output
+
+
+# --------------------------------------------------------------------------
+# I2 / I3 — the two discover cancel paths, neither of which had a test
+# --------------------------------------------------------------------------
+
+@pytest.fixture
+def discover_cli_pack(tmp_path, monkeypatch, toy_target, live_pack_dir):
+    from tests.engine.test_events_noop import MINIPACK
+
+    monkeypatch.setenv("EVALYN_TARGET_URL", toy_target)
+    return live_pack_dir(MINIPACK, name="discover-cli-pack")
+
+
+@pytest.fixture
+def discover_run_pack(tmp_path, monkeypatch, toy_target, live_pack_dir):
+    """The minipack, live, with the toy target's leak planted every time."""
+    import examples.toy_target as toy
+    from tests.engine.test_events_noop import MINIPACK
+
+    monkeypatch.setenv("EVALYN_TARGET_URL", toy_target)
+    monkeypatch.setattr(toy, "LEAK_PROBABILITY", 1.0)
+    return load_pack(live_pack_dir(MINIPACK, name="discover-run-pack"))
+
+
+class _CancelOnEvent:
+    """A sink that writes the cancel request the instant a named event lands.
+
+    This is how the replay-boundary checkpoint is reached DETERMINISTICALLY:
+    `finding.staged` is emitted immediately before it, so the cancel is on disk
+    by the time the checkpoint polls — no sleeps, no races, and a real
+    `RunController` reading a real control file rather than a stub.
+    """
+
+    def __init__(self, trigger: str):
+        self.trigger = trigger
+        self.controller: RunController | None = None
+        self.names: list[str] = []
+        self.events: list[tuple[str, dict]] = []
+
+    def emit(self, type, /, **fields):  # noqa: A002 — the wire name
+        self.names.append(type)
+        self.events.append((type, fields))
+        if type == self.trigger and self.controller is not None:
+            self.controller.request("cancel")
+
+    def close(self):
+        return None
+
+
+@pytest.mark.filterwarnings("ignore:no price entry")
+async def test_a_cancel_at_the_replay_boundary_stops_a_discovery_run(
+        discover_run_pack, tmp_path, monkeypatch, ctl_path):
+    """I2. Until the in-hunt seam existed this was the WHOLE discover cancel
+    feature, and nothing guarded it: deleting the checkpoint and the terminal
+    `cancelled` branch from `discovery/run.py` left the suite green.
+
+    Each replay is a whole eval, so this boundary is where a cancel arriving
+    mid-run actually saves money — and the R8-5 durability wrap must still
+    write the partial artifact, because that record is the only evidence of
+    what the run already spent.
+    """
+    from tests.engine.test_events_noop import (
+        _confirming_script,
+        _discovery_cfg,
+        _scripted_brain,
+    )
+
+    _scripted_brain(monkeypatch, _confirming_script())
+    sink = _CancelOnEvent("finding.staged")
+    c = _controller(ctl_path, sink)
+    sink.controller = c
+
+    with pytest.raises(RunCancelled, match="replay:"):
+        await discovery_run_mod.run_discovery(
+            discover_run_pack, _discovery_cfg(tmp_path, staging_dir=None),
+            sink=sink, controller=c)
+
+    # The checkpoint is BEFORE `_replay_finding`, so no replay ever ran.
+    assert "finding.staged" in sink.names
+    assert "replay.result" not in sink.names
+    # ...the partial record survived, and says it is partial...
+    [written] = (tmp_path / "runs").glob("*-discover.json")
+    record = json.loads(written.read_text())
+    assert record["partial"] is True
+    # ...and the terminal event says cancelled, not error: a cockpit must not
+    # paint an operator's own stop button red.
+    assert [f["status"] for n, f in sink.events if n == "run.finished"] \
+        == ["cancelled"]
+
+
+@pytest.mark.filterwarnings("ignore:no price entry")
+async def test_a_pre_cancelled_discovery_run_stops_inside_the_hunt(
+        discover_run_pack, tmp_path, monkeypatch, ctl_path):
+    """I3. The in-hunt checkpoint, reachable at last.
+
+    `loop._drive`'s BOUNDS-FIRST checkpoint existed and worked from the day it
+    was written, but `run_discovery` had no way to hand a controller to it —
+    the seam runs through `build_discovery_task` and `discovery_solver`, and
+    neither took one. This test only passes when both do.
+
+    It is also what proves the checkpoint sits with the OTHER bounds rather than
+    after them: the agent is never asked to reason, so a cancel that lands
+    before a hunt starts costs nothing at all.
+    """
+    from tests.engine.test_events_noop import (
+        _confirming_script,
+        _discovery_cfg,
+        _scripted_brain,
+    )
+
+    _scripted_brain(monkeypatch, _confirming_script())
+    sink = _RecordingSink()
+    c = _controller(ctl_path, sink)
+    c.request("cancel")
+
+    art = await discovery_run_mod.run_discovery(
+        discover_run_pack, _discovery_cfg(tmp_path, staging_dir=None),
+        sink=sink, controller=c)
+
+    # Nothing was hunted: no step was taken, so nothing was spent.
+    assert "agent.step" not in sink.names
+    assert "finding.staged" not in sink.names
+    assert art.live_spend_usd == 0.0
+    # A cancelled hunt is NOT an error — `error_count >= sessions_total` is what
+    # the CLI reads as "every hunt failed" and exits 3 on.
+    assert art.sessions_total > 0
+    assert art.error_count == 0
+    assert art.confirmed_count == 0
+    # ...but the run did not do the work it set out to do, and says so.
+    assert art.partial is True
+    assert "control.cancelled" in sink.names
+
+
+def test_the_discovery_seam_carries_the_controller_all_the_way_down():
+    """The two arguments I3 added, pinned by signature so a refactor that drops
+    one is a red here rather than a stop button that silently stops nothing.
+
+    Deliberately alongside the behavioural test above, not instead of it: a
+    signature check cannot see an argument that is accepted and then dropped on
+    the floor, which is the exact defect this round is about.
+    """
+    import inspect as _inspect
+
+    from evalyn.discovery.loop import run_session
+    from evalyn.discovery.solver import discovery_solver
+    from evalyn.discovery.task_builder import build_discovery_task
+    from evalyn.engine.events import NULL_SINK
+
+    for fn in (build_discovery_task, discovery_solver, run_session,
+               discovery_run_mod.run_discovery):
+        params = _inspect.signature(fn).parameters
+        assert "controller" in params, f"{fn.__qualname__} takes no controller"
+        assert params["controller"].default is None
+        # ...and the Task 18 pin is untouched: adding a parameter must not have
+        # disturbed the sink's default at any of these entry points.
+        if "sink" in params:
+            assert params["sink"].default is NULL_SINK
