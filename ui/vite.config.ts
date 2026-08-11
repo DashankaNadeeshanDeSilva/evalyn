@@ -8,9 +8,19 @@ import { defineConfig } from "vitest/config";
  * built bundle is **committed to the repository** and shipped inside the Python
  * wheel, so every byte of build output is code review surface:
  *
- * - `base: "./"` — the SPA is served from a `StaticFiles` mount under whatever
- *   prefix `evalyn ui` picks. Absolute `/assets/...` URLs would 404 the moment
- *   the mount is not the server root.
+ * - `base: "/"` — **absolute asset URLs, and this is load-bearing.**
+ *   `server.py` mounts the bundle's assets at `/assets` on the **server root**
+ *   (`app.mount("/assets", StaticFiles(...))`), and `evalyn ui` binds
+ *   `127.0.0.1` at root with no configurable prefix, so an absolute path is
+ *   always correct.
+ *
+ *   This setting was `"./"`, justified by a mount prefix that does not exist.
+ *   A relative base breaks **every route deeper than `/`**: the browser
+ *   resolves `./assets/index-*.js` against the current path, so `/runs/<id>`
+ *   asks for `/runs/assets/index-*.js`, the SPA catch-all answers with HTML,
+ *   and the page renders blank. It never reproduced under `npm run dev`
+ *   because Vite serves assets from the root in dev — which is exactly how a
+ *   comment gets trusted beyond its reach for four tasks.
  * - `build.sourcemap: false` — sourcemaps are the single biggest source of
  *   cross-machine diff noise in a committed bundle (absolute paths, differing
  *   line offsets). A reviewer must be able to read the diff.
@@ -24,7 +34,7 @@ import { defineConfig } from "vitest/config";
  * has no business inside a released wheel.
  */
 export default defineConfig(({ command }) => ({
-  base: "./",
+  base: "/",
   plugins: [react()],
   publicDir: command === "serve" ? "public" : false,
   build: {

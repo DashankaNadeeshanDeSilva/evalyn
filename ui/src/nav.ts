@@ -27,8 +27,7 @@ export interface NavDestination {
 
 export const NAV_DESTINATIONS: readonly NavDestination[] = [
   { path: "/runs", label: "Runs", shipped: true },
-  // Launch spends real money — it arrives with the launch console (Task 20).
-  { path: "/launch", label: "Launch", shipped: false },
+  { path: "/launch", label: "Launch", shipped: true },
   { path: "/discoveries", label: "Discoveries", shipped: false },
   { path: "/compare", label: "Compare", shipped: false },
   { path: "/trends", label: "Trends", shipped: false },

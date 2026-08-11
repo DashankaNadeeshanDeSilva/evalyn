@@ -43,6 +43,8 @@ export const RUN_ID_GATE = "20260804T081544953468-53e4125b-example";
 export const RUN_ID_LEGACY = "20260723T080347-example";
 export const RUN_ID_DISCOVER = "20260805T101112000000-1a2b3c4d-example-discover";
 export const RUN_ID_COMPARE = "20260806T091011000000-9f8e7d6c-example-compare";
+/** A run whose process is still attached — no artifact exists for it yet. */
+export const RUN_ID_RUNNING = "20260811T120000000000-7c3f9a10-example";
 
 const CAPS_FULL: Capabilities = {
   transcripts: true,
@@ -429,11 +431,38 @@ export const DETAIL_COMPARE: RunDetail = {
   compare: SCOREBOARD,
 };
 
+/**
+ * A run with a process still attached to it.
+ *
+ * **Deliberately absent from `RUN_SUMMARIES`**, and that is faithful rather
+ * than a shortcut: `run_id` is minted before the child starts, so a run reached
+ * straight after a launch has no artifact on disk and nothing for the index to
+ * list. Reaching it by URL is exactly how the launch console arrives — it
+ * navigates on the 202, before any file exists.
+ *
+ * `probes` is empty and every capability is false for the same reason: there is
+ * no artifact yet to have recorded them. The live readout window is what
+ * carries this run's state, and `GET /api/runs/{id}/gate` must never be asked
+ * about it.
+ */
+export const DETAIL_RUNNING: RunDetail = {
+  ...DETAIL_GATE,
+  run_id: RUN_ID_RUNNING,
+  created_at: "2026-08-11T12:00:00+00:00",
+  status: "running",
+  judge_usd: null,
+  verdict_hint: null,
+  capabilities: { transcripts: false, trial_records: false, hard_metrics: false },
+  total_unsure_trials: null,
+  probes: [],
+};
+
 export const RUN_DETAILS: Record<string, RunDetail> = {
   [RUN_ID_COMPARE]: DETAIL_COMPARE,
   [RUN_ID_DISCOVER]: DETAIL_DISCOVER,
   [RUN_ID_GATE]: DETAIL_GATE,
   [RUN_ID_LEGACY]: DETAIL_LEGACY,
+  [RUN_ID_RUNNING]: DETAIL_RUNNING,
 };
 
 export const GATE_VERDICT: GateVerdict = {

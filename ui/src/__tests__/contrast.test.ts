@@ -293,6 +293,177 @@ const SURFACES: Record<string, Surface> = {
     ],
   },
   "components/InstrumentIcon.tsx": { inherits: "chassis-25", sets: [], inks: [] },
+  "components/RedactedChip.tsx": {
+    inherits: "chassis-25",
+    sets: [],
+    inks: [{ ink: "chassis-600", role: "text" }],
+  },
+  "components/VerdictBadge.tsx": {
+    inherits: "chassis-25",
+    sets: [],
+    inks: [
+      { ink: "status-passed", role: "text" },
+      { ink: "status-gate_failed", role: "text" },
+      {
+        ink: "chassis-600",
+        role: "text",
+        // Two renditions share it: `abstained` and `unscored`, neither of which
+        // is a negative reading and so neither of which may take the failure
+        // hue. Also the de-emphasised `tier N` suffix.
+        note: "the non-answers, and the tier suffix",
+      },
+    ],
+  },
+  "components/CheckEvidence.tsx": {
+    inherits: "chassis-25",
+    sets: [],
+    inks: [
+      { ink: "chassis-900", role: "text" },
+      { ink: "chassis-700", role: "text" },
+      { ink: "chassis-600", role: "text" },
+    ],
+  },
+  "components/CostChip.tsx": {
+    inherits: "chassis-25",
+    sets: [],
+    inks: [
+      { ink: "chassis-900", role: "text" },
+      { ink: "chassis-600", role: "text" },
+    ],
+  },
+  "components/ScenarioTable.tsx": {
+    inherits: "chassis-25",
+    // No tinted grounds, for the same reason `RunsTable` has none: one ground
+    // means every ink here is measured against the one surface it can sit on.
+    sets: [],
+    inks: [
+      { ink: "chassis-900", role: "text" },
+      { ink: "chassis-700", role: "text" },
+      { ink: "chassis-600", role: "text" },
+      {
+        ink: "chassis-500",
+        role: "disabled",
+        note: "the trial key an artifact without trial records cannot open",
+      },
+    ],
+  },
+  /**
+   * The one component on this surface that establishes grounds of its own, and
+   * therefore the one where the file-granularity rule bites.
+   *
+   * `chassis-200` is the neutral marked span; the failure wash is 14% of the
+   * gate-failure hue over the face. Both inks clear AA on all three grounds —
+   * `chassis-900` at 16.37 / 12.90 / 12.94 and `chassis-600` at 5.98 / 4.71 /
+   * 4.72. **No status ink may enter this file**: `status-passed` measures 3.81
+   * on `chassis-200`, so a "passing evidence" rendition in the obvious colour
+   * would fail. The tone travels as a word instead, which it had to anyway.
+   */
+  "components/TranscriptViewer.tsx": {
+    inherits: "chassis-25",
+    sets: ["chassis-200", "status-gate_failed/0.14"],
+    inks: [
+      { ink: "chassis-900", role: "text" },
+      { ink: "chassis-600", role: "text" },
+    ],
+  },
+  /**
+   * The one dark field on the surface, and the three files that live on it.
+   *
+   * `inherits` names the **inset window** rather than the page's face, and that
+   * is a deliberate, reviewed declaration rather than a way around the
+   * threshold. `LiveBanner` paints the ground across its own full extent, and
+   * the other two are rendered by it and nothing else — so no ink in any of
+   * these files ever meets `chassis-25`. Declaring the pale face here would
+   * measure a pairing that never renders and miss every pairing that does.
+   *
+   * **This is the case the guard's own docstring says it cannot see.** The
+   * numbers were computed by hand with the formula at the top of this file and
+   * are recorded in each component; the entries below then hold them, which is
+   * what stops the next edit from re-introducing an ink measured against the
+   * wrong ground:
+   *
+   *   inset-ink   on the inset window   15.21   readings, alarms, key labels
+   *   chassis-400 on the inset window    7.58   legends and secondary prose
+   *
+   * Every light-ground habit inverts here and the refusals are the point:
+   * chassis-600 — the pale face's secondary prose — measures **2.92** on this
+   * ground, chassis-500 measures 4.33, and all nine status hues fail
+   * (status-passed is the best of them at 3.60). So `Flatline`, `CostChip`,
+   * `RunStatusChip` and `VerdictBadge` must never be rendered inside the
+   * window; each carries one of those inks and each would pass this guard while
+   * being unreadable on screen.
+   */
+  "components/LiveBanner.tsx": {
+    inherits: "inset",
+    sets: ["inset"],
+    inks: [
+      { ink: "inset-ink", role: "text" },
+      { ink: "chassis-400", role: "text" },
+    ],
+  },
+  "components/ControlButtons.tsx": {
+    inherits: "inset",
+    // No ground of its own: the rationed orange is a filled key that lives in
+    // `SafetyKey`, and the secondary keys are identified by an engraved rule.
+    sets: [],
+    inks: [
+      { ink: "inset-ink", role: "text" },
+      { ink: "chassis-400", role: "text" },
+    ],
+  },
+  /**
+   * The rationed orange, and the only file permitted to name it.
+   *
+   * `inherits` is its own resting fill for the same reason as above, and more
+   * strongly: this key is rendered on the pale chassis *and* inside the dark
+   * inset window, paints an opaque ground in both, and therefore has no single
+   * inherited ground to declare. Measured by hand: safety-ink on the orange is
+   * 6.05 (white on it is 2.36, which is why the ink is near-black), and the
+   * key's own edge measures 6.44 against the inset window and 2.71 against the
+   * pale face — the second is why the key always carries a word and a glyph and
+   * is never identified by its fill alone.
+   */
+  "components/SafetyKey.tsx": {
+    inherits: "safety",
+    sets: ["safety", "chassis-200"],
+    inks: [
+      { ink: "safety-ink", role: "text" },
+      {
+        ink: "chassis-500",
+        role: "disabled",
+        note:
+          "the launch key's label while the type-to-confirm interlock is open; " +
+          "3.17 on its own disabled ground, and it never renders on the orange",
+      },
+    ],
+  },
+  "pages/Launch.tsx": {
+    inherits: "chassis-25",
+    // The two form fields, which carry the face's own colour rather than the
+    // user agent's white. Same ground as the page, so nothing narrows.
+    sets: ["chassis-25"],
+    inks: [
+      { ink: "chassis-900", role: "text" },
+      { ink: "chassis-700", role: "text" },
+      { ink: "chassis-600", role: "text" },
+      {
+        ink: "chassis-500",
+        role: "disabled",
+        note: "a mode this console cannot launch, with its reason stated beside it",
+      },
+    ],
+  },
+  "pages/GateRunDetail.tsx": {
+    inherits: "chassis-25",
+    sets: [],
+    inks: [
+      { ink: "status-passed", role: "text" },
+      { ink: "status-gate_failed", role: "text" },
+      { ink: "chassis-900", role: "text" },
+      { ink: "chassis-700", role: "text" },
+      { ink: "chassis-600", role: "text" },
+    ],
+  },
   "pages/RunsPage.tsx": {
     inherits: "chassis-25",
     // chassis-100 is the load-more key's hover fill; chassis-50/60 is the
