@@ -8,6 +8,7 @@ import type {
   RunDetail,
   TrialView,
 } from "../api/types";
+import { AllTrialsPanel } from "../components/AllTrialsPanel";
 import { CheckEvidence } from "../components/CheckEvidence";
 import { IconAlert, IconCheck, IconCross } from "../components/InstrumentIcon";
 import { RedactedChip } from "../components/RedactedChip";
@@ -289,7 +290,20 @@ export function GateRunDetail({
   /** A process is still attached: there is no artifact to evaluate a gate on. */
   live?: boolean;
 }) {
+  /**
+   * Two views of the same evidence, and **one selection between them**.
+   *
+   * `selected` is one trial in full; `allProbeId` is every trial of one probe
+   * at a glance. They are mutually exclusive rather than stackable: a single
+   * transcript sitting under seven replies reads as an eighth trial, and the
+   * operator asked one question, not two.
+   */
   const [selected, setSelected] = useState<TrialSelection | null>(null);
+  const [allProbeId, setAllProbeId] = useState<string | null>(null);
+  const allProbe =
+    allProbeId === null
+      ? null
+      : (run.probes.find((probe) => probe.id === allProbeId) ?? null);
   const gate = useQuery({
     queryKey: ["gate", run.run_id],
     enabled: !live,
@@ -334,10 +348,20 @@ export function GateRunDetail({
         probes={run.probes}
         capabilities={run.capabilities}
         selected={selected}
-        onSelect={setSelected}
+        allSelected={allProbeId}
+        onSelect={(selection) => {
+          setAllProbeId(null);
+          setSelected(selection);
+        }}
+        onSelectAll={(probeId) => {
+          setSelected(null);
+          setAllProbeId(probeId);
+        }}
       />
 
-      {selected === null ? null : (
+      {allProbe !== null ? (
+        <AllTrialsPanel runId={run.run_id} probe={allProbe} />
+      ) : selected === null ? null : (
         <TrialPanel runId={run.run_id} selection={selected} />
       )}
     </div>

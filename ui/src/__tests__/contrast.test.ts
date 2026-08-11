@@ -234,6 +234,28 @@ const SURFACES: Record<string, Surface> = {
       },
     ],
   },
+  "components/AllTrialsPanel.tsx": {
+    inherits: "chassis-25",
+    // No ground of its own: seven replies read as one continuous face divided
+    // by engraved rules, so there is exactly one surface to measure against and
+    // the two status inks keep the lightest ground they are allowed to sit on.
+    sets: [],
+    inks: [
+      { ink: "chassis-900", role: "text" },
+      { ink: "chassis-700", role: "text" },
+      { ink: "chassis-600", role: "text" },
+      {
+        ink: "status-gate_failed",
+        role: "text",
+        note: "the deviated mark — beside the word `deviated` and a cross glyph",
+      },
+      {
+        ink: "status-passed",
+        role: "text",
+        note: "the conformed mark — beside the word `conformed` and a check glyph",
+      },
+    ],
+  },
   "components/RunStatusChip.tsx": {
     inherits: "chassis-25",
     sets: [],

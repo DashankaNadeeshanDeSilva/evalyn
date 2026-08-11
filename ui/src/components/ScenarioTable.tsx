@@ -97,16 +97,56 @@ function blockedReason(
   return null;
 }
 
+/**
+ * The one key shape, so `all` and `4` read as the same control.
+ *
+ * A key on a panel: a hard rectangle that snaps between two discrete positions,
+ * with no intermediate rendition. Disabled keys keep their shape so the row
+ * still reads as an instrument with a channel out, rather than as a row that
+ * forgot a control.
+ *
+ * The engraved rule under each key is that key's only boundary, so it is the
+ * graphic that identifies the control and it is measured, by hand — the
+ * contrast guard scans `text-` and `bg-` prefixes only and cannot see a rule set
+ * through the rule variable (ruling R4-24, and this file's own inventory entry
+ * says so).
+ *
+ * On the face at `chassis-25`:
+ *   chassis-900  16.37  the open key, and hover
+ *   chassis-500   4.03  the resting key       (>= 3:1, WCAG 1.4.11)
+ *   chassis-300   1.55  the disabled key
+ *
+ * `chassis-400` (2.30) was the first choice for the resting key and is below the
+ * 3:1 bar for a graphical object, so it is not used. `chassis-300` on a disabled
+ * key is the 1.4.3 exemption for an inactive component, taken deliberately:
+ * reading as unavailable is the whole point, and the reason is carried in text
+ * either way.
+ */
+function keyClass(disabled: boolean, open: boolean): string {
+  return `min-w-[2.25rem] px-2 py-1 text-legend tabular-nums transition-colors duration-state ${
+    disabled
+      ? "cursor-not-allowed text-chassis-500 [--rule:theme(colors.chassis.300)]"
+      : open
+        ? "text-chassis-900 [--rule:theme(colors.chassis.900)]"
+        : "text-chassis-700 hover:text-chassis-900 [--rule:theme(colors.chassis.500)] hover:[--rule:theme(colors.chassis.900)]"
+  } engrave-b`;
+}
+
 function TrialKeys({
   probe,
   capabilities,
   selected,
+  allSelected,
   onSelect,
+  onSelectAll,
 }: {
   probe: ProbeRow;
   capabilities: Capabilities;
   selected: TrialSelection | null;
+  /** The probe whose all-trials panel is open, if any. */
+  allSelected: string | null;
   onSelect: (selection: TrialSelection) => void;
+  onSelectAll: (probeId: string) => void;
 }) {
   const blocked = blockedReason(capabilities, probe);
   // No epoch is invented when none was recorded: the single key that stands in
@@ -116,6 +156,34 @@ function TrialKeys({
 
   return (
     <div className="flex flex-wrap items-center gap-1.5">
+      {/*
+        Leftmost, and first in the tab order, because it is the question asked
+        first: a probe goes red because trials disagreed, and the disagreement
+        is only visible with the trials side by side. The numbered keys after it
+        are the zoom-in.
+
+        Gated on exactly the same `blockedReason` as they are — a panel offered
+        where the capability says no would fire one 404 per trial, and the
+        contract calls that a bug in the caller rather than a state.
+      */}
+      <button
+        type="button"
+        data-testid="all-trials-key"
+        disabled={blocked !== null}
+        aria-pressed={allSelected === probe.id}
+        title={
+          blocked ??
+          `Show all ${probe.trial_epochs.length} trials of ${probe.id} together and compare them`
+        }
+        onClick={() => onSelectAll(probe.id)}
+        className={`${keyClass(blocked !== null, allSelected === probe.id)} uppercase tracking-legend`}
+      >
+        all
+        {blocked === null ? null : (
+          <span className="sr-only">{` — ${blocked}`}</span>
+        )}
+      </button>
+
       {epochs.map((epoch, index) => {
         const isOpen =
           epoch !== null &&
@@ -138,36 +206,7 @@ function TrialKeys({
             onClick={
               epoch === null ? undefined : () => onSelect({ probeId: probe.id, epoch })
             }
-            /*
-             * A key on a panel: a hard rectangle that snaps between two discrete
-             * positions, with no intermediate rendition. Disabled keys keep
-             * their shape so the row still reads as an instrument with a channel
-             * out, rather than as a row that forgot a control.
-             *
-             * The engraved rule under each key is that key's only boundary, so
-             * it is the graphic that identifies the control and it is measured,
-             * by hand — the contrast guard scans `text-` and `bg-` prefixes only
-             * and cannot see a rule set through `--rule` (ruling R4-24, and this
-             * file's own inventory entry says so).
-             *
-             * On the face at `chassis-25`:
-             *   chassis-900  16.37  the open key, and hover
-             *   chassis-500   4.03  the resting key       (>= 3:1, WCAG 1.4.11)
-             *   chassis-300   1.55  the disabled key
-             *
-             * `chassis-400` (2.30) was the first choice for the resting key and
-             * is below the 3:1 bar for a graphical object, so it is not used.
-             * `chassis-300` on a disabled key is the 1.4.3 exemption for an
-             * inactive component, taken deliberately: reading as unavailable is
-             * the whole point, and the reason is carried in text either way.
-             */
-            className={`min-w-[2.25rem] px-2 py-1 text-legend tabular-nums transition-colors duration-state ${
-              disabled
-                ? "cursor-not-allowed text-chassis-500 [--rule:theme(colors.chassis.300)]"
-                : isOpen
-                  ? "text-chassis-900 [--rule:theme(colors.chassis.900)]"
-                  : "text-chassis-700 hover:text-chassis-900 [--rule:theme(colors.chassis.500)] hover:[--rule:theme(colors.chassis.900)]"
-            } engrave-b`}
+            className={keyClass(disabled, isOpen)}
           >
             {epoch === null ? "none" : epoch}
             {blocked === null ? null : (
@@ -186,12 +225,16 @@ function ProbeRowCells({
   probe,
   capabilities,
   selected,
+  allSelected,
   onSelect,
+  onSelectAll,
 }: {
   probe: ProbeRow;
   capabilities: Capabilities;
   selected: TrialSelection | null;
+  allSelected: string | null;
   onSelect: (selection: TrialSelection) => void;
+  onSelectAll: (probeId: string) => void;
 }) {
   return (
     <tr
@@ -247,7 +290,9 @@ function ProbeRowCells({
           probe={probe}
           capabilities={capabilities}
           selected={selected}
+          allSelected={allSelected}
           onSelect={onSelect}
+          onSelectAll={onSelectAll}
         />
       </td>
     </tr>
@@ -258,12 +303,16 @@ export function ScenarioTable({
   probes,
   capabilities,
   selected,
+  allSelected,
   onSelect,
+  onSelectAll,
 }: {
   probes: readonly ProbeRow[];
   capabilities: Capabilities;
   selected: TrialSelection | null;
+  allSelected: string | null;
   onSelect: (selection: TrialSelection) => void;
+  onSelectAll: (probeId: string) => void;
 }) {
   if (probes.length === 0) {
     return (
@@ -310,7 +359,9 @@ export function ScenarioTable({
               probe={probe}
               capabilities={capabilities}
               selected={selected}
+              allSelected={allSelected}
               onSelect={onSelect}
+              onSelectAll={onSelectAll}
             />
           ))}
         </tbody>
