@@ -28,14 +28,16 @@ import type {
   GateVerdict,
   HealthResponse,
   MetaResponse,
+  PackAxes,
+  PackRow,
   RunDetail,
   RunSummary,
   Scoreboard,
   TrendSeries,
   TrialView,
   TrustReport,
+  ValidationReport,
 } from "../api/types";
-import type { PackAxes, PackRow, ValidationReport } from "../api/provisional";
 
 export const RUN_ID_GATE = "20260804T081544953468-53e4125b-example";
 export const RUN_ID_LEGACY = "20260723T080347-example";
