@@ -53,8 +53,20 @@ import { RunDetailPage } from "../RunDetailPage";
  *    `"tier": 1` as a JSON number; `VerdictBadge` keys a `Record<VerdictTier,…>`
  *    off it, and a number would miss every entry.
  * 6. `checks[].turn` is 1-based and indexes the same turn array the transcript
- *    is built from. An off-by-one here silently annotates the wrong turn, which
- *    no test can catch without the real pairing.
+ *    is built from. **It does not today, and this is measured rather than
+ *    feared**: in `20260803T174149220841-76e25fee-example`, the
+ *    `invariant:no-internal-leak` check says `turn: 1` while its evidence
+ *    `"Internal path"` lives in flattened turn 4 — so `turn` currently indexes
+ *    something else (a sample, or a message pair). Task 7 must either
+ *    reconcile the index against the turn array it emits, or state that the
+ *    field is not a turn index; the viewer will keep reporting these as
+ *    unplaced until it does, which is the correct behaviour but not the useful
+ *    one.
+ * 9. `place()` matches the **first** occurrence of an evidence string in a
+ *    turn. When a span repeats, the mark can land on the wrong instance. This
+ *    is not closable client-side — it needs server-supplied character offsets
+ *    alongside `evidence` — so it is recorded here rather than papered over
+ *    with a heuristic. Parked by ruling for the final whole-branch review.
  * 7. `GET /api/packs` and `GET /api/packs/{pack_id}/axes` — the ceiling
  *    `CostChip` reads. The twincore pack is very likely **not** in the
  *    `--target` allowlist, so confirm the chip states the ceiling is unknown
@@ -424,6 +436,93 @@ describe("the transcript is the payload", () => {
     expect(
       within(checks[0]!).getByTestId("verdict-badge").dataset["tier"],
     ).toBe("1");
+  });
+});
+
+/**
+ * The three branches that carry no data.
+ *
+ * Commit `d9d7ca7` on this branch is "put a test under each error-state alarm
+ * glyph", and this task added two more alarm glyphs without one. Both error
+ * branches and the empty-probe branch could be deleted with the suite still
+ * green at 211/211 — proven by replacing each with `null` — which means a
+ * regression that drops them shows the identity header and then a silent blank
+ * where the verdict belongs. Product Principle 3 is degrade **visibly**.
+ */
+describe("the branches that carry no data are visible, not blank", () => {
+  it("says the gate could not be evaluated, with a glyph, and keeps the rows readable", async () => {
+    // The shape Task 7 will actually return for an artifact it cannot parse.
+    server.use(
+      http.get("/api/runs/:runId/gate", () =>
+        HttpResponse.json(
+          {
+            error: {
+              code: "unreadable_artifact",
+              message: "the artifact could not be parsed",
+              detail: null,
+            },
+          },
+          { status: 500 },
+        ),
+      ),
+    );
+    renderPage(RUN_ID_GATE);
+
+    const failure = await screen.findByTestId("gate-banner-error");
+    expect(
+      failure.querySelector("svg"),
+      "the gate-error branch renders without a glyph — colour and word alone",
+    ).not.toBeNull();
+    expect(failure.textContent).toContain("unreadable_artifact");
+    expect(failure.textContent).toContain("could not be parsed");
+    // No verdict may be shown when none was computed.
+    expect(screen.queryByTestId("gate-banner")).toBeNull();
+    // ...and the rest of the page still works, which is what makes this a
+    // degrade rather than a failure.
+    expect(screen.getByTestId("scenario-table")).toBeInTheDocument();
+  });
+
+  it("says the trial record could not be read, with a glyph, inside the panel it belongs to", async () => {
+    const user = userEvent.setup();
+    server.use(
+      http.get("/api/runs/:runId/trials/:probeId/:epoch", () =>
+        HttpResponse.error(),
+      ),
+    );
+    renderPage(RUN_ID_GATE);
+
+    const row = await screen.findByTestId("probe-row-grounding-work-history");
+    await user.click(within(row).getAllByTestId("trial-key")[0]!);
+
+    const panel = await screen.findByTestId("trial-panel");
+    const failure = await within(panel).findByText(
+      /could not reach its server/i,
+    );
+    expect(
+      failure.querySelector("svg"),
+      "the trial-error branch renders without a glyph — colour and word alone",
+    ).not.toBeNull();
+    // The panel still names which trial failed to load, so the operator knows
+    // what they asked for.
+    expect(panel.dataset["epoch"]).toBe("1");
+    expect(panel.textContent).toContain("grounding-work-history");
+    expect(within(panel).queryAllByTestId("transcript-turn")).toHaveLength(0);
+  });
+
+  it("says an artifact records no probe rows rather than showing an empty table", async () => {
+    withDetail({ ...DETAIL_GATE, probes: [] });
+    renderPage(RUN_ID_GATE);
+
+    const empty = await screen.findByTestId("scenario-empty");
+    // "The artifact's own content" is a different fact from "the read failed",
+    // and an empty table frame states neither.
+    expect(empty.textContent).toContain("records no probe rows");
+    expect(screen.queryByTestId("scenario-table")).toBeNull();
+    // The verdict does not depend on the rows, so it is still shown. Awaited
+    // rather than read synchronously: the empty-rows branch renders from the
+    // run detail, which resolves before the separate gate query does.
+    const banner = await screen.findByTestId("gate-banner");
+    expect(banner.dataset["verdict"]).toBe("fail");
   });
 });
 
