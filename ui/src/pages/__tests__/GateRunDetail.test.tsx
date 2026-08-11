@@ -541,7 +541,11 @@ describe("the cost chip", () => {
   it("says the ceiling is unknown rather than inventing one", async () => {
     // The real twincore pack is not in the `--target` allowlist, so this is the
     // demo's actual case, not a hypothetical.
-    server.use(http.get("/api/packs", () => HttpResponse.json([])));
+    server.use(
+      http.get("/api/packs", () =>
+        HttpResponse.json({ items: [], next_cursor: null }),
+      ),
+    );
     renderPage(RUN_ID_GATE);
 
     const chip = await screen.findByTestId("cost-chip");

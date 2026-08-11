@@ -1,7 +1,7 @@
 import { useQuery } from "@tanstack/react-query";
 
 import { apiGet } from "../api/client";
-import type { PackAxes, PackRow } from "../api/provisional";
+import type { PackAxes, PackListPage } from "../api/types";
 import { formatUsd } from "../format";
 import { Flatline } from "./Flatline";
 
@@ -46,13 +46,13 @@ export function CostChip({
   // pure noise.
   const packs = useQuery({
     queryKey: ["packs"],
-    queryFn: () => apiGet<PackRow[]>("/packs"),
+    queryFn: () => apiGet<PackListPage>("/packs"),
     staleTime: Infinity,
   });
   const pack =
     packName === null
       ? undefined
-      : packs.data?.find((row) => row.name === packName);
+      : packs.data?.items.find((row) => row.name === packName);
 
   const axes = useQuery({
     queryKey: ["pack-axes", pack?.id ?? null],
