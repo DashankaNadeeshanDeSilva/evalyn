@@ -11,7 +11,7 @@ import {
   onlySocket,
   useFakeEventSource,
 } from "../../test/fakeEventSource";
-import { LiveRunPanel } from "../LiveRunPanel";
+import { isLive, LiveRunPanel } from "../LiveRunPanel";
 
 /**
  * The seam: a real socket's events, folded into the one inset window.
@@ -35,7 +35,7 @@ useFakeEventSource();
 function renderPanel(status: RunStatus) {
   return render(
     <QueryClientProvider client={createQueryClient()}>
-      <LiveRunPanel runId={RUN_ID_GATE} status={status} />
+      <LiveRunPanel runId={RUN_ID_GATE} status={status} live={isLive(status)} />
     </QueryClientProvider>,
   );
 }
@@ -120,7 +120,9 @@ describe("the live run panel", () => {
     socket().emit(1, "run.finished", { run_id: RUN_ID_GATE, exit_code: 0 });
     view.rerender(
       <QueryClientProvider client={createQueryClient()}>
-        <LiveRunPanel runId={RUN_ID_GATE} status="passed" />
+        {/* The page's own signal has flipped, exactly as the refetch flips it.
+            The window must survive it; only its spend reading stands down. */}
+        <LiveRunPanel runId={RUN_ID_GATE} status="passed" live={false} />
       </QueryClientProvider>,
     );
 

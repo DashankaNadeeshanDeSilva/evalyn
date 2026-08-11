@@ -24,15 +24,26 @@ import { LiveBanner } from "./LiveBanner";
  * unconditionally and decides for itself. `useRunEvents` opens no socket when
  * disabled, so a run that finished last week costs one render and nothing else.
  *
- * ## Why "is this live" is decided once
+ * ## Two questions, not two answers to one question
  *
- * The surface brief: the window "appears only when something is actually
- * running or has just finished". Both halves matter. If the decision were
- * re-read on every render, the window would **vanish at the exact moment the
- * run ended** — the operator would watch a run finish and lose the readout and
- * the exit code in the same frame, because the refetch below flips the status
- * from `running` to `passed`. So the decision is taken from the first status
- * this page ever saw and then held.
+ * There are genuinely two things to know, and conflating them is what shipped a
+ * bug:
+ *
+ * - **`live`** — is a process attached *right now*? It comes from the caller,
+ *   off the same `run.status` the page reads, and it decides the one thing two
+ *   components can both do: report spend. One value, one render, so the chip
+ *   and the window can never both show a figure and can never both hide one.
+ * - **`watched`** — did this page ever see one? Latched at mount, because the
+ *   surface brief's window appears "when something is actually running **or has
+ *   just finished**". Re-reading it would make the window vanish in the very
+ *   frame the run ended, taking the exit code with it.
+ *
+ * The first version had `live` latched here and recomputed on the page. The
+ * moment a run finished, the refetch flipped the page's copy to `false` while
+ * this one stayed `true`, and the artifact's chip came back **beside** the
+ * stream's still-rendered figure — including the case where the artifact had no
+ * spend to report, which put "unrecorded" next to a real number. Nothing here
+ * answers a question the page also answers any more.
  *
  * ## The 202 is not the acknowledgement
  *
@@ -61,21 +72,52 @@ import { LiveBanner } from "./LiveBanner";
  *    is a sentence the operator can act on rather than a bare 409.
  */
 
-/** The two statuses that mean a process is still attached to this run. */
-const LIVE_STATUSES: readonly RunStatus[] = ["running", "paused"];
+/**
+ * The two statuses that mean a process is still attached to this run.
+ *
+ * Exported so there is **one** definition of "live" on the surface. There were
+ * two, and they diverged: this file latched the answer at mount while the run
+ * detail page recomputed it on every refetch, so the moment a run finished the
+ * page believed it was over and this panel believed it was not — and both
+ * rendered a spend figure.
+ */
+export const LIVE_STATUSES: readonly RunStatus[] = ["running", "paused"];
+
+export function isLive(status: RunStatus): boolean {
+  return LIVE_STATUSES.includes(status);
+}
 
 export function LiveRunPanel({
   runId,
   status,
+  live,
   packName = null,
 }: {
   runId: RunId;
   status: RunStatus;
+  /**
+   * Is a process attached **right now**, from the same `run.status` the page
+   * reads? This governs the one question two components can both answer —
+   * who reports spend — and it must be the caller's value, never a second
+   * opinion computed here.
+   */
+  live: boolean;
   /** The run's pack, joined by name to the allowlist to read its ceiling. */
   packName?: string | null;
 }) {
-  const [live] = useState(() => LIVE_STATUSES.includes(status));
-  const state = useRunEvents(runId, { enabled: live });
+  /*
+   * A *different* question from `live`, and the reason both exist.
+   *
+   * `live` asks "is a process attached now"; `watched` asks "did this page ever
+   * see one". Only `watched` may decide whether the window is on screen,
+   * because the surface brief's window appears "when something is actually
+   * running **or has just finished**" — re-reading `live` here would make the
+   * window vanish in the very frame the run ended, taking the exit code with
+   * it. Nothing else on the surface answers this question, so it cannot
+   * diverge from anything the way the old latch did.
+   */
+  const [watched] = useState(() => isLive(status));
+  const state = useRunEvents(runId, { enabled: watched });
   const queryClient = useQueryClient();
   const [requested, setRequested] = useState<ControlAction | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -89,13 +131,13 @@ export function LiveRunPanel({
 
   const written = state.artifactWritten;
   useEffect(() => {
-    if (!live) return;
+    if (!watched) return;
     if (!written && phase !== "finished") return;
     // The artifact is the authority on status, verdict and probe rows;
     // `derive_status` decides it server-side and this client does not
     // reproduce that decision from an exit code.
     void queryClient.invalidateQueries({ queryKey: ["run", runId] });
-  }, [live, written, phase, queryClient, runId]);
+  }, [watched, written, phase, queryClient, runId]);
 
   /*
    * The pack's per-run ceiling, joined by **name** — a run records a
@@ -110,7 +152,7 @@ export function LiveRunPanel({
    */
   const packs = useQuery({
     queryKey: ["packs"],
-    enabled: live,
+    enabled: watched,
     queryFn: () => apiGet<PackListPage>("/packs"),
     staleTime: Infinity,
   });
@@ -153,10 +195,22 @@ export function LiveRunPanel({
     [runId],
   );
 
-  if (!live) return null;
+  if (!watched) return null;
 
   return (
-    <LiveBanner state={state} ceiling={ceiling} ceilingSettled={ceilingSettled}>
+    <LiveBanner
+      state={state}
+      /*
+       * The spend reading belongs to whoever can actually answer for it, and
+       * the artifact is the authority the moment it exists. So the stream
+       * reports spend only while there is no artifact to report it — the same
+       * `live` the page uses to decide whether to render its own chip, so the
+       * two can never both be on screen and can never both be absent.
+       */
+      showSpend={live}
+      ceiling={ceiling}
+      ceilingSettled={ceilingSettled}
+    >
       <ControlButtons
         phase={state.phase}
         requested={requested}

@@ -10,17 +10,10 @@ import {
   IconArrowLeft,
   IconFlatline,
 } from "../components/InstrumentIcon";
-import { LiveRunPanel } from "../components/LiveRunPanel";
+import { isLive, LiveRunPanel } from "../components/LiveRunPanel";
 import { formatUtc } from "../format";
-import { isRunId, type Capabilities, type RunStatus } from "../api/types";
+import { isRunId, type Capabilities } from "../api/types";
 import { GateRunDetail } from "./GateRunDetail";
-
-/**
- * The two statuses that mean a process is still attached. A run in either one
- * has no finished artifact to read a verdict out of, so the page shows the
- * stream instead of asking `evaluate_gate` a question it cannot answer yet.
- */
-const LIVE_STATUSES: readonly RunStatus[] = ["running", "paused"];
 
 /**
  * A single run's identity panel.
@@ -101,7 +94,16 @@ export function RunDetailPage() {
 
   const run = detail.data;
   const caps = run.capabilities;
-  const live = LIVE_STATUSES.includes(run.status);
+  /*
+   * Is a process attached right now? One value, read once per render, handed to
+   * everything that needs it — the panel included. It used to be computed here
+   * *and* latched inside the panel, and the two diverged the instant a run
+   * finished.
+   *
+   * A live run has no finished artifact, which is what it decides: no verdict
+   * to evaluate, and no artifact figure to report spend from.
+   */
+  const live = isLive(run.status);
 
   return (
     <Shell
@@ -117,6 +119,7 @@ export function RunDetailPage() {
         <LiveRunPanel
           runId={run.run_id}
           status={run.status}
+          live={live}
           packName={run.pack_name}
         />
       }
@@ -159,15 +162,23 @@ export function RunDetailPage() {
         {live ? null : (
           <Field label="Judge USD">
             {/*
-              One spend readout per screen, and while a run is live that one is
-              the inset window's — which reads the stream, against the same
-              pack ceiling this chip would show.
+              **Spend is reported by the stream only while there is no artifact
+              to report it, and by the artifact from the moment there is.**
 
-              The field is suppressed rather than left to render because
-              `judge_usd` comes off the artifact, and a live run has no artifact
-              yet: it would flat-line "unrecorded" directly beneath a window
-              reporting real spend. Two readouts disagreeing about money, on the
-              screen carrying the Cancel key, is worse than one readout.
+              That sentence is true in every state, which the one it replaces
+              was not. "One spend readout per screen" was asserted while `live`
+              was recomputed here and separately latched inside the panel — so
+              the instant a run finished, the refetch flipped this copy while
+              the panel's stayed put, and a finished run rendered this chip
+              *and* the window's figure together. In the `judge_usd: null` case
+              that put "unrecorded" beside a real number, on the screen carrying
+              the Cancel key.
+
+              Both sides now key off the same `live`, in the same render. While
+              it holds, the window owns the reading; the moment the refetch
+              brings back a terminal status, this chip does — carrying the same
+              pack ceiling by the same join. There is no instant at which both
+              are on screen, and none at which neither is.
             */}
             <CostChip judgeUsd={run.judge_usd} packName={run.pack_name} />
           </Field>

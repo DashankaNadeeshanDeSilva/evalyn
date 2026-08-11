@@ -106,13 +106,16 @@ const ACTIVITY_WORDS: Partial<Record<EventName, string>> = {
 
 function Reading({
   label,
+  testId,
   children,
 }: {
   label: string;
+  /** Set only where a test must count reporters rather than read a figure. */
+  testId?: string;
   children: ReactNode;
 }) {
   return (
-    <div>
+    <div data-testid={testId}>
       <dt className="text-legend uppercase tracking-legend text-chassis-400">
         {label}
       </dt>
@@ -128,11 +131,21 @@ function Unreported({ what }: { what: string }) {
 
 export function LiveBanner({
   state,
+  showSpend = true,
   ceiling = null,
   ceilingSettled = false,
   children,
 }: {
   state: RunEventsState;
+  /**
+   * Does the stream still own the spend reading?
+   *
+   * It owns it only while there is no artifact to own it instead. Once one
+   * exists, the identity panel's chip reports the authoritative figure and this
+   * reading stands down — one readout on screen at every instant, decided by
+   * one value the caller also uses, never by a second opinion taken here.
+   */
+  showSpend?: boolean;
   /**
    * The pack's own `max_usd_per_run`, or `null` when this build cannot learn it
    * — the run's pack may not be on the running server's allowlist at all.
@@ -182,7 +195,8 @@ export function LiveBanner({
       </div>
 
       <dl className="mt-5 flex flex-wrap gap-x-10 gap-y-4">
-        <Reading label="Judge spend">
+        {showSpend ? (
+        <Reading label="Judge spend" testId="live-spend">
           {state.judgeUsd === null ? (
             // `null` is not `$0.0000`: a run that has not reported spend is not
             // a run that spent nothing, and this window is where an operator
@@ -217,6 +231,7 @@ export function LiveBanner({
             </span>
           )}
         </Reading>
+        ) : null}
 
         <Reading label="Probes scored">
           {/* Derived from the list itself — never a counter that can drift
