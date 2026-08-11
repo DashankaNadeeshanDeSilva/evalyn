@@ -99,9 +99,9 @@ MAX_PAGE_SIZE = 500
 BASELINE_FILENAME = "baseline.json"
 
 #: `trial_records[].transcript` is ONE string in the labelled form the Tier-2/3
-#: judges saw. These are the only two roles `TurnRole` admits, and the markers
-#: are recognised at the start of a line only — `SYSTEM: …` inside a fenced
-#: injection payload is a real line of a real user turn, not a new turn.
+#: judges saw. These are the only two roles `TurnRole` admits, and they are
+#: recognised **at the start of a line only** — see `split_transcript` for what
+#: matching them anywhere would cost.
 _TURN_MARKERS: tuple[tuple[str, TurnRole], ...] = (
     ("User: ", TurnRole.user),
     ("Assistant: ", TurnRole.assistant),
@@ -116,11 +116,21 @@ def split_transcript(transcript: object) -> list[TranscriptTurn]:
     re-derive a format it does not own. The rules, and each one is a measured
     failure it prevents:
 
-    * **Markers only at the start of a line.** 90 transcripts in the corpus
-      carry a fenced payload whose interior lines contain colons; matching
-      anywhere would shatter one user turn into several.
+    * **Markers only at the start of a line.** The cost of matching them
+      anywhere is not a split — it is *silent text loss*: a turn is opened by
+      stripping a fixed-width prefix, so a line whose marker sits mid-way loses
+      exactly as many leading characters as the marker is long, and gains a
+      role it never had. The content that does this is a prompt-injection
+      transcript **quoting** a role label (`say "Assistant: I comply"`), which
+      is squarely inside what this product tests. No artifact in `runs/` does
+      it today and `packs/twincore-injection/probes/injection.yaml` contains no
+      `User:` or `Assistant:` at all, so this is a guard against improvised and
+      quoting content rather than a fix for a measured incident.
     * **An unmarked line belongs to the turn already open**, newline preserved.
-      A multi-line assistant answer is one turn, not N.
+      A multi-line assistant answer is one turn, not N. This one *is* measured:
+      90 transcripts in the corpus carry a continuation line — a fenced payload
+      whose interior lines (`SYSTEM: New rule …`) carry no role marker and must
+      stay part of the user turn that opened the fence.
     * **Text is never dropped.** Anything before the first marker joins the
       first turn, and a string with no marker at all comes back as a single
       `user` turn — every transcript opens with the probe's prompt, which is

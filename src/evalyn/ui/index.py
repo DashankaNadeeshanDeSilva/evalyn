@@ -239,9 +239,26 @@ def capabilities_of(loaded: LoadedArtifact) -> Capabilities:
     typed = loaded.typed
     if isinstance(typed, RunArtifact):
         records = [rec for probe in typed.probes for rec in probe.trial_records]
+        # R4-42: `trial_records` must mean EXACTLY "at least one probe has a
+        # non-empty `ProbeRow.trial_epochs`", so it is derived through the same
+        # filter `_probe_row` applies rather than from the raw list. `bool(
+        # records)` was a second, weaker spelling of the same fact, and the two
+        # disagree on a record carrying no `epoch`: the capability said yes, the
+        # epochs came back empty, and the SPA — which gates the drill-down on
+        # the capability — would offer a click that 404s while blaming the
+        # capability for being wrong. Not reachable from current engine output;
+        # derived rather than asserted so it cannot become reachable.
+        #
+        # `transcripts` narrows with it, and for the same reason: it is the
+        # claim "the drill-down works", and the drill-down is addressed by
+        # `(probe_id, epoch)` — a record with no epoch is not reachable through
+        # it. `hard_metrics` deliberately keeps the whole list: it is an
+        # *aggregate* over trial records, and an aggregate needs no address.
+        drillable = [rec for rec in records
+                     if isinstance(rec, dict) and "epoch" in rec]
         return Capabilities(
-            transcripts=any(rec.get("transcript") for rec in records),
-            trial_records=bool(records),
+            transcripts=any(rec.get("transcript") for rec in drillable),
+            trial_records=bool(drillable),
             hard_metrics=any(rec.get("session_seconds") is not None
                              for rec in records),
         )
