@@ -1149,3 +1149,68 @@ async def test_stderr_for_a_run_this_cockpit_never_launched_is_404(
         response = await client.get(
             "/api/runs/20260101T000000000000-deadbeef-nope/stderr")
     assert response.status_code == 404
+
+
+# --------------------------------------------------------------------------
+# 13. The stream's WIRING — proved at the endpoint, not only in the generator
+# --------------------------------------------------------------------------
+#
+# Both tests below exist because a mutation survived without them. The stream
+# module's own suite proves `scrub=` and `is_disconnected=` behave correctly
+# *when passed*; nothing proved the endpoint passes them, so deleting either
+# argument from `server.py` left the whole suite green.
+
+async def test_the_events_endpoint_scrubs_through_the_apps_redactor(
+        tmp_path, asgi_client):
+    """The one `/api` route the chokepoint does not cover.
+
+    `_scrub_response` returns a `StreamingResponse` untouched — "streaming,
+    file, or empty: not ours" — so `RedactingRoute` sitting on this route
+    protects nothing. If the endpoint forgets to pass the redactor, a token in
+    an event payload goes to the projector verbatim.
+    """
+    app = cockpit(tmp_path)
+    async with asgi_client(app) as client:
+        run_id = (await client.post("/api/runs", json=launch_body())).json()["run_id"]
+        reap_app(app)
+        (tmp_path / f"{run_id}.events.jsonl").write_text(
+            json.dumps({"seq": 1, "type": "turn.received",
+                        "data": {"text": "key AKIAIOSFODNN7EXAMPLE here"}}) + "\n"
+            + json.dumps({"seq": 2, "type": "run.finished", "data": {}}) + "\n",
+            encoding="utf-8")
+        response = await client.get(f"/api/runs/{run_id}/events")
+    assert "AKIAIOSFODNN7EXAMPLE" not in response.text
+    assert "«redacted:token»" in response.text
+
+
+async def test_the_events_endpoint_hands_the_stream_a_disconnect_check(
+        tmp_path, asgi_client, monkeypatch):
+    """Wiring, asserted as wiring.
+
+    The leak this prevents is invisible in a buffered test client: starlette
+    only notices a dead client when it next tries to write, and an idle run
+    writes nothing, so an abandoned tab survives until the idle timeout. What
+    the endpoint owes the stream is the check itself — the behaviour behind it
+    is covered in `test_stream.py`.
+    """
+    from evalyn.ui import server as server_mod
+
+    seen: dict = {}
+    real = server_mod.event_stream
+
+    def recording(path, **kwargs):
+        seen.update(kwargs)
+        return real(path, **kwargs)
+
+    monkeypatch.setattr(server_mod, "event_stream", recording)
+    app = cockpit(tmp_path)
+    async with asgi_client(app) as client:
+        run_id = (await client.post("/api/runs", json=launch_body())).json()["run_id"]
+        reap_app(app)
+        (tmp_path / f"{run_id}.events.jsonl").write_text(
+            json.dumps({"seq": 1, "type": "run.finished", "data": {}}) + "\n",
+            encoding="utf-8")
+        await client.get(f"/api/runs/{run_id}/events")
+    assert callable(seen.get("is_disconnected"))
+    assert callable(seen.get("scrub"))
+    assert seen.get("idle_timeout") == app.state.sse_idle_timeout
