@@ -79,11 +79,13 @@ def _probe(**kw) -> ProbeResult:
     return ProbeResult(**base)
 
 
-def _gate_artifact(probes: list[ProbeResult] | None = None) -> RunArtifact:
-    return RunArtifact(
+def _gate_artifact(probes: list[ProbeResult] | None = None, **kw) -> RunArtifact:
+    base = dict(
         pack_name="example", pack_hash="0" * 64, judge_model="mockllm/model",
         created_at="2026-08-04T08:15:44.953115+00:00",
         probes=[_probe()] if probes is None else probes, log_path="logs/x")
+    base.update(kw)
+    return RunArtifact(**base)
 
 
 def _loaded(typed=None, *, run_id: str = GATE_ID, mode: m.RunMode = m.RunMode.gate,
@@ -403,10 +405,88 @@ def test_invalid_is_reserved_for_an_artifact_that_measured_nothing():
 
 
 def test_a_cancelled_run_that_did_write_an_artifact_is_still_cancelled():
+    """R4-13: a genuine cancel is recorded **in the artifact**, so the label
+    survives whatever happened to the control file.
+
+    Both spellings have to reach `cancelled`, because which of them is on disk
+    is a race: the endpoint removes a control file it wrote for a run that
+    finished underneath it, and the run can also finish an instant later
+    (the residual window registered in `docs/JOURNAL.md`, `be9ab3a`).
+    """
+    art = _loaded(_gate_artifact(cancelled=True))
     assert derive_status(
-        _loaded(_gate_artifact()),
+        art,
         SidecarState(present=True, control=m.ControlAction.cancel, exit_code=0),
         None) is m.RunStatus.cancelled
+    assert derive_status(
+        art, SidecarState(present=True, exit_code=0), None
+    ) is m.RunStatus.cancelled, "the artifact alone is enough"
+
+
+def test_a_completed_run_is_not_relabelled_cancelled_by_a_stale_control_file():
+    """T20-d(b), measured on run `20260811T205142907150-f4700ea3-example`: the
+    artifact said `cancelled: False` over 4 probes and trials `[3,3,3,3]` — it
+    ran to completion — while `GET /api/runs/{id}` said `status: cancelled`.
+
+    An orphan `{"action": "cancel"}` was the only difference. A completed
+    evaluation's verdict must not be rewritable by a file left lying next to
+    it, so once an artifact exists the artifact is the authority on this.
+    """
+    stale = SidecarState(present=True, control=m.ControlAction.cancel, exit_code=0)
+    assert derive_status(_loaded(_gate_artifact()), stale, None) \
+        is m.RunStatus.passed
+    assert derive_status(_loaded(_FAILING), stale, None) \
+        is m.RunStatus.gate_failed
+
+
+def test_a_stale_pause_file_still_does_not_relabel_a_finished_run():
+    """The defect was cancel-specific and the fix must keep it that way — a
+    `pause` orphan was verified to leave its run reading `gate_failed`."""
+    assert derive_status(
+        _loaded(_FAILING),
+        SidecarState(present=True, control=m.ControlAction.pause, exit_code=0),
+        None) is m.RunStatus.gate_failed
+
+
+def test_a_cancel_still_outranks_an_artifact_this_build_cannot_parse():
+    """Rule 3 of the precedence is unchanged: with nothing typed to consult,
+    "the operator stopped it" is the more useful fact about a half-written
+    file than "this build cannot read it"."""
+    assert derive_status(
+        _loaded(None, error="boom"),
+        SidecarState(present=True, control=m.ControlAction.cancel, exit_code=0),
+        None) is m.RunStatus.cancelled
+
+
+def test_a_run_with_no_artifact_still_reads_its_cancel_off_the_control_file():
+    """With no artifact there is nothing to outrank — and a cancelled
+    `compare` writes no artifact at all (`compare.py:250-256`), so this is the
+    only evidence that mode ever leaves behind."""
+    assert derive_status(
+        None,
+        SidecarState(present=True, control=m.ControlAction.cancel, exit_code=1),
+        None) is m.RunStatus.cancelled
+
+
+def test_the_detail_flag_agrees_with_the_status_about_who_cancelled(tmp_path):
+    """`RunDetail.cancelled` is read by the SPA independently of `status`, so
+    the two must not be able to disagree: same defect at `index.py:689`."""
+    runs = tmp_path / "runs"
+    runs.mkdir()
+    rid = "20260811T205142907150-f4700ea3-example"
+    runs.joinpath(f"{rid}.json").write_text(json.dumps(_gate_artifact().to_dict()))
+    (runs / SIDECAR_DIR_NAME / rid).mkdir(parents=True)
+    control_path(runs / f"{rid}.json").write_text(json.dumps({"action": "cancel"}))
+
+    detail = RunIndex(runs).get(rid)
+    assert detail.cancelled is False, "the artifact says nobody cancelled it"
+    assert detail.status is not m.RunStatus.cancelled
+
+    runs.joinpath(f"{rid}.json").write_text(
+        json.dumps(_gate_artifact(cancelled=True).to_dict()))
+    detail = RunIndex(runs).get(rid)
+    assert detail.cancelled is True
+    assert detail.status is m.RunStatus.cancelled
 
 
 # --------------------------------------------------------------------------

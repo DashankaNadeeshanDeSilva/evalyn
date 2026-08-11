@@ -629,17 +629,29 @@ def create_app(runs_dir: Path, packs: list[Path], *,
         * **an artifact exists** — the run wrote its record, so it is over;
         * **`meta.json` records an `exit_code`** — the child has exited.
 
-        This is the guard that stops a `cancel` arriving a moment late from
-        **rewriting a finished run's verdict**. `derive_status` puts
-        `control is cancel` *above* the artifact, so a control file written
-        after a run passed relabels it `cancelled` — in the detail view, in the
-        list, and on disk. A completed evaluation's result must not be
-        changeable by a UI click.
+        **What this guard is, and what it is not.** It refuses a control file
+        for a run that is already over, which keeps `runs/` clean of requests
+        nothing can act on and gives the operator a 409 instead of a silent
+        no-op. It is a *narrowing*, and only a narrowing: the residual window
+        runs from "the second check said live" to "the run finishes", and a
+        cancel landing inside it still leaves an orphan file on disk. That
+        window was measured, not reasoned about — it is registered as a
+        deferred finding in `docs/JOURNAL.md` (`be9ab3a`), and it is the exact
+        shape the two orphan control files from the wiring pass were left in.
+
+        It is **not** what protects a finished run's verdict. `derive_status`
+        no longer puts `control is cancel` above the artifact: once an artifact
+        exists, `index.cancelled_by` reads `RunArtifact.cancelled` — the flag
+        the engine itself wrote when it honoured the cancel — and an orphan
+        file cannot relabel a run that ran to completion. That is the defence
+        this guard now stands in front of rather than the one it provides, and
+        the two are deliberately independent: a control file left inside the
+        residual window is harmless because of `cancelled_by`, and a request
+        for a finished run is refused here so it never reaches disk at all.
 
         A run this cockpit did not launch, with no artifact and no recorded
         exit code, is treated as live: it may genuinely be running in another
-        process, and the control file is the only way to reach it. Nothing is
-        at risk in that case, because there is no result yet to overwrite.
+        process, and the control file is the only way to reach it.
         """
         if app.state.index.artifact_path(run_id) is not None:
             return False
@@ -779,11 +791,13 @@ def create_app(runs_dir: Path, packs: list[Path], *,
 
         # Checked again, AFTER the write, because the run can finish in the
         # window between the two. The second check is what makes this
-        # self-healing rather than merely narrow: if the run finished while we
-        # were writing, the file we just wrote is the one that would rewrite
-        # its verdict, so it is removed again and the caller is told the truth.
-        # The window is narrowed, not closed — but anything that lands inside
-        # it is now undone rather than left on disk.
+        # self-healing rather than merely narrow: a file written for a run that
+        # has just ended is a request nothing will ever act on, so it is
+        # removed again and the caller is told the truth instead of a 202 it
+        # would read as an acknowledgement. The window is narrowed, not closed
+        # — anything landing inside it is still left on disk, which is
+        # survivable only because `index.cancelled_by` reads the verdict off
+        # the artifact and not off this file.
         if not _run_is_live(run_id):
             control_path(runs_dir / f"{run_id}.json").unlink(missing_ok=True)
             raise HTTPException(status_code=409, detail=_NOT_LIVE)

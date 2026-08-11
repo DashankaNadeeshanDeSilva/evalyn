@@ -1409,6 +1409,40 @@ async def test_cancelling_a_finished_run_cannot_rewrite_its_verdict(
     assert not control_path(tmp_path / f"{run_id}.json").exists()
 
 
+async def test_an_orphan_cancel_file_left_by_the_residual_race_rewrites_nothing(
+        tmp_path, asgi_client):
+    """T20-d(b). The guard above is a narrowing, not a closure: cancel a run
+    that is genuinely live and let it finish an instant after the second
+    liveness check, and the file stays on disk. That is what the two orphan
+    control files from the wiring pass are, and what
+    `20260811T205142907150-f4700ea3-example` was measured doing — artifact
+    `cancelled: False` over 4 completed probes, endpoint `status: cancelled`.
+
+    Planted directly here rather than raced for, because a race reproduced by
+    timing is a test that passes for the wrong reason on a slow machine. The
+    state it leaves behind is identical either way.
+    """
+    app = cockpit(tmp_path, child=artifact_writing_child())
+    os.environ["OUT"] = str(tmp_path)
+    os.environ["ART"] = json.dumps(PASSING_ARTIFACT)
+    try:
+        async with asgi_client(app) as client:
+            run_id = (await client.post("/api/runs",
+                                        json=launch_body())).json()["run_id"]
+            reap_app(app)
+            control_path(tmp_path / f"{run_id}.json").write_text(
+                json.dumps({"action": "cancel"}), encoding="utf-8")
+            detail = (await client.get(f"/api/runs/{run_id}")).json()
+            rows = (await client.get("/api/runs")).json()["items"]
+    finally:
+        del os.environ["OUT"], os.environ["ART"]
+
+    assert control_path(tmp_path / f"{run_id}.json").exists(), "the orphan is real"
+    assert detail["status"] == "passed"
+    assert detail["cancelled"] is False
+    assert [row["status"] for row in rows] == ["passed"]
+
+
 async def test_a_control_action_on_a_run_whose_child_exited_is_refused(
         tmp_path, asgi_client):
     """The second half of the liveness rule: a recorded `exit_code` means the

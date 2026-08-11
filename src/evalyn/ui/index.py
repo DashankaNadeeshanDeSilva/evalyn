@@ -80,7 +80,7 @@ from evalyn.ui.paths import (
 
 __all__ = [
     "RunIndex", "RunNotFound", "LoadedArtifact", "SidecarState",
-    "derive_status", "mode_of", "created_at_from_run_id",
+    "derive_status", "cancelled_by", "mode_of", "created_at_from_run_id",
     "verdict_hint_of", "capabilities_of", "is_run_id",
 ]
 
@@ -268,6 +268,37 @@ def capabilities_of(loaded: LoadedArtifact) -> Capabilities:
     return Capabilities(transcripts=False, trial_records=False, hard_metrics=False)
 
 
+def cancelled_by(artifact: LoadedArtifact | None,
+                 sidecar: SidecarState) -> bool:
+    """Did an operator stop this run? **The artifact outranks the file.**
+
+    Two witnesses disagree here, and only one of them is authoritative.
+
+    `RunArtifact.cancelled` is written by the engine itself, at the moment it
+    honoured the cancel (`run.py:431`), and it is what makes the run exit 3
+    rather than 1 — a genuinely cancelled run also has `log.results is None`
+    and reduces its un-run probes to `trials=0` (R4-13). It cannot be wrong.
+
+    `<stem>.control.json` is only a **request**, and it outlives the run that
+    was asked: the endpoint removes one it wrote for a run that finished
+    underneath it, but the run can finish an instant after that check too — the
+    residual race registered in `docs/JOURNAL.md` (`be9ab3a`). Trusting the
+    request over the record was measured relabelling a run that had completed
+    all 12 of its trials as `cancelled`, in the list and on the detail page. A
+    completed evaluation's verdict must not be rewritable by a leftover file.
+
+    So the control file is consulted only where there is no artifact-side
+    answer: before an artifact exists at all; when this build cannot parse the
+    one that does; and for `compare`/`discover`, whose artifacts carry no such
+    field — a cancelled `compare` writes no artifact at all
+    (`compare.py:250-256`), so the file is the only evidence it leaves.
+    """
+    typed = artifact.typed if artifact is not None else None
+    if isinstance(typed, RunArtifact):
+        return bool(typed.cancelled)
+    return sidecar.control is ControlAction.cancel
+
+
 def derive_status(artifact: LoadedArtifact | None,
                   sidecar: SidecarState | None = None,
                   gate_result: GateResult | None = None) -> RunStatus:
@@ -281,9 +312,13 @@ def derive_status(artifact: LoadedArtifact | None,
        the run vanished without writing its record. A `meta.json` this build
        cannot read is *not* evidence of life: it degrades to `interrupted`
        rather than leaving a dead run spinning in the table forever.
-    3. **A deliberate cancel outranks a parse failure.** "The operator stopped
-       it" is the more useful fact about a half-written artifact than "this
-       build cannot read it".
+    3. **A deliberate cancel**, decided by `cancelled_by` — the artifact's own
+       `cancelled` field where there is one, and the control file only where
+       there is not. It outranks a parse failure: "the operator stopped it" is
+       the more useful fact about a half-written artifact than "this build
+       cannot read it". It does **not** outrank a readable artifact that says
+       nobody cancelled it; see `cancelled_by` for why the file is the weaker
+       witness.
     4. **`unreadable`** — the artifact exists and this build cannot parse it.
        Distinct from `invalid`: the run may have been perfectly fine.
     5. **`invalid`** — parsed, but the numbers mean nothing: a discover run
@@ -307,7 +342,7 @@ def derive_status(artifact: LoadedArtifact | None,
         return RunStatus.failed_to_start
 
     if artifact is None:
-        if side.control is ControlAction.cancel:
+        if cancelled_by(None, side):
             return RunStatus.cancelled
         if side.present and side.exit_code is None:
             if side.control is ControlAction.pause:
@@ -318,7 +353,7 @@ def derive_status(artifact: LoadedArtifact | None,
                     else RunStatus.running)
         return RunStatus.interrupted
 
-    if side.control is ControlAction.cancel:
+    if cancelled_by(artifact, side):
         return RunStatus.cancelled
     if artifact.typed is None:
         return RunStatus.unreadable
@@ -686,7 +721,7 @@ class RunIndex:
             total_unsure_trials=(raw.get("total_unsure_trials")
                                  if isinstance(raw.get("total_unsure_trials"), int)
                                  else None),
-            cancelled=sidecar.control is ControlAction.cancel,
+            cancelled=cancelled_by(loaded, sidecar),
         )
         # The mode-specific half is where the WIRE models are validated, and
         # that is a second, later chance to fail than `_read_artifact`'s
