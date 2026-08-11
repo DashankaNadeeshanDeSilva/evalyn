@@ -507,10 +507,29 @@ const SURFACES: Record<string, Surface> = {
       { ink: "chassis-900", role: "text" },
       { ink: "chassis-700", role: "text" },
       { ink: "chassis-600", role: "text" },
+    ],
+  },
+  /**
+   * The surface's signature control, extracted from the launch console so the
+   * trends page's metric and pack selectors are the same key rather than a
+   * second one that looks like it.
+   *
+   * `chassis-500` is the resting label of a position this server cannot select
+   * — the launch console's `compare` and `discover` modes. WCAG 1.4.3 exempts
+   * an inactive control by name and the whole point of the treatment is to read
+   * as unavailable, but the reason travels as `sr-only` text beside it so the
+   * refusal is never carried by the greying alone.
+   */
+  "components/Detent.tsx": {
+    inherits: "chassis-25",
+    sets: [],
+    inks: [
+      { ink: "chassis-900", role: "text" },
+      { ink: "chassis-700", role: "text" },
       {
         ink: "chassis-500",
         role: "disabled",
-        note: "a mode this console cannot launch, with its reason stated beside it",
+        note: "a position this console cannot select, with its reason stated beside it",
       },
     ],
   },
