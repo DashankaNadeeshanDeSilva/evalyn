@@ -118,7 +118,7 @@ merging needs a maintainer ask.
 | 3 — `RunIndex` | complete, review-clean |
 | 4 — redaction chokepoint | **complete** (`5f20585..dabec88`), review-clean after 5 fix rounds, 6 residuals parked under R4-23 |
 | 5 — frontend scaffold | complete, review-clean, merged |
-| 8 — app shell + runs table | **see ledger for the final fix-round verdict** |
+| 8 — app shell + runs table | **complete** (`575f874..cdb0c49`), 177 tests, 3 fix rounds, 6 residuals parked — incl. Step 4 (live-server verification) for the wiring pass |
 | injection pack | complete (new work, not a plan task) |
 | 6, 7, 9–21 | **not started** |
 
@@ -184,13 +184,31 @@ fixture string with an f-string so `env.base_url` and the allowlist follow. This
 - **parallel reviews**, which are currently serialised for the same reason.
 
 **Do it ALONE, first, and verify serially.** It is a shared fixture 14 test files depend on; racing it
-against any other work is how a whole session gets lost. Note the ledger records the original
-`EADDRINUSE` diagnosis as *disputed* (`ThreadingHTTPServer` already sets `allow_reuse_address`), so
-**re-measure before and after** rather than assuming the fix works — the failure may be
-`SO_REUSEADDR` semantics, not the port literal.
+against any other work is how a whole session gets lost.
 
-If P1 is skipped, the fallback discipline is: **only one Python agent may run the full suite at a
-time.** Focused runs (`-k`, or a single file under `tests/ui/`) are always safe.
+**The collision was disputed in the ledger for weeks. It was measured on 2026-08-11 and it is real:**
+
+```
+CONCURRENT   pytest tests/engine/test_budget.py  ∥  pytest tests/targets/test_session.py
+  lane A -> exit 1, 8 passed / 2 ERRORS, OSError: [Errno 48] Address already in use  (×2)
+  lane B -> exit 0, 5 passed
+SERIAL       the same two files in one process -> 15 passed
+```
+
+The `allow_reuse_address` counter-argument was about the wrong failure: `SO_REUSEADDR` permits
+rebinding a socket in `TIME_WAIT`, **not** binding a port another live process is actively listening
+on. So P1 is necessary, not speculative — and the fix must change the port, not the socket options.
+
+**The failure mode is misleading, and that is the real hazard.** The losing lane does not crash
+cleanly — it reports fixture errors on *only* the tests that request `toy_target`, interleaved with
+ordinary passes ("8 passed, 2 errors"). An implementer seeing two errors inside its own task's suite
+would very plausibly debug a phantom for a long time before suspecting another process. **Any
+dispatch that permits a full-suite run must say this out loud.**
+
+Until P1 lands the rule is absolute: **only ONE agent may run pytest at a time, across ALL
+worktrees.** Worktrees do not help — the port is machine-level. Focused runs under `tests/ui/` are
+safe (that tree does not consume `toy_target`); everything else is not. **This serialises reviewers
+too**, which is the cost people forget.
 
 ### P2 — freeze the five missing wire contracts before the lanes fork
 
@@ -265,6 +283,56 @@ Fix rounds are already delegated: the implementer fixes, a scoped re-reviewer ve
 adjudication in the controller.** It needs the plan, the cross-task context and the ruling history
 that a subagent does not have — and every adjudication must land in the ledger as a ruling, which is
 the controller's job. Delegate the *work*; keep the *judgment*.
+
+---
+
+## 4.2 Review budget — HARD CAP, and why (R4-27)
+
+**Maximum TWO reviews per task:**
+
+```
+task review  →  (if findings) ONE fix round  →  ONE re-review  →  DONE
+```
+
+There is no third. Anything still open after the re-review is **parked with a ruling** and handed to
+the final whole-branch review, which is the net. This is a maintainer ruling made on 2026-08-11
+against a hard deadline with 15 tasks remaining — **it is not a quality opinion to be re-argued by a
+future controller who finds an unfixed defect.**
+
+**Pair it with this rule, which is the one that actually stops the spiral:**
+
+> **A fix may not build new infrastructure.** If a finding can only be closed by adding a harness, a
+> scanner, or a new abstraction — **park it.**
+
+### Why — the measured diagnosis, so nobody re-learns it
+
+Tasks 4 and 8 consumed an entire session between them: five fix rounds and six reviews for Task 4,
+three rounds and four reviews for Task 8, at roughly 25–40 minutes per cycle.
+
+The tempting explanation is "fixes kept breaking things". **That was checked and it is wrong.** A
+hallucination check on 2026-08-11 verified every claimed defect against the git objects at the exact
+reported lines, and recomputed six contrast ratios independently — all six matched to 2dp. The
+agents were accurate throughout.
+
+The real cause: **the fixes added new code, and the new code needed its own review.** The `Flatline`
+word did not exist before its fix round, so its font-size and column width were new surface, not
+regressions. The contrast guard did not exist at all — it grew from "fix three violations" into a
+source-scanning, opacity-compositing harness with a derived ground inventory, and *its* gaps became
+the next round's findings. Each increment was individually justified; nobody ever decided to build
+it.
+
+So the failure was **scope growth inside the review loop**, and it was the controller's to prevent.
+The two rules above exist to prevent it structurally rather than by good intentions.
+
+### Dispatch consequences
+
+- Tell every task reviewer **in its dispatch** that only one fix round exists, and ask it to **rank**
+  its findings so that round targets what matters most.
+- Tell every fix implementer it may not build new infrastructure, and that reporting something
+  unfixed is better than fixing it by building a harness.
+- **Controller self-verification does not count against the cap.** Spot-checking an agent's hard
+  claims — line numbers, measured numbers, whether the described thing exists — is cheap, uses no
+  agent, and is standing practice (see §6).
 
 ---
 
