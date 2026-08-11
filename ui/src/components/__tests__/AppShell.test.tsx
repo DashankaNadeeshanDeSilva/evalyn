@@ -1,9 +1,11 @@
 import { QueryClientProvider } from "@tanstack/react-query";
 import { render, screen, waitFor } from "@testing-library/react";
+import { http, HttpResponse } from "msw";
 import { matchRoutes, MemoryRouter } from "react-router-dom";
 import { describe, expect, it } from "vitest";
 
 import { createQueryClient } from "../../api/client";
+import { server } from "../../mocks/server";
 import { NAV_DESTINATIONS } from "../../nav";
 import { appRoutes } from "../../routes";
 import { META } from "../../mocks/fixtures";
@@ -107,6 +109,31 @@ describe("AppShell", () => {
     // `runs_dir` arrives `~`-collapsed. A real home path here means something
     // reconstructed it client-side.
     expect(legend.textContent).not.toMatch(/\/(Users|home)\//);
+  });
+
+  /**
+   * The error branch had no test at all: deleting `<IconAlert>` — the whole
+   * remedy that stops "server unreachable" being colour alone — left the suite
+   * green at 169/169. `tsc` catches a crude deletion through the unused import,
+   * but a subtler change (a non-alarm glyph, `h-0`, an aria-hidden with no
+   * text) passes both. The standard set in fix round 1 is that a design-review
+   * fix ships with a test under it; this one did not.
+   */
+  it("says the server is unreachable with a glyph, not colour alone", async () => {
+    server.use(
+      http.get("/api/meta", () => HttpResponse.error()),
+    );
+
+    renderShell();
+
+    const legend = await screen.findByText(/server unreachable/i);
+    // The word is present...
+    expect(legend.textContent).toMatch(/server unreachable/i);
+    // ...and so is the mark, because red-on-grey alone is not a message.
+    expect(
+      legend.querySelector("svg"),
+      "the unreachable state renders without a glyph — colour and word alone",
+    ).not.toBeNull();
   });
 
   it("shows the redaction banner whenever the server says redaction is on", async () => {

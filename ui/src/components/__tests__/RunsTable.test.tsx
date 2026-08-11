@@ -208,6 +208,32 @@ describe("RunsTable", () => {
     }
   });
 
+  /**
+   * Every absence marker states its own size rather than inheriting one.
+   *
+   * The verdict and spend `<td>`s carry no size token, so before this the word
+   * fell through to the user agent's 16px and rendered larger than the 12px
+   * chips and 14px readouts beside it — a visible break in a table whose whole
+   * argument is a fixed four-step scale, and the direct cause of the spend
+   * column overflowing its budget.
+   *
+   * jsdom has no layout engine, so this asserts the token rather than the
+   * computed pixels; the pixel check lives in the browser measurement recorded
+   * in `RunsTable`'s column-budget comment.
+   */
+  it("gives every flat-lined cell its own size token, never an inherited one", () => {
+    renderTable();
+
+    const markers = document.querySelectorAll('[data-flatlined]');
+    expect(markers.length).toBeGreaterThan(0);
+    for (const marker of markers) {
+      expect(
+        marker.className,
+        "a flat-lined cell without a size token inherits the browser default",
+      ).toContain("text-legend");
+    }
+  });
+
   it("says the list is empty rather than rendering an empty frame", () => {
     renderTable([]);
 

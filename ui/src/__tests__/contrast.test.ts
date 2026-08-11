@@ -65,6 +65,25 @@ const colors = tailwindConfig.theme!.extend!.colors as Record<
   string | Record<string, string>
 >;
 
+/**
+ * Composite a translucent ground over what is behind it.
+ *
+ * `bg-degraded/[0.08]` is not the `degraded` grey — it is 8% of it over the
+ * face, which lands at `#f3f4f5`. Treating the modifier as opaque would have
+ * this guard reject `chassis-700` on a degraded row at a measured 3.57:1 when
+ * the real pairing is 8.36:1. Wrong in the safe direction is still wrong: it
+ * teaches the next author that the guard cries wolf.
+ */
+function over(top: string, bottom: string, alpha: number): string {
+  const mix = (shift: number) => {
+    const t = (parseInt(top.slice(1), 16) >> shift) & 255;
+    const b = (parseInt(bottom.slice(1), 16) >> shift) & 255;
+    return Math.round(t * alpha + b * (1 - alpha));
+  };
+  const hex = (v: number) => v.toString(16).padStart(2, "0");
+  return `#${hex(mix(16))}${hex(mix(8))}${hex(mix(0))}`;
+}
+
 /** `"chassis-600"` / `"status-passed"` / `"degraded"` -> its hex. */
 function hexFor(token: string): string {
   const direct = colors[token];
@@ -107,117 +126,197 @@ type Role =
    */
   | "disabled";
 
-interface Usage {
+interface Ink {
   ink: string;
-  ground: string;
   role: Role;
   note?: string;
 }
 
+interface Surface {
+  /**
+   * The ground this file does not set itself — the shell's face, usually.
+   * Declared because a component cannot see what it will be rendered inside.
+   */
+  inherits: string;
+  /**
+   * Every `bg-*` colour token this file sets, in any variant (`hover:`, `sm:`,
+   * with an opacity modifier). Asserted equal to what the source actually
+   * contains, so a new background cannot enter without being declared.
+   */
+  sets: string[];
+  inks: Ink[];
+}
+
 /**
- * Every `text-*` token each component uses, and the ground it sits on.
+ * Every colour token each component uses, and every ground it can sit on.
  *
- * "Ground" is the darkest surface that token is actually rendered against —
- * the strip is `chassis-50`, the banner `chassis-100`, table rows `chassis-25`.
+ * The `ground` field used to be a single hand-written value. That is precisely
+ * how the guard came to stamp AA-compliant on a failing pairing: a row was
+ * `hover:bg-chassis-50`, nothing read `bg-*`, and the inventory said
+ * `chassis-25` because a human wrote `chassis-25`.
+ *
+ * **There is deliberately no way to narrow an ink to a subset of its file's
+ * grounds.** A first attempt at this guard offered exactly that escape hatch,
+ * with a `note` required to use it — and it reproduced the original bug on the
+ * first probe, because the note said "the header row carries no status ink"
+ * and a `hover:` fill on a *data* row is invisible at file granularity.
+ *
+ * So the rule is unconditional: every ink is checked against every ground its
+ * file establishes. When that is too strict, the answer is to change the code
+ * — drop the second ground, or split the component so each file has one — and
+ * both of those made the design better here. An exception mechanism would only
+ * have made the guard agreeable.
  */
-const INK_USAGE: Record<string, Usage[]> = {
-  "components/AppShell.tsx": [
-    { ink: "chassis-900", ground: "chassis-50", role: "text" },
-    { ink: "chassis-600", ground: "chassis-50", role: "text" },
-    {
-      ink: "chassis-400",
-      ground: "chassis-50",
-      role: "redundant",
-      note: "the aria-hidden '·' separating version from runs_dir",
-    },
-  ],
-  "components/RedactionBanner.tsx": [
-    { ink: "chassis-800", ground: "chassis-100", role: "text" },
-    { ink: "chassis-900", ground: "chassis-100", role: "text" },
-    { ink: "chassis-600", ground: "chassis-100", role: "graphic", note: "the lock mark" },
-    {
-      ink: "chassis-400",
-      ground: "chassis-100",
-      role: "redundant",
-      note: "aria-hidden '·' separators",
-    },
-  ],
-  "components/RunStatusChip.tsx": [
-    { ink: "status-passed", ground: "chassis-25", role: "text" },
-    { ink: "status-gate_failed", ground: "chassis-25", role: "text" },
-    { ink: "status-invalid", ground: "chassis-25", role: "text" },
-    { ink: "status-running", ground: "chassis-25", role: "text" },
-    { ink: "status-paused", ground: "chassis-25", role: "text" },
-    { ink: "status-cancelled", ground: "chassis-25", role: "text" },
-    { ink: "status-interrupted", ground: "chassis-25", role: "text" },
-    { ink: "status-failed_to_start", ground: "chassis-25", role: "text" },
-    { ink: "status-unreadable", ground: "chassis-25", role: "text" },
-    {
-      ink: "chassis-600",
-      ground: "chassis-25",
-      role: "text",
-      note: "the `unverified` rendition on a degraded row",
-    },
-  ],
-  "components/RunsTable.tsx": [
-    { ink: "status-passed", ground: "chassis-25", role: "text" },
-    { ink: "status-gate_failed", ground: "chassis-25", role: "text" },
-    { ink: "chassis-900", ground: "chassis-25", role: "text" },
-    { ink: "chassis-700", ground: "chassis-25", role: "text" },
-    { ink: "chassis-600", ground: "chassis-50", role: "text" },
-  ],
-  "components/DegradedRow.tsx": [
-    { ink: "chassis-900", ground: "chassis-25", role: "text" },
-    { ink: "chassis-700", ground: "chassis-25", role: "text" },
-    { ink: "chassis-600", ground: "chassis-25", role: "text" },
-    {
-      ink: "chassis-500",
-      ground: "chassis-25",
-      role: "redundant",
-      note: "the flat-line stroke immediately left of the word DEGRADED",
-    },
-  ],
-  "components/Flatline.tsx": [
-    { ink: "chassis-500", ground: "chassis-25", role: "graphic" },
-    { ink: "chassis-600", ground: "chassis-25", role: "text" },
-  ],
-  "pages/RunsPage.tsx": [
-    { ink: "chassis-900", ground: "chassis-25", role: "text" },
-    { ink: "chassis-600", ground: "chassis-25", role: "text" },
-    {
-      ink: "chassis-500",
-      ground: "chassis-25",
-      role: "disabled",
-      note: "the `Load older runs` key while a page is in flight",
-    },
-    { ink: "status-unreadable", ground: "chassis-25", role: "text" },
-    {
-      ink: "chassis-400",
-      ground: "chassis-25",
-      role: "redundant",
-      note: "aria-hidden '·' separator",
-    },
-  ],
-  "pages/RunDetailPage.tsx": [
-    { ink: "chassis-900", ground: "chassis-25", role: "text" },
-    { ink: "chassis-700", ground: "chassis-25", role: "text" },
-    { ink: "chassis-600", ground: "chassis-25", role: "text" },
-    { ink: "status-unreadable", ground: "chassis-25", role: "text" },
-    {
-      ink: "chassis-500",
-      ground: "chassis-25",
-      role: "redundant",
-      note: "the flat-line stroke beside the word DEGRADED",
-    },
-  ],
-  "routes.tsx": [
-    { ink: "chassis-900", ground: "chassis-25", role: "text" },
-    { ink: "chassis-600", ground: "chassis-25", role: "text" },
-  ],
+const SURFACES: Record<string, Surface> = {
+  "components/AppShell.tsx": {
+    inherits: "chassis-25",
+    sets: ["chassis-100", "chassis-50", "chassis-25"],
+    inks: [
+      { ink: "chassis-900", role: "text" },
+      { ink: "chassis-600", role: "text" },
+      {
+        ink: "chassis-400",
+        role: "redundant",
+        note: "the aria-hidden '·' separating version from runs_dir",
+      },
+    ],
+  },
+  "components/RedactionBanner.tsx": {
+    inherits: "chassis-25",
+    sets: ["chassis-100", "chassis-200"],
+    inks: [
+      { ink: "chassis-800", role: "text" },
+      { ink: "chassis-900", role: "text" },
+      { ink: "chassis-600", role: "graphic", note: "the lock mark" },
+      {
+        ink: "chassis-400",
+        role: "redundant",
+        note: "aria-hidden '·' separators",
+      },
+    ],
+  },
+  "components/RunStatusChip.tsx": {
+    inherits: "chassis-25",
+    sets: [],
+    inks: [
+      { ink: "status-passed", role: "text" },
+      { ink: "status-gate_failed", role: "text" },
+      { ink: "status-invalid", role: "text" },
+      { ink: "status-running", role: "text" },
+      { ink: "status-paused", role: "text" },
+      { ink: "status-cancelled", role: "text" },
+      { ink: "status-interrupted", role: "text" },
+      { ink: "status-failed_to_start", role: "text" },
+      { ink: "status-unreadable", role: "text" },
+      {
+        ink: "chassis-600",
+        role: "text",
+        note: "the `unverified` rendition on a degraded row",
+      },
+    ],
+  },
+  "components/RunsTable.tsx": {
+    inherits: "chassis-25",
+    // No tinted grounds at all: the header row is divided by its rule, and row
+    // hover deepens that rule rather than filling the row. One ground means
+    // every ink here is measured against the one surface it can sit on.
+    sets: [],
+    inks: [
+      { ink: "status-passed", role: "text" },
+      { ink: "status-gate_failed", role: "text" },
+      { ink: "chassis-900", role: "text" },
+      { ink: "chassis-700", role: "text" },
+      { ink: "chassis-600", role: "text" },
+    ],
+  },
+  "components/DegradedRow.tsx": {
+    inherits: "chassis-25",
+    // The dead-channel wash: 8% of the degraded grey over the face, which is
+    // the ground every ink in this row actually sits on.
+    sets: ["degraded/0.08"],
+    inks: [
+      { ink: "chassis-900", role: "text" },
+      { ink: "chassis-700", role: "text" },
+      { ink: "chassis-600", role: "text" },
+      {
+        ink: "chassis-500",
+        role: "redundant",
+        note: "the flat-line stroke immediately left of the word DEGRADED",
+      },
+    ],
+  },
+  "components/Flatline.tsx": {
+    inherits: "chassis-25",
+    sets: [],
+    inks: [
+      { ink: "chassis-500", role: "graphic" },
+      { ink: "chassis-600", role: "text" },
+    ],
+  },
+  "components/InstrumentIcon.tsx": { inherits: "chassis-25", sets: [], inks: [] },
+  "pages/RunsPage.tsx": {
+    inherits: "chassis-25",
+    // chassis-100 is the load-more key's hover fill; chassis-50/60 is the
+    // loading skeleton's bar, which carries no text at all.
+    sets: ["chassis-100", "chassis-50/0.6"],
+    inks: [
+      { ink: "chassis-900", role: "text" },
+      { ink: "chassis-600", role: "text" },
+      {
+        ink: "chassis-500",
+        role: "disabled",
+        note: "the `Load older runs` key while a page is in flight",
+      },
+      {
+        ink: "chassis-400",
+        role: "redundant",
+        note: "aria-hidden '·' separator",
+      },
+    ],
+  },
+  "pages/RunDetailPage.tsx": {
+    inherits: "chassis-25",
+    sets: [],
+    inks: [
+      { ink: "chassis-900", role: "text" },
+      { ink: "chassis-700", role: "text" },
+      { ink: "chassis-600", role: "text" },
+      {
+        ink: "chassis-500",
+        role: "redundant",
+        note: "the flat-line stroke beside the word DEGRADED",
+      },
+    ],
+  },
+  "routes.tsx": {
+    inherits: "chassis-25",
+    sets: [],
+    inks: [
+      { ink: "chassis-900", role: "text" },
+      { ink: "chassis-600", role: "text" },
+    ],
+  },
 };
 
 const SRC = resolve(import.meta.dirname, "..");
 
+/**
+ * Every colour family the palette defines. Kept in sync with the config by
+ * derivation, not by hand — a family added to `tailwind.config.ts` widens the
+ * scanner automatically, which is what stops the reserved `inset` and `safety`
+ * families (Task 21's live view, and the one dark ground on the surface) from
+ * being invisible to this guard.
+ */
+const FAMILIES = Object.keys(colors).sort();
+const TOKEN = `(?:${FAMILIES.join("|")})(?:-[a-z0-9_]+)?`;
+
+/**
+ * Source files that can carry a class name.
+ *
+ * `.ts` as well as `.tsx`: Tailwind's own content glob is `./src/**‍/*.{ts,tsx}`
+ * and this codebase's established pattern for ink is a constant map in a `.ts`
+ * module. Scanning only `.tsx` let a whole file's palette escape the guard.
+ */
 function sourceFiles(): string[] {
   const out: string[] = [];
   const walk = (dir: string, prefix: string) => {
@@ -227,7 +326,9 @@ function sourceFiles(): string[] {
       }
       const rel = prefix ? `${prefix}/${entry.name}` : entry.name;
       if (entry.isDirectory()) walk(join(dir, entry.name), rel);
-      else if (entry.name.endsWith(".tsx")) out.push(rel);
+      else if (/\.tsx?$/.test(entry.name) && !entry.name.endsWith(".d.ts")) {
+        out.push(rel);
+      }
     }
   };
   walk(SRC, "");
@@ -235,21 +336,51 @@ function sourceFiles(): string[] {
 }
 
 /**
- * Every `text-<token>` class written in a file, colour tokens only.
+ * A file's source with comments stripped.
  *
- * Comments are stripped first. Without that, a docstring *explaining* why a
- * token was removed counts as using it — which is exactly what happened on the
- * first run of this test, and is the same false-positive class that makes
- * Tailwind emit `.rounded` because the word appears in an anti-pastiche note.
+ * Without this, a docstring *explaining* why a token was removed counts as
+ * using it — which is what happened on this guard's first run, and is the same
+ * false-positive class that makes Tailwind emit `.rounded` because the word
+ * appears in an anti-pastiche note.
  */
-function inksUsedIn(file: string): Set<string> {
-  const source = readFileSync(join(SRC, file), "utf8")
+function code(file: string): string {
+  return readFileSync(join(SRC, file), "utf8")
     .replace(/\/\*[\s\S]*?\*\//g, " ")
     .replace(/(^|[^:])\/\/[^\n]*/g, "$1 ");
+}
+
+function tokensAfter(file: string, prefix: "text" | "bg"): Set<string> {
   const found = new Set<string>();
-  const pattern = /\btext-((?:chassis|status)-[a-z0-9_]+|degraded)\b/g;
-  for (const match of source.matchAll(pattern)) found.add(match[1]!);
+  // A background may carry an opacity modifier — `bg-degraded/[0.08]` or
+  // `bg-chassis-50/60` — and the modifier changes the ground materially, so it
+  // is part of the token rather than noise to strip.
+  // No trailing \b when an alpha may follow: the modifier ends in `]`, which
+  // is not a word character, so a word boundary there never matches.
+  const alpha = prefix === "bg" ? `(?:\\/(?:\\[([0-9.]+)\\]|(\\d+)))?` : "\\b";
+  const pattern = new RegExp(`\\b${prefix}-(${TOKEN})${alpha}`, "g");
+  for (const match of code(file).matchAll(pattern)) {
+    const fraction = match[2] ?? (match[3] ? Number(match[3]) / 100 : undefined);
+    found.add(fraction === undefined ? match[1]! : `${match[1]}/${fraction}`);
+  }
   return found;
+}
+
+/** A declared ground -> the hex a human actually sees, backdrop composited in. */
+function groundHex(ground: string, behind: string): string {
+  const at = ground.indexOf("/");
+  if (at === -1) return hexFor(ground);
+  return over(
+    hexFor(ground.slice(0, at)),
+    hexFor(behind),
+    Number(ground.slice(at + 1)),
+  );
+}
+
+/** `text-[#999]` / `bg-[rgb(...)]` — a colour outside the palette entirely. */
+function arbitraryColours(file: string): string[] {
+  return [...code(file).matchAll(/\b(?:text|bg|border)-\[\s*(#|rgb|hsl|color)/g)].map(
+    (m) => m[0],
+  );
 }
 
 describe("the palette measures what the config says it measures", () => {
@@ -294,41 +425,88 @@ describe("the palette measures what the config says it measures", () => {
       contrast(hexFor("chassis-500"), hexFor("chassis-25")),
     ).toBeGreaterThanOrEqual(AA_NON_TEXT);
   });
+
+  /**
+   * Reserved for Task 21's live view — the single dark field on the surface,
+   * where every light-ground rule inverts. Checked now so the reservation is a
+   * measured promise rather than a hex nobody has ever evaluated.
+   */
+  it("keeps the reserved inset and safety pairings usable before Task 21 needs them", () => {
+    expect(
+      contrast(hexFor("inset-ink"), hexFor("inset-DEFAULT")),
+      "inset-ink on the inset window",
+    ).toBeGreaterThanOrEqual(AA_TEXT);
+    expect(
+      contrast(hexFor("safety-ink"), hexFor("safety-DEFAULT")),
+      "near-black ink on safety orange — white-on-orange typically fails AA",
+    ).toBeGreaterThanOrEqual(AA_TEXT);
+  });
 });
 
 describe("every ink on the surface is declared and compliant", () => {
-  it("has an inventory entry for every component that renders ink", () => {
+  it("has an inventory entry for every source file that names a palette token", () => {
     const undeclared = sourceFiles().filter(
-      (file) => inksUsedIn(file).size > 0 && INK_USAGE[file] === undefined,
+      (file) =>
+        (tokensAfter(file, "text").size > 0 || tokensAfter(file, "bg").size > 0) &&
+        SURFACES[file] === undefined,
     );
     expect(
       undeclared,
-      "these files use colour tokens but are absent from INK_USAGE",
+      "these files use palette tokens but are absent from SURFACES",
     ).toEqual([]);
   });
 
-  it("declares every ink each component actually uses, and no ink it does not", () => {
-    for (const [file, usages] of Object.entries(INK_USAGE)) {
-      const used = [...inksUsedIn(file)].sort();
-      const declared = [...new Set(usages.map((u) => u.ink))].sort();
-      expect(used, `${file}: INK_USAGE is out of date`).toEqual(declared);
+  it("declares every ink each component uses, and no ink it does not", () => {
+    for (const [file, surface] of Object.entries(SURFACES)) {
+      const used = [...tokensAfter(file, "text")].sort();
+      const declared = [...new Set(surface.inks.map((i) => i.ink))].sort();
+      expect(used, `${file}: SURFACES.inks is out of date`).toEqual(declared);
     }
   });
 
-  it("meets the threshold for every declared pairing's role", () => {
-    for (const [file, usages] of Object.entries(INK_USAGE)) {
-      for (const usage of usages) {
-        const ratio = contrast(hexFor(usage.ink), hexFor(usage.ground));
-        const where = `${file}: ${usage.ink} on ${usage.ground} (${usage.role})`;
-        if (usage.role === "text") {
-          expect(ratio, where).toBeGreaterThanOrEqual(AA_TEXT);
-        } else if (usage.role === "graphic") {
-          expect(ratio, where).toBeGreaterThanOrEqual(AA_NON_TEXT);
-        } else {
-          // `redundant` and `disabled` carry no ratio, but they must carry a
-          // note saying why — an unexplained exemption is just a contrast
-          // failure with a label on it.
-          expect(usage.note, `${where} must justify itself`).toBeTruthy();
+  /**
+   * The half that stops the hand-assertion going stale: `sets` is checked
+   * against the `bg-*` tokens actually present, so a new background — including
+   * one behind a `hover:` variant — cannot enter without being declared, and
+   * once declared it is automatically checked against every ink in the file.
+   */
+  it("declares every ground each component sets, and no ground it does not", () => {
+    for (const [file, surface] of Object.entries(SURFACES)) {
+      const used = [...tokensAfter(file, "bg")].sort();
+      const declared = [...new Set(surface.sets)].sort();
+      expect(used, `${file}: SURFACES.sets is out of date`).toEqual(declared);
+    }
+  });
+
+  it("uses no colour from outside the palette", () => {
+    for (const file of sourceFiles()) {
+      expect(
+        arbitraryColours(file),
+        `${file} sets a colour the palette does not define, so nothing can measure it`,
+      ).toEqual([]);
+    }
+  });
+
+  it("meets the threshold on every ground the component can actually render on", () => {
+    for (const [file, surface] of Object.entries(SURFACES)) {
+      const grounds = [surface.inherits, ...surface.sets];
+      for (const ink of surface.inks) {
+        for (const ground of grounds) {
+          const ratio = contrast(
+            hexFor(ink.ink),
+            groundHex(ground, surface.inherits),
+          );
+          const where = `${file}: ${ink.ink} on ${ground} (${ink.role})`;
+          if (ink.role === "text") {
+            expect(ratio, where).toBeGreaterThanOrEqual(AA_TEXT);
+          } else if (ink.role === "graphic") {
+            expect(ratio, where).toBeGreaterThanOrEqual(AA_NON_TEXT);
+          } else {
+            // `redundant` and `disabled` carry no ratio, but they must carry a
+            // note saying why — an unexplained exemption is just a contrast
+            // failure with a label on it.
+            expect(ink.note, `${where} must justify itself`).toBeTruthy();
+          }
         }
       }
     }

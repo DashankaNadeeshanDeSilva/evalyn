@@ -4,7 +4,11 @@ import { Link, useParams } from "react-router-dom";
 import { ApiFailure, useRunDetail } from "../api/client";
 import { RunStatusChip } from "../components/RunStatusChip";
 import { Flatline } from "../components/Flatline";
-import { IconArrowLeft, IconFlatline } from "../components/InstrumentIcon";
+import {
+  IconAlert,
+  IconArrowLeft,
+  IconFlatline,
+} from "../components/InstrumentIcon";
 import { formatUsd, formatUtc } from "../format";
 import { isRunId, type Capabilities } from "../api/types";
 
@@ -55,7 +59,8 @@ export function RunDetailPage() {
   if (!isRunId(runId)) {
     return (
       <Shell runId={runId}>
-        <p className="text-readout text-status-unreadable">
+        <p className="flex items-start gap-2 text-readout text-chassis-900">
+          <IconAlert className="mt-0.5 h-4 w-4 shrink-0" />
           That is not a run id. Artifact stems look like{" "}
           <code>20260804T081544953468-53e4125b-example</code>.
         </p>
@@ -74,7 +79,8 @@ export function RunDetailPage() {
   if (detail.isError) {
     return (
       <Shell runId={runId}>
-        <p className="text-readout text-status-unreadable">
+        <p className="flex items-start gap-2 text-readout text-chassis-900">
+          <IconAlert className="mt-0.5 h-4 w-4 shrink-0" />
           {detail.error instanceof ApiFailure
             ? `${detail.error.code ?? detail.error.status}: ${detail.error.message}`
             : "The cockpit could not reach its server."}

@@ -49,32 +49,40 @@ import { RunStatusChip } from "./RunStatusChip";
  * exercises. The column has to hold the widest **enum member**, not the widest
  * sample.
  *
- * Sizing at the 78rem (1248px) floor, verified in a browser for all nine
- * members — the check is that no cell overflows and the narrowest STATUS-to-RUN
- * gap stays above one character.
+ * **Every number below is measured in Chrome against the built CSS, at the
+ * table's own floor, with each column forced to the widest content it can ever
+ * hold.** An earlier revision derived this budget arithmetically and claimed
+ * "zero overflow"; the claim did not survive measurement — pack overflowed by
+ * ~2px and spend by ~12.5px, right-aligned, straight into VERDICT. Arithmetic
+ * cannot see that a cell inherited the wrong font size.
  *
- * The floor moved from 70rem when `Flatline` gained its required word: three
- * columns that previously held a bare hairline now hold a mark plus a label,
- * and an absent value needs as much room as a present one.
+ * Which was the actual cause: the verdict and spend `<td>`s carry no size
+ * token, so `Flatline`'s word fell through to the user agent's 16px. Fixing
+ * that (the component now states `text-legend`, and `index.css` sets the base
+ * to the scale) recovered most of the room on its own.
  *
- *   status  16% = 200px  — "✓ failed_to_start", the longest chip
- *   run     30% = 374px  — a 44-char run id at 14px mono
- *   mode     7% =  87px  — "discover"
- *   pack     8% = 100px  — "example", or the mark plus "unknown"
- *   created 15% = 187px  — "2026-08-06 09:10:11Z", whitespace-nowrap
- *   verdict 12% = 150px  — "✓ gate passed", or the mark plus "unreadable"
- *   spend   12% = 150px  — "$0.1234", or the mark plus "unrecorded"
+ * Slack at the 1248px floor, worst case, after the fix:
+ *
+ *   status  16%  — "✓ failed_to_start"; 25px to the run id
+ *   run     30%  — a 44-char run id at 14px mono
+ *   mode     7%  — "discover"
+ *   pack     9%  — the mark plus "unknown"          (6.3px slack at 8%, so 9%)
+ *   created 15%  — "2026-08-06 09:10:11Z", nowrap
+ *   verdict 11%  — the mark plus "unreadable"       (34.6px slack at 12%)
+ *   spend   12%  — the mark plus "unrecorded"       (11.6px slack)
+ *
+ * Re-measure rather than re-derive when this changes.
  */
 const COLUMNS = [
   { key: "status", label: "Status", width: "16%" },
   { key: "run", label: "Run", width: "30%" },
   { key: "mode", label: "Mode", width: "7%" },
-  { key: "pack", label: "Pack", width: "8%" },
+  { key: "pack", label: "Pack", width: "9%" },
   { key: "created", label: "Created (UTC)", width: "15%" },
   // "hint" is in the header rather than on every cell: the list's verdict is
   // computed from `probes[]` without calling `evaluate_gate`, and the contract
   // says never to render it without saying so.
-  { key: "verdict", label: "Verdict (hint)", width: "12%" },
+  { key: "verdict", label: "Verdict (hint)", width: "11%" },
   { key: "spend", label: "Judge USD", width: "12%", numeric: true },
 ] as const;
 
@@ -131,7 +139,22 @@ function RunRow({ run }: { run: RunSummary }) {
     <tr
       data-testid="run-row"
       data-run-id={run.run_id}
-      className="engrave-b align-top transition-colors duration-state hover:bg-chassis-50"
+      /*
+       * Hover deepens the row's engraved rule; it does NOT tint the row.
+       *
+       * `hover:bg-chassis-50` was a quiet AA failure: it put every status ink
+       * on a second ground, and `status-unreadable` measures 4.34:1 there —
+       * the exact pairing `tailwind.config.ts` prohibits by name. A state
+       * reachable by moving the mouse is not an edge case.
+       *
+       * It was also a false affordance. The row is not clickable; the run id
+       * inside it is. Highlighting the whole row promised a click target that
+       * does not exist, so the honest cue is the one an engraved panel would
+       * give: the line under the row cuts deeper. It aids the same horizontal
+       * tracking a tint was there for, changes no text's ground, and stays
+       * inside the world's own vocabulary.
+       */
+      className="engrave-b align-top transition-colors duration-state hover:[--rule:theme(colors.chassis.700)]"
     >
       <td className="py-2 pl-4 pr-3 sm:pl-6">
         <RunStatusChip status={run.status} />
@@ -213,7 +236,11 @@ export function RunsTable({ runs }: { runs: RunSummary[] }) {
           ))}
         </colgroup>
         <thead>
-          <tr className="engrave-b rule-major bg-chassis-50">
+          {/* No fill. A tinted band was a second ground under every status ink
+              in this table — the thing that let `hover:bg-chassis-50` hide a
+              4.34:1 pairing. The major rule beneath already divides the header,
+              and an engraved division is the world's own vocabulary anyway. */}
+          <tr className="engrave-b rule-major">
             {COLUMNS.map((column) => (
               <th
                 key={column.key}

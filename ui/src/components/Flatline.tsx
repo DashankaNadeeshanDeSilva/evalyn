@@ -52,7 +52,15 @@ export function Flatline({
     <span
       data-flatlined={variant}
       title={reason}
-      className="inline-flex items-center gap-1.5 whitespace-nowrap"
+      // `text-legend` is set here rather than inherited, and that is the point:
+      // the verdict and spend cells carry no size token, so an inherited size
+      // meant the browser's 16px default won and the word rendered larger than
+      // the values around it. A component that states its own size cannot be
+      // broken by the cell it is dropped into.
+      //
+      // Legend, not readout: this is a label describing the cell's emptiness,
+      // not a value. 12px is what every other label on the surface uses.
+      className="inline-flex items-center gap-1.5 whitespace-nowrap text-legend"
     >
       <Mark className="h-4 w-6 shrink-0 text-chassis-500" />
       <span className="text-chassis-600">{word}</span>

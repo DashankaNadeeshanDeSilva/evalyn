@@ -17,6 +17,22 @@
     color-scheme: light;
   }
 
+  /**
+   * The base size is the scale's own, never the user agent's 16px.
+   *
+   * Without this, any element that forgets a size token silently leaves the
+   * four-step scale — which is exactly what happened to the `Flatline` word:
+   * the verdict and spend `<td>`s carry no size class, so `no gate` and
+   * `unrecorded` rendered at 16px beside 12px chips and 14px readouts, and the
+   * extra width was the direct cause of the spend column overflowing.
+   *
+   * A missing token should degrade to the design system, not out of it.
+   */
+  body {
+    font-size: theme("fontSize.readout[0]");
+    line-height: theme("fontSize.readout[1].lineHeight");
+  }
+
   html,
   body {
     /**

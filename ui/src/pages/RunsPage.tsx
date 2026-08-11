@@ -1,6 +1,7 @@
 import { useMemo } from "react";
 
 import { ApiFailure, useRuns } from "../api/client";
+import { IconAlert } from "../components/InstrumentIcon";
 import { RunsTable } from "../components/RunsTable";
 
 /**
@@ -57,7 +58,11 @@ export function RunsPage() {
       </div>
 
       {runs.isError ? (
-        <p className="engrave-b px-4 py-8 text-readout text-status-unreadable sm:px-6">
+        <p className="engrave-b flex items-start gap-2 px-4 py-8 text-readout text-chassis-900 sm:px-6">
+          {/* `status-*` is keyed to RunStatus members; a directory that cannot
+              be listed is not a run state. The glyph carries the alarm so the
+              message is never colour alone. */}
+          <IconAlert className="mt-0.5 h-4 w-4 shrink-0" />
           {runs.error instanceof ApiFailure
             ? `The index could not be read (${runs.error.code ?? runs.error.status}): ${runs.error.message}`
             : "The cockpit could not reach its server. Is `evalyn ui` still running?"}
