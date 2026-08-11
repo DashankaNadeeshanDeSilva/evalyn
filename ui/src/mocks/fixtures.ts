@@ -106,17 +106,26 @@ export const SUMMARY_DISCOVER: RunSummary = {
   verdict_hint: null,
 };
 
+/**
+ * `gate_failed`, not `passed`, and the two are **not** a free choice: this run's
+ * `GATE_VERDICT` has `exit_code: 1`, and `index.py:318` derives the status from
+ * exactly that — `gate_failed if gate_result.exit_code else passed`. A row that
+ * says `passed` above a banner that says the gate failed is a state the real
+ * server cannot emit, so no page may be built against it.
+ */
 export const SUMMARY_GATE: RunSummary = {
   run_id: RUN_ID_GATE,
   mode: "gate",
   pack_name: "example",
   created_at: "2026-08-04T08:15:44.953115+00:00",
-  status: "passed",
+  status: "gate_failed",
   degraded: false,
   degraded_reason: null,
   capabilities: CAPS_FULL,
   judge_usd: 0.01377,
-  verdict_hint: "passed",
+  // `verdict_hint` is computed from `probes[]` alone: one of the two probes
+  // fails pass^k, so the hint agrees with the verdict rather than preceding it.
+  verdict_hint: "failed",
 };
 
 export const SUMMARY_LEGACY: RunSummary = {
