@@ -1,3 +1,4 @@
+import json
 import subprocess
 import sys
 from pathlib import Path
@@ -28,6 +29,29 @@ def test_version_matches_pyproject():
     assert evalyn.__version__ == declared, (
         f"evalyn.__version__ = {evalyn.__version__!r} but pyproject.toml declares "
         f"{declared!r} — bump both.")
+
+def test_importing_the_cli_loads_no_web_framework():
+    """`evalyn ui` must not cost `evalyn gate` a FastAPI import (Plan #4, T6).
+
+    The `ui` command imports `evalyn.ui.server` **inside its body**, and that
+    module is the only one in the package allowed to touch fastapi. Move the
+    import to the top of `cli.py` and every CLI invocation — in CI, in a
+    container, on a machine without the `[ui]` extra — pays for a web framework
+    or dies with an `ImportError` from three modules away.
+
+    A subprocess, because this interpreter has already imported everything:
+    in-process the assertion is worthless the moment another test touches the
+    server. `tests/ui/test_index.py` carries the same probe, but that module is
+    `pytest.mark.ui` and disappears under `-m "not ui"` — which is precisely the
+    run where a base install would be exercised, so the guard lives here too.
+    """
+    probe = ("import evalyn.cli, sys, json;"
+             "print(json.dumps(sorted({name.split('.')[0] for name in sys.modules}"
+             " & {'fastapi', 'starlette', 'uvicorn'})))")
+    done = subprocess.run([sys.executable, "-c", probe], check=True,
+                          capture_output=True, text=True)
+    assert json.loads(done.stdout) == [], done.stdout
+
 
 def test_cli_help_runs():
     out = subprocess.run([sys.executable, "-m", "evalyn.cli", "--help"],

@@ -530,6 +530,12 @@ dependencies = [
     { name = "typer" },
 ]
 
+[package.optional-dependencies]
+ui = [
+    { name = "fastapi" },
+    { name = "uvicorn" },
+]
+
 [package.dev-dependencies]
 dev = [
     { name = "pytest" },
@@ -542,13 +548,16 @@ dev = [
 requires-dist = [
     { name = "anthropic", specifier = ">=0.120" },
     { name = "click", specifier = ">=8.2" },
+    { name = "fastapi", marker = "extra == 'ui'", specifier = ">=0.119" },
     { name = "httpx", specifier = ">=0.27" },
     { name = "inspect-ai", specifier = ">=0.3.249" },
     { name = "openai", specifier = ">=1.0" },
     { name = "pydantic", specifier = ">=2" },
     { name = "pyyaml", specifier = ">=6" },
     { name = "typer", specifier = ">=0.12" },
+    { name = "uvicorn", marker = "extra == 'ui'", specifier = ">=0.30" },
 ]
+provides-extras = ["ui"]
 
 [package.metadata.requires-dev]
 dev = [

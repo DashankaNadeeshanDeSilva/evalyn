@@ -1,4 +1,6 @@
+import inspect
 import json
+import re
 import shutil
 from pathlib import Path
 from types import SimpleNamespace
@@ -6,8 +8,8 @@ from types import SimpleNamespace
 import pytest
 
 from evalyn.engine.run import (ProbeResult, RunArtifact, _judge_usd,
-                               _reduce_log_to_probes, pack_fingerprint,
-                               run_gate)
+                               _reduce_log_to_probes, atomic_write_artifact,
+                               new_run_id, pack_fingerprint, run_gate)
 from evalyn.targets.loader import load_pack
 
 EXAMPLE = "packs/example"
@@ -138,9 +140,9 @@ def test_run_gate_raises_on_non_success_eval_status(monkeypatch, tmp_path):
 
 
 def test_run_gate_produces_artifact_with_per_probe_trial_stats(toy_target, monkeypatch,
-                                                               tmp_path):
+                                                               tmp_path, live_pack_dir):
     monkeypatch.setenv("EVALYN_TARGET_URL", toy_target)
-    pack = load_pack(EXAMPLE)
+    pack = load_pack(live_pack_dir(REPO_EXAMPLE))
     # mockllm/model is unpriced, so real metering warns and prices it at the
     # conservative upper bound — capturing it here also PROVES the eval's own
     # usage reaches _judge_usd (the ContextVar seam silently returned {}).
@@ -232,12 +234,12 @@ def test_fingerprint_ignores_env_localhost_vs_127(tmp_pack_two_envs):
 
 
 def test_run_gate_out_dir_writes_artifact_there_not_cwd(toy_target, monkeypatch,
-                                                        tmp_path):
+                                                        tmp_path, live_pack_dir):
     monkeypatch.setenv("EVALYN_TARGET_URL", toy_target)
+    pack = load_pack(live_pack_dir(REPO_EXAMPLE))
     monkeypatch.chdir(tmp_path)  # a CWD runs/ write would be visible here
     # metering is not this test's concern (and unpriced mockllm would warn)
     monkeypatch.setattr("evalyn.engine.run._judge_usd", lambda log: 0.0)
-    pack = load_pack(str(REPO_EXAMPLE))
     out = tmp_path / "artifacts"
     art = run_gate(pack, judge_model="mockllm/model",
                    log_dir=str(tmp_path / "logs"), out_dir=str(out))
@@ -331,18 +333,24 @@ def test_reducer_all_no_signal_trials_is_fail_closed_zero_mean(minimal_pack_with
 
 # --- PR #4 fix #2: a sample error must not abort the whole eval ---------------
 
-_ERRPACK_TARGET_YAML = """\
+def _errpack_target_yaml(base_url: str) -> str:
+    """The pack text, built around the live target's URL (its port is dynamic).
+
+    `base_url` is the 127.0.0.1 spelling the `toy_target` fixture yields; the
+    allowlist keeps a `localhost` entry too, as the shipped packs do.
+    """
+    return f"""\
 name: errpack
 sessions:
-  open:    { method: POST, path: /session }
-  message: { method: POST, path: /chat, stream: sse, event_format: vercel-ai }
-auth: { kind: none }
-budget: { max_turns_per_session: 1 }
+  open:    {{ method: POST, path: /session }}
+  message: {{ method: POST, path: /chat, stream: sse, event_format: vercel-ai }}
+auth: {{ kind: none }}
+budget: {{ max_turns_per_session: 1 }}
 env:
-  base_url: ${EVALYN_TARGET_URL:-http://127.0.0.1:8899}
+  base_url: ${{EVALYN_TARGET_URL:-{base_url}}}
 allowlist:
-  - http://127.0.0.1:8899
-  - http://localhost:8899
+  - {base_url}
+  - {base_url.replace("127.0.0.1", "localhost")}
 """
 
 # `doomed` has 2 turns > max_turns_per_session=1 — the solver raises before any
@@ -371,7 +379,7 @@ def test_errored_probe_is_missing_gate_fail_not_run_abort(toy_target, monkeypatc
     monkeypatch.setenv("EVALYN_TARGET_URL", toy_target)
     pack_dir = tmp_path / "errpack"
     (pack_dir / "probes").mkdir(parents=True)
-    (pack_dir / "target.yaml").write_text(_ERRPACK_TARGET_YAML)
+    (pack_dir / "target.yaml").write_text(_errpack_target_yaml(toy_target))
     (pack_dir / "probes" / "p.yaml").write_text(_ERRPACK_PROBES)
     out = tmp_path / "runs"
     art = run_gate(load_pack(pack_dir), judge_model="mockllm/model",
@@ -631,3 +639,123 @@ def test_judge_usd_is_per_log_isolated():
 def test_judge_usd_fail_open_is_loud():
     with pytest.warns(RuntimeWarning, match="budget cap not enforced"):
         assert _judge_usd(SimpleNamespace()) == 0.0  # no .stats -> warn + 0.0
+
+
+# --- Plan #4 Task 2: run_id correlation -------------------------------------
+
+#: The artifact filename format as it stands TODAY, spelled out here on purpose.
+#: This is the regression guard for the whole task: every existing caller writes
+#: through `run_id=None`, and if that path drifts by so much as a digit the
+#: terminal `gate`/`compare`/`discover` flows — and 80 artifacts already on disk
+#: — stop correlating. It is deliberately NOT imported from the code under test.
+_MINTED_RE = re.compile(r"^\d{8}T\d{6}\d{6}-[0-9a-f]{8}-.+\.json$")
+
+
+def test_default_minted_artifact_name_format_is_unchanged(tmp_path):
+    """`run_id=None` mints EXACTLY as before — stamp+micros, uuid8, slug."""
+    out = tmp_path / "runs"
+    path = atomic_write_artifact({"a": 1}, "example", str(out), suffix="")
+    assert _MINTED_RE.match(path.name), path.name
+    stamp, uuid8, slug = path.stem.split("-", 2)
+    assert len(stamp) == 21 and stamp[8] == "T"      # 8 date + T + 6 time + 6 micros
+    assert len(uuid8) == 8 and int(uuid8, 16) >= 0   # lowercase hex, 8 chars
+    assert slug == "example"
+    assert json.loads(path.read_text()) == {"a": 1}
+    assert not list(out.glob("*.tmp")), "temp file must be renamed away"
+
+
+def test_default_minted_name_is_a_valid_run_id_plus_suffix(tmp_path):
+    """The default path and the frozen `RunId` grammar must already agree."""
+    from evalyn.ui.models import is_run_id
+    for suffix in ("", "-compare", "-discover"):
+        path = atomic_write_artifact({}, "example", str(tmp_path), suffix=suffix)
+        assert is_run_id(path.stem)
+
+
+def test_new_run_id_mints_the_same_format_as_the_default_path(tmp_path):
+    """The extracted minter is the SAME minter — not a second one that drifts."""
+    from evalyn.ui.models import is_run_id
+    minted = new_run_id("example")
+    assert is_run_id(minted)
+    assert _MINTED_RE.match(minted + ".json"), minted
+    default = atomic_write_artifact({}, "example", str(tmp_path), suffix="").stem
+    # same shape, field for field (values differ: stamp + uuid are fresh)
+    a, b = minted.split("-"), default.split("-")
+    assert [len(x) for x in a] == [len(x) for x in b]
+
+
+def test_new_run_id_is_collision_proof_and_slugifies_a_hostile_pack_name():
+    ids = {new_run_id("example") for _ in range(5)}
+    assert len(ids) == 5                       # uuid8 + microseconds
+    hostile = new_run_id("../evil/pack name")
+    assert "/" not in hostile and ".." not in hostile.split("-", 2)[2]
+    assert new_run_id("...").endswith("-pack")  # empty slug falls back
+
+
+def test_atomic_write_artifact_uses_an_explicit_run_id_verbatim(tmp_path):
+    out = tmp_path / "runs"
+    path = atomic_write_artifact({"a": 1}, "ignored-pack-name", str(out), suffix="",
+                                 run_id="20260807T101112000000-deadbeef-example")
+    assert path.name == "20260807T101112000000-deadbeef-example.json"
+    assert path == out / "20260807T101112000000-deadbeef-example.json"
+    assert json.loads(path.read_text()) == {"a": 1}
+
+
+def test_explicit_run_id_still_carries_the_mode_suffix(tmp_path):
+    """`runs/<run_id><suffix>.json` — the server derives the path it will read."""
+    for suffix in ("-compare", "-discover"):
+        path = atomic_write_artifact({}, "p", str(tmp_path), suffix=suffix,
+                                     run_id="20260807T101112000000-deadbeef-example")
+        assert path.name == f"20260807T101112000000-deadbeef-example{suffix}.json"
+
+
+def test_run_id_is_keyword_only_and_defaults_to_none():
+    sig = inspect.signature(atomic_write_artifact)
+    p = sig.parameters["run_id"]
+    assert p.kind is inspect.Parameter.KEYWORD_ONLY
+    assert p.default is None
+    # the pre-existing parameters keep their order and meaning
+    assert [n for n, q in sig.parameters.items()
+            if q.kind is not inspect.Parameter.KEYWORD_ONLY] == [
+        "payload", "pack_name", "out_dir", "suffix"]
+
+
+@pytest.mark.parametrize("hostile", [
+    "../../etc/passwd", "..", "/abs/path", "baseline",
+    "20260807T101112000000-deadbeef-example.json",   # a filename, not an id
+    "20260807T101112000000-deadbeef-example\n",
+])
+def test_atomic_write_artifact_refuses_a_run_id_that_is_not_one(tmp_path, hostile):
+    with pytest.raises(ValueError, match="run_id"):
+        atomic_write_artifact({}, "p", str(tmp_path), suffix="", run_id=hostile)
+    assert not list(tmp_path.rglob("*")), "a refused write must leave nothing behind"
+
+
+def test_atomic_write_artifact_never_reads_the_environment():
+    """Env is how the SUBPROCESS is told; the parameter is how it flows.
+
+    A read here would make the writer's behaviour depend on ambient state that
+    no caller passed and no test controls.
+    """
+    src = inspect.getsource(atomic_write_artifact)
+    assert "environ" not in src
+    assert "getenv" not in src
+
+
+def test_run_gate_threads_run_id_to_the_artifact_name(monkeypatch, tmp_path):
+    monkeypatch.setenv("EVALYN_TARGET_URL", "http://localhost:8899")
+    pack = load_pack(str(REPO_EXAMPLE))
+    monkeypatch.setattr("evalyn.engine.run.inspect_eval",
+                        lambda *a, **k: [_fake_success_log()])
+    monkeypatch.setattr("evalyn.engine.run._judge_usd", lambda log: 0.0)
+    out = tmp_path / "out"
+    with pytest.raises(RuntimeError, match="no probe collected"):  # empty log (N6)
+        run_gate(pack, judge_model="mockllm/model", log_dir=str(tmp_path / "logs"),
+                 out_dir=str(out), run_id="20260807T101112000000-deadbeef-example")
+    assert [p.name for p in out.glob("*.json")] == [
+        "20260807T101112000000-deadbeef-example.json"]
+
+
+def test_run_gate_run_id_is_keyword_only_and_optional():
+    p = inspect.signature(run_gate).parameters["run_id"]
+    assert p.kind is inspect.Parameter.KEYWORD_ONLY and p.default is None

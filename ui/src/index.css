@@ -1,0 +1,101 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/**
+ * THE BENCH INSTRUMENT — the base layer of the instrument face.
+ *
+ * The world is light, and that is a decision from the use scene rather than a
+ * default: one maintainer at a lit desk, and on 2026-08-14 the same surface
+ * thrown at a projector in a room with the lights on. A pale chassis holds its
+ * contrast under both; a dark field does not survive the second.
+ */
+
+@layer base {
+  :root {
+    /* No dark rendition exists; say so rather than letting the UA invent one. */
+    color-scheme: light;
+  }
+
+  /**
+   * The base size is the scale's own, never the user agent's 16px.
+   *
+   * Without this, any element that forgets a size token silently leaves the
+   * four-step scale — which is exactly what happened to the `Flatline` word:
+   * the verdict and spend `<td>`s carry no size class, so `no gate` and
+   * `unrecorded` rendered at 16px beside 12px chips and 14px readouts, and the
+   * extra width was the direct cause of the spend column overflowing.
+   *
+   * A missing token should degrade to the design system, not out of it.
+   */
+  body {
+    font-size: theme("fontSize.readout[0]");
+    line-height: theme("fontSize.readout[1].lineHeight");
+  }
+
+  html,
+  body {
+    /**
+     * The instrument face never scrolls sideways. Wide content (tables,
+     * transcripts) scrolls inside its own container instead.
+     *
+     * `clip`, not `hidden`, and on both elements. `overflow-x: hidden` on
+     * `html` alone still left the page scrollable by 121px at narrow widths —
+     * measured, not assumed — because `hidden` makes the viewport a scroll
+     * container that a descendant's overflow can still reach. `clip` creates no
+     * scroll container at all, so there is nothing to scroll.
+     */
+    overflow-x: clip;
+  }
+
+  /**
+   * One focus treatment for the whole surface, so no component can forget it
+   * and none can reset it away. It is part of the instrument language: a hard
+   * 2px rule in the ink colour, offset so it reads as a machined outline
+   * around the control rather than a browser default.
+   */
+  :focus-visible {
+    outline: 2px solid theme("colors.chassis.900");
+    outline-offset: 2px;
+  }
+
+  ::selection {
+    background: theme("colors.chassis.200");
+  }
+}
+
+@layer utilities {
+  /**
+   * An engraved panel line. The bench supplies vocabulary and hierarchy, never
+   * texture — so this is a single confident hairline, not a bevel, not an inset
+   * shadow, not a simulated groove.
+   *
+   * `--rule` picks the weight: `chassis-300` for a minor division inside a
+   * region, `chassis-400` for a major one between regions.
+   */
+  .engrave-b {
+    border-bottom: 1px solid var(--rule, theme("colors.chassis.300"));
+  }
+  .engrave-t {
+    border-top: 1px solid var(--rule, theme("colors.chassis.300"));
+  }
+  .rule-major {
+    --rule: theme("colors.chassis.400");
+  }
+}
+
+/**
+ * Motion is state change, not decoration, and reduced-motion gets the state
+ * without the transit. Nothing here animates a layout property, so removing the
+ * transition changes only how the change arrives, never what is on screen.
+ */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}

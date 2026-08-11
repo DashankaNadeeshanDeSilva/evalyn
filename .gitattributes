@@ -1,0 +1,10 @@
+# The built SPA bundle is committed (hatchling honours .gitignore, so a
+# gitignored bundle would ship an empty wheel). Treat it as binary: no CRLF
+# normalisation, and no thousand-line diffs of minified JS in a review.
+src/evalyn/ui/static/** -text -diff
+
+# The MSW service worker is generated, not authored.
+ui/public/mockServiceWorker.js linguist-generated=true -diff
+
+# Lockfile: generated, reviewed by version not by line.
+ui/package-lock.json -diff linguist-generated=true

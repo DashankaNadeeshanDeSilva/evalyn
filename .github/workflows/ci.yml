@@ -19,7 +19,12 @@ jobs:
           python-version: "3.12"
 
       - name: Install dependencies
-        run: uv sync
+        # `--extra ui` because the cockpit's endpoint tests import fastapi. It is
+        # an extra precisely so the base install can skip it, and the suite's own
+        # subprocess guard still proves `import evalyn.cli` loads neither fastapi
+        # nor uvicorn *even when both are installed* — which is the only version
+        # of that assertion worth making.
+        run: uv sync --extra ui
 
       - name: Run tests
         run: uv run pytest -q

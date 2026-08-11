@@ -8,9 +8,9 @@ from evalyn.targets.loader import load_pack
 MINIPACK = Path(__file__).parent.parent / "fixtures" / "minipack"
 
 
-def test_build_task_runs_and_records_reducers(toy_target, monkeypatch):
+def test_build_task_runs_and_records_reducers(toy_target, monkeypatch, live_pack_dir):
     monkeypatch.setenv("EVALYN_TARGET_URL", toy_target)
-    pack = load_pack(MINIPACK)
+    pack = load_pack(live_pack_dir(MINIPACK))
     task = build_task(pack, judge_model="mockllm/model")
     meta = task.dataset[0].metadata
     assert {"id", "category", "kind", "safety_critical", "turns", "checks", "samples"} <= meta.keys()

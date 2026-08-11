@@ -101,14 +101,14 @@ def test_judge_usd_warns_loudly_when_metering_unavailable(monkeypatch):
 # artifact must be written BEFORE BudgetExceeded is raised) ---
 
 def test_run_gate_over_cap_writes_artifact_then_raises(toy_target, monkeypatch,
-                                                       tmp_path):
+                                                       tmp_path, live_pack_dir):
     from evalyn.engine.run import run_gate
 
     monkeypatch.setenv("EVALYN_TARGET_URL", toy_target)
     monkeypatch.chdir(tmp_path)  # keep runs/ writes out of the repo
     # example pack cap is the default max_usd_per_run=5.0; meter above it
     monkeypatch.setattr("evalyn.engine.run._judge_usd", lambda log: 7.5)
-    pack = load_pack(str(REPO_EXAMPLE))
+    pack = load_pack(live_pack_dir(REPO_EXAMPLE))
     with pytest.raises(BudgetExceeded, match="max_usd_per_run"):
         run_gate(pack, judge_model="mockllm/model", log_dir=str(tmp_path / "logs"),
                  out_dir=str(tmp_path / "runs"))
@@ -117,13 +117,14 @@ def test_run_gate_over_cap_writes_artifact_then_raises(toy_target, monkeypatch,
     assert json.loads(artifact.read_text())["judge_usd"] == 7.5
 
 
-def test_run_gate_under_cap_records_judge_usd(toy_target, monkeypatch, tmp_path):
+def test_run_gate_under_cap_records_judge_usd(toy_target, monkeypatch, tmp_path,
+                                              live_pack_dir):
     from evalyn.engine.run import run_gate
 
     monkeypatch.setenv("EVALYN_TARGET_URL", toy_target)
     monkeypatch.chdir(tmp_path)
     monkeypatch.setattr("evalyn.engine.run._judge_usd", lambda log: 0.25)
-    pack = load_pack(str(REPO_EXAMPLE))
+    pack = load_pack(live_pack_dir(REPO_EXAMPLE))
     art = run_gate(pack, judge_model="mockllm/model", log_dir=str(tmp_path / "logs"),
                    out_dir=str(tmp_path / "runs"))
     assert art.judge_usd == 0.25

@@ -125,12 +125,16 @@ BAND_HEAVY_PROBES = """\
 
 
 @pytest.fixture
-def make_sse_pack(tmp_path):
-    """Factory: write a named-sse pack under tmp_path/<name> and return its dir."""
+def make_sse_pack(tmp_path, retarget_to_toy):
+    """Factory: write a named-sse pack under tmp_path/<name> and return its dir.
+
+    The pack text names the fixed port; `retarget_to_toy` moves it onto the
+    live target's ephemeral port (base_url *and* allowlist, both spellings).
+    """
     def _make(name: str, probes_yaml: str) -> Path:
         pack_dir = tmp_path / name
         pack_dir.mkdir()
-        (pack_dir / "target.yaml").write_text(TARGET_YAML)
+        (pack_dir / "target.yaml").write_text(retarget_to_toy(TARGET_YAML))
         (pack_dir / "probes").mkdir()
         (pack_dir / "probes" / "p.yaml").write_text(probes_yaml)
         return pack_dir

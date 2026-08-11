@@ -239,16 +239,18 @@ def test_gate_exit_1_when_safety_probe_fails(monkeypatch, tmp_path):
     assert "FAIL" in result.stdout
 
 
-def test_gate_live_exit_code_matches_gate_policy(toy_target, monkeypatch, tmp_path):
+def test_gate_live_exit_code_matches_gate_policy(toy_target, monkeypatch, tmp_path,
+                                                 live_pack_dir):
     # Amendment A2 strengthening of the brief's flaky-safety test: instead of
     # accepting exit_code in (0, 1), read the artifact this very run produced,
     # apply the gate policy to it, and require the CLI's exit code to be EQUAL.
     monkeypatch.setenv("EVALYN_TARGET_URL", toy_target)
+    live_pack = str(live_pack_dir(PACK))  # allowlist must name the live port
     monkeypatch.chdir(tmp_path)  # run_gate writes runs/ relative to cwd
     # real post-hoc metering prices the unpriced mockllm judge at the
     # conservative upper bound and warns (Plan #2b Task 1: log-based metering)
     with pytest.warns(RuntimeWarning, match="no price entry"):
-        result = runner.invoke(app, ["gate", "--target", PACK,
+        result = runner.invoke(app, ["gate", "--target", live_pack,
                                      "--baseline", str(tmp_path / "none.json")])
     artifacts = sorted((tmp_path / "runs").glob("*-example.json"))
     assert artifacts, "gate run wrote no artifact"
@@ -1091,10 +1093,125 @@ def test_discover_help_registered():
 
 
 def test_discover_dry_run_smoke(monkeypatch):
-    async def must_not_run(pack, cfg):
+    async def must_not_run(pack, cfg, **kw):
         raise AssertionError("run_discovery must not be called under --dry-run")
 
     monkeypatch.setattr("evalyn.discovery.run.run_discovery", must_not_run)
     result = runner.invoke(app, ["discover", "--target", PACK, "--dry-run"])
     assert result.exit_code == 0
     assert "dry-run" in result.stdout
+
+
+# ------------------------------------------- Plan #4 Task 2: EVALYN_RUN_ID
+# The cockpit launches these commands as subprocesses with EVALYN_RUN_ID set, so
+# the server knows the artifact path before the run starts. The CLI is the ONLY
+# layer that reads that env var — everything below it takes a parameter.
+
+RID = "20260807T101112000000-deadbeef-example"
+
+
+def _capture_gate(monkeypatch):
+    seen = {}
+
+    def fake_run(pack, judge_model="mockllm/model", **kwargs):
+        seen.update(kwargs)
+        return _artifact([_probe("ok-probe")])
+
+    monkeypatch.setattr("evalyn.engine.run.run_gate", fake_run)
+    return seen
+
+
+def _invoke_gate(tmp_path):
+    return runner.invoke(app, ["gate", "--target", PACK,
+                               "--baseline", str(tmp_path / "none.json"),
+                               "--out-dir", str(tmp_path / "artifacts")])
+
+
+def test_gate_threads_evalyn_run_id_to_the_engine(monkeypatch, tmp_path):
+    monkeypatch.setenv("EVALYN_TARGET_URL", "http://localhost:8899")
+    monkeypatch.setenv("EVALYN_RUN_ID", RID)
+    seen = _capture_gate(monkeypatch)
+    assert _invoke_gate(tmp_path).exit_code == 0
+    assert seen["run_id"] == RID
+
+
+def test_gate_without_the_env_var_passes_none_and_mints_as_always(monkeypatch, tmp_path):
+    monkeypatch.setenv("EVALYN_TARGET_URL", "http://localhost:8899")
+    monkeypatch.delenv("EVALYN_RUN_ID", raising=False)
+    seen = _capture_gate(monkeypatch)
+    assert _invoke_gate(tmp_path).exit_code == 0
+    assert seen["run_id"] is None
+
+
+@pytest.mark.parametrize("bad", ["not-a-run-id", "../escape", RID + ".json", " "])
+def test_an_invalid_evalyn_run_id_is_ignored_never_fatal(monkeypatch, tmp_path, bad):
+    """A stale export in someone's shell must not be able to abort a run."""
+    monkeypatch.setenv("EVALYN_TARGET_URL", "http://localhost:8899")
+    monkeypatch.setenv("EVALYN_RUN_ID", bad)
+    seen = _capture_gate(monkeypatch)
+    result = _invoke_gate(tmp_path)
+    assert result.exit_code == 0          # the run still happens
+    assert seen["run_id"] is None         # ...with a freshly minted name
+    assert "EVALYN_RUN_ID" in result.stderr and "ignoring" in result.stderr
+
+
+def test_gate_run_id_reaches_the_artifact_filename_end_to_end(monkeypatch, tmp_path):
+    """The whole point: the server can predict the path before the run starts."""
+    from evalyn.engine import run as run_mod
+
+    monkeypatch.setenv("EVALYN_TARGET_URL", "http://localhost:8899")
+    monkeypatch.setenv("EVALYN_RUN_ID", RID)
+    out = tmp_path / "artifacts"
+
+    def fake_run(pack, judge_model="mockllm/model", *, run_id=None, out_dir="runs",
+                 **kwargs):
+        art = _artifact([_probe("ok-probe")])
+        run_mod.atomic_write_artifact(art.to_dict(), "example", out_dir,
+                                      suffix="", run_id=run_id)
+        return art
+
+    monkeypatch.setattr("evalyn.engine.run.run_gate", fake_run)
+    assert _invoke_gate(tmp_path).exit_code == 0
+    assert [p.name for p in out.glob("*.json")] == [f"{RID}.json"]
+
+
+def test_compare_threads_evalyn_run_id_to_run_and_write(monkeypatch, tmp_path):
+    pack_dir = _compare_pack(tmp_path)
+    a, b = _compare_artifact_files(pack_dir, tmp_path)
+    _stub_judge_pair(monkeypatch)
+    _fresh_calibration(pack_dir)
+    monkeypatch.setenv("EVALYN_RUN_ID", RID)
+    out = tmp_path / "out"
+    result = runner.invoke(app, ["compare", "--target", pack_dir,
+                                 "--a", a, "--b", b, "--out-dir", str(out)])
+    assert result.exit_code == 0
+    assert [p.name for p in out.glob("*.json")] == [f"{RID}-compare.json"]
+
+
+def test_discover_threads_evalyn_run_id_to_run_discovery(monkeypatch):
+    seen = {}
+
+    async def fake(pack, cfg, **kw):
+        seen.update(kw)
+        raise ConnectionError("stop here — the seam is what is under test")
+
+    monkeypatch.setattr("evalyn.discovery.run.run_discovery", fake)
+    monkeypatch.setenv("EVALYN_TARGET_URL", "http://localhost:8899")
+    monkeypatch.setenv("EVALYN_RUN_ID", RID)
+    result = runner.invoke(app, ["discover", "--target", PACK,
+                                 "--objective", "prompt-injection-bypass"])
+    assert result.exit_code == 3          # ran, then failed: the seam was reached
+    assert seen["run_id"] == RID
+
+
+def test_the_env_var_is_read_in_the_cli_and_nowhere_below_it(monkeypatch):
+    """Env is how a subprocess is TOLD; the parameter is how the id flows."""
+    import inspect
+
+    from evalyn.discovery import run as discovery_run
+    from evalyn.engine import compare as cmp_mod
+    from evalyn.engine import run as run_mod
+
+    for mod in (run_mod, cmp_mod, discovery_run):
+        src = inspect.getsource(mod)
+        assert "os.environ" not in src and "getenv" not in src, mod.__name__
