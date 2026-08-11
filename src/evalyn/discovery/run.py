@@ -361,13 +361,12 @@ async def run_discovery(pack: Pack, cfg: DiscoveryConfig, *,
     artifact (spend record intact) before re-raising; the CLI turns it into
     exit 3, and the record is marked `partial`.
 
-    **Caveat, stated plainly:** the poll point *inside* a hunt
-    (`loop._drive`'s BOUNDS-FIRST block) exists and is tested, but the
-    controller cannot reach it from here. The only seam is
-    `build_discovery_task` -> `discovery_solver` -> `run_session`, and neither
-    of those two modules was in Task 19's scope. Until they take a `controller`
-    argument, a cancel during discover takes effect at the next replay, not at
-    the next agent step.
+    It is also polled *inside* each hunt, at `loop._drive`'s BOUNDS-FIRST block,
+    which it reaches through `build_discovery_task` -> `discovery_solver` ->
+    `run_session` — the same seam `sink` travels. So a cancel takes effect at
+    the next agent step, before that step's reasoning call is made or paid for,
+    and the replay checkpoint above is the second, coarser net rather than the
+    only one.
     """
     sink.emit("run.started", mode="discover", pack=pack.spec.name,
               objectives=list(cfg.objectives), agent_model=cfg.agent_model,

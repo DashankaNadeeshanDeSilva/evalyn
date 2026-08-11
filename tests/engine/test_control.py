@@ -39,6 +39,7 @@ import pytest
 from inspect_ai import Task
 from inspect_ai.dataset import MemoryDataset, Sample
 
+from evalyn.cli import _MODE_SUFFIX
 from evalyn.engine import control as control_mod
 from evalyn.engine.control import (
     CANCEL_REASON,
@@ -1047,14 +1048,14 @@ def cli_seam(request, tmp_path, monkeypatch, cli_pack, compare_cli_pack,
 
     if mode == "gate":
         from evalyn.engine import run as run_mod
-        return (_gate_argv(cli_pack, tmp_path),
+        return (mode, _gate_argv(cli_pack, tmp_path),
                 lambda: _install(run_mod, "run_gate", is_async=False))
     if mode == "compare":
         from evalyn.engine import compare as cmp_mod
-        return (_compare_argv(cmp_dir, sides, tmp_path),
+        return (mode, _compare_argv(cmp_dir, sides, tmp_path),
                 lambda: _install(cmp_mod, "run_compare", is_async=True))
     from evalyn.discovery import run as drun
-    return (_discover_argv(discover_cli_pack, tmp_path),
+    return (mode, _discover_argv(discover_cli_pack, tmp_path),
             lambda: _install(drun, "run_discovery", is_async=True))
 
 
@@ -1070,7 +1071,11 @@ def test_the_cli_hands_its_controller_to_the_engine(cli_seam, tmp_path,
     a stop button wired to nothing, which is exactly the state three separate
     one-line deletions left the suite green in.
     """
-    argv, install = cli_seam
+    from evalyn.ui.index import mode_of
+    from evalyn.ui.models import RunMode
+    from evalyn.ui.paths import CONTROL_SUFFIX
+
+    mode, argv, install = cli_seam
 
     calls = install()
     _cli(argv, monkeypatch, tmp_path)
@@ -1081,9 +1086,30 @@ def test_the_cli_hands_its_controller_to_the_engine(cli_seam, tmp_path,
     calls = install()
     _cli([*argv, "--control"], monkeypatch, tmp_path)
     assert calls, "the CLI never reached the engine entry point at all"
-    assert calls[0].get("controller") is not None, (
+    controller = calls[0].get("controller")
+    assert controller is not None, (
         "--control constructed a controller and then did not hand it over — "
         "the stop button is wired to nothing")
+
+    # ...and WHICH FILE it polls, which `is not None` cannot see. A compare run
+    # polling `runs/<rid>.control.json` while the cockpit writes
+    # `runs/<rid>-compare.control.json` is a Pause button wired to nothing, and
+    # it is one character away in `_MODE_SUFFIX`.
+    #
+    # Asserted by ROUND-TRIP through the reader's own contract rather than
+    # against a literal: strip the control suffix to recover the artifact stem
+    # and ask `ui.index.mode_of` — the function the cockpit uses to classify a
+    # run — which mode wrote it. Writer and reader then cannot drift in either
+    # direction, and no suffix is spelled twice.
+    assert controller.path.name.endswith(CONTROL_SUFFIX)
+    stem = controller.path.name[: -len(CONTROL_SUFFIX)]
+    assert mode_of(stem) is RunMode(mode), (
+        f"a {mode} run polls {controller.path.name!r}, which the cockpit reads "
+        f"back as a {mode_of(stem).value} run — the control file the engine "
+        f"watches is not the one the server writes")
+    # ...next to the artifact, in the caller's --out-dir, not somewhere else.
+    assert controller.path.parent == (tmp_path / "runs")
+    assert stem == calls[0]["run_id"] + _MODE_SUFFIX[mode]
 
 
 def test_a_control_file_cancel_stops_a_real_gate_cli_run(cli_pack, tmp_path,
