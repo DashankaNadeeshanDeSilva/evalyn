@@ -56,6 +56,14 @@ CONTROL_HELP = ("Poll a control file next to the run artifact "
 #: Artifact filename suffix per mode — the same suffixes the writers use.
 _MODE_SUFFIX = {"gate": "", "compare": "-compare", "discover": "-discover"}
 
+#: Where `evalyn gate` looks for a blessed baseline when `--baseline` is not
+#: passed. A relative path, resolved against the *caller's* working directory.
+#: A named constant because `evalyn ui` has to reason about the file its child
+#: would otherwise read behind the operator's back (see
+#: `RunLauncher._default_baseline_for`), and a second spelling of it there
+#: would drift from this one silently.
+DEFAULT_BASELINE = "runs/baseline.json"
+
 
 def _artifact_path(mode: str, out_dir: str, run_id: str) -> Path:
     """Where this run's artifact will land. The sidecar layout derives from it."""
@@ -126,7 +134,7 @@ def gate(
         False, "--allow-uncalibrated",
         help="Run rubric checks despite a missing/stale calibration record "
              "(loud warning; rubric scores marked untrusted in the artifact)."),
-    baseline: str = typer.Option("runs/baseline.json", "--baseline"),
+    baseline: str = typer.Option(DEFAULT_BASELINE, "--baseline"),
     update_baseline: bool = typer.Option(False, "--update-baseline"),
     force_baseline: bool = typer.Option(
         False, "--force-baseline",

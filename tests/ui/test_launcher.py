@@ -191,11 +191,30 @@ def test_build_argv_gate_passes_the_baseline_when_one_was_chosen():
 
 
 def test_build_argv_gate_omits_the_baseline_flag_when_none_was_chosen():
-    """Omitted, not passed empty: the CLI has its own default
-    (`runs/baseline.json`) and passing `--baseline ""` would defeat it."""
+    """Nothing chosen and nothing handed down: the flag is left off entirely
+    rather than passed empty (`--baseline ""` is `Path(".")`, a directory that
+    exists, which explodes in `load_baseline`). This is the pure default, not
+    what a real launch does — `RunLauncher` always resolves a path, because
+    omission is what hands the child back to `runs/baseline.json` (T-A3)."""
     argv = build_argv(request_for("gate"), pack_path=EXAMPLE_PACK,
                       runs_dir=Path("/runs"))
     assert "--baseline" not in argv
+
+
+def test_build_argv_gate_passes_the_default_baseline_it_is_handed():
+    argv = build_argv(request_for("gate"), pack_path=EXAMPLE_PACK,
+                      runs_dir=Path("/runs"),
+                      default_baseline=Path("/elsewhere/blessed.json"))
+    assert argv[argv.index("--baseline") + 1] == "/elsewhere/blessed.json"
+
+
+def test_build_argv_gate_prefers_the_chosen_baseline_over_the_handed_default():
+    chosen = "20260101T000000000000-aaaaaaaa-example"
+    argv = build_argv(request_for("gate", baseline_run_id=chosen),
+                      pack_path=EXAMPLE_PACK, runs_dir=Path("/runs"),
+                      default_baseline=Path("/elsewhere/blessed.json"))
+    assert argv[argv.index("--baseline") + 1] == f"/runs/{chosen}.json"
+    assert "/elsewhere/blessed.json" not in argv
 
 
 def test_build_argv_compare_resolves_both_run_ids_to_artifact_paths():
@@ -2008,3 +2027,115 @@ async def test_a_cockpit_started_without_a_judge_leaves_the_child_free(
     assert "--judge-model" not in app.state.spawned[0]["argv"]
     assert cli_option_default("gate", "--judge-model") == "mockllm/model", \
         "which is what makes an unflagged child free"
+
+
+# --------------------------------------------------------------------------
+# 17. T-A3 — a cockpit gate never diffs against another pack's baseline
+# --------------------------------------------------------------------------
+#
+# `build_argv` omitted `--baseline` when the browser named none, which left the
+# child on the CLI's own default of `runs/baseline.json`. That file is a single
+# blessed artifact belonging to whichever pack blessed it last, and `cli.py`
+# only *warns* on a pack-hash mismatch — so launching a different pack from the
+# cockpit diffed it against a stranger's baseline and printed a warning about
+# it. The launcher now hands the child a baseline only when it has read that
+# file and found this pack's own name in it.
+
+def gate_launch_argv(launcher, pack, request=None) -> tuple[str, list[str]]:
+    """Launch a gate with an inert child and return `(run_id, argv)`."""
+    run_id = launcher.launch(request or request_for("gate"), pack=pack,
+                             pack_path=EXAMPLE_PACK)
+    launcher.live.process.wait(timeout=60)
+    launcher.reap()
+    return run_id, launcher.calls[0]["argv"]
+
+
+def test_a_cockpit_gate_never_diffs_against_another_packs_baseline(
+        tmp_path, pack, monkeypatch):
+    """The one that would have been on the projector.
+
+    `runs/baseline.json` in this repository belongs to the `example` pack;
+    launching the demo pack from the cockpit gated it against those four probes
+    and printed `warning: baseline pack hash ... differs` mid-demo. Naming a
+    baseline that is not there is a supported, exercised state —
+    `load_baseline` returns `None` for a path that does not exist and
+    `evaluate_gate(art, None)` is a real code path, which is exactly what the
+    documented CLI demo command relies on.
+    """
+    monkeypatch.chdir(tmp_path)
+    runs = tmp_path / "runs"
+    runs.mkdir()
+    foreign = runs / "baseline.json"
+    foreign.write_text(json.dumps({**PASSING_ARTIFACT, "pack_name": "not-this-pack"}),
+                       encoding="utf-8")
+
+    run_id, argv = gate_launch_argv(launcher_spawning(INERT, runs), pack)
+
+    assert "--baseline" in argv, \
+        "omitting it would leave the child on its own default — the foreign file"
+    named = Path(argv[argv.index("--baseline") + 1])
+    assert named != foreign.resolve()
+    assert not named.exists(), "so the gate diffs against no baseline at all"
+    assert named.parent == sidecar_dir(runs, run_id), \
+        ("in this run's own sidecar directory, which is made fresh for it and "
+         "only ever holds meta.json and stderr.log — nothing can put a "
+         "baseline there")
+
+
+def test_a_cockpit_gate_still_uses_the_baseline_that_belongs_to_its_own_pack(
+        tmp_path, pack, monkeypatch):
+    """The half that must not break.
+
+    `packs/example` blessed `runs/baseline.json` and gates against it from the
+    cockpit today. A fix that gave every pack "no baseline" would satisfy the
+    test above while quietly deleting the one baseline diff this repository
+    actually uses.
+    """
+    monkeypatch.chdir(tmp_path)
+    runs = tmp_path / "runs"
+    runs.mkdir()
+    own = runs / "baseline.json"
+    own.write_text(json.dumps(PASSING_ARTIFACT), encoding="utf-8")
+    assert PASSING_ARTIFACT["pack_name"] == pack.spec.name, "the same pack"
+
+    _, argv = gate_launch_argv(launcher_spawning(INERT, runs), pack)
+
+    assert Path(argv[argv.index("--baseline") + 1]) == own.resolve()
+
+
+def test_a_default_baseline_that_cannot_be_read_is_never_handed_to_a_child(
+        tmp_path, pack, monkeypatch):
+    """Unreadable is not "belongs to this pack", so it is not passed.
+
+    A deliberate change of behaviour: a corrupt `runs/baseline.json` used to
+    reach the child and exit it 2 with `gate: baseline error`. A cockpit launch
+    now runs, and gates against nothing. Losing a run to a file the operator
+    did not choose and cannot see is the worse of the two on a stage, and the
+    terminal path still reports the corruption exactly as before.
+    """
+    monkeypatch.chdir(tmp_path)
+    runs = tmp_path / "runs"
+    runs.mkdir()
+    (runs / "baseline.json").write_text("{ this is not json", encoding="utf-8")
+
+    _, argv = gate_launch_argv(launcher_spawning(INERT, runs), pack)
+
+    assert not Path(argv[argv.index("--baseline") + 1]).exists()
+
+
+def test_an_explicitly_chosen_baseline_is_never_second_guessed(
+        tmp_path, pack, monkeypatch):
+    """A baseline the operator picked in the browser is a run *they* named, and
+    the pack check has no business overruling it — the two are different
+    questions and only the default one is asked behind their back."""
+    monkeypatch.chdir(tmp_path)
+    runs = tmp_path / "runs"
+    runs.mkdir()
+    (runs / "baseline.json").write_text(
+        json.dumps({**PASSING_ARTIFACT, "pack_name": "not-this-pack"}), encoding="utf-8")
+    chosen = "20260101T000000000000-aaaaaaaa-example"
+
+    _, argv = gate_launch_argv(launcher_spawning(INERT, runs), pack,
+                               request_for("gate", baseline_run_id=chosen))
+
+    assert argv[argv.index("--baseline") + 1] == str(runs / f"{chosen}.json")

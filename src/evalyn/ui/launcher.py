@@ -55,7 +55,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from evalyn.cli import RUN_ID_ENV, _MODE_SUFFIX
+from evalyn.cli import DEFAULT_BASELINE, RUN_ID_ENV, _MODE_SUFFIX
 from evalyn.engine.run import new_run_id
 from evalyn.targets.loader import Pack
 from evalyn.ui.models import (
@@ -75,12 +75,23 @@ from evalyn.ui.paths import (
 
 __all__ = ["build_argv", "clamp_max_usd", "refusal_for", "pack_id_for",
            "pack_rows", "pack_axes", "RunLauncher", "Busy", "LaunchRefused",
-           "LiveRun", "spawn_child", "STDERR_FILENAME"]
+           "LiveRun", "spawn_child", "STDERR_FILENAME",
+           "ABSENT_BASELINE_FILENAME"]
 
 #: The child's stderr, inside `runs/.evalyn-ui/<run_id>/`. Served by
 #: `GET /api/runs/{id}/stderr` — for a run that died before writing an
 #: artifact, it is the only place the reason exists.
 STDERR_FILENAME = "stderr.log"
+
+#: The `--baseline` a cockpit gate is given when there is no baseline it may
+#: honestly use. It is written into the run's **own** sidecar directory, which
+#: this launcher creates fresh for each run and which only ever holds
+#: `meta.json` and `stderr.log` — so the file provably does not exist, and
+#: `load_baseline` returns `None` for it rather than diffing against something
+#: nobody chose. Naming an absent path is deliberate where omitting the flag
+#: would not do: omission hands the child back to its own
+#: `runs/baseline.json` default, which is the whole problem.
+ABSENT_BASELINE_FILENAME = "no-baseline.json"
 
 
 class Busy(Exception):
@@ -239,7 +250,8 @@ def refusal_for(request: LaunchRequest, *, pack: Pack | None,
 
 def build_argv(request: LaunchRequest, *, pack_path: Path, runs_dir: Path,
                max_usd: float | None = None,
-               judge_model: str | None = None) -> list[str]:
+               judge_model: str | None = None,
+               default_baseline: Path | None = None) -> list[str]:
     """The child's argv. Pure — no filesystem, no process, no clock.
 
     *max_usd* is the **already-clamped** ceiling and is passed in rather than
@@ -256,6 +268,14 @@ def build_argv(request: LaunchRequest, *, pack_path: Path, runs_dir: Path,
     this cockpit is exercised end to end without spending. Only `gate` and
     `discover` accept `--judge-model`; `compare` does not, so handing it one
     would kill the child with a usage error rather than configure a judge.
+
+    *default_baseline* is the `--baseline` to pass when the request names none.
+    Deciding it needs the filesystem, so it is decided in `RunLauncher` and
+    handed down here (`_default_baseline_for`). `None` leaves the flag off
+    entirely and hands the child back to its own `runs/baseline.json` default,
+    which is only ever safe when that file has been read and found to belong to
+    the pack being launched — so `None` is the pure-function default and not
+    what a real launch passes.
 
     `--events` is not optional. Without it `_open_sink` constructs no sink and
     writes no file (`cli.py:52-78`), and the cockpit's live panel would tail
@@ -286,10 +306,14 @@ def build_argv(request: LaunchRequest, *, pack_path: Path, runs_dir: Path,
     if mode == RunMode.gate.value:
         if judge_model:
             argv += ["--judge-model", judge_model]
-        # Omitted rather than passed empty: the CLI's own default is
-        # `runs/baseline.json`, and `--baseline ""` would defeat it.
+        # Never passed empty — `--baseline ""` is `Path(".")`, which exists,
+        # is a directory, and would explode in `load_baseline` rather than
+        # reading as "no baseline". An absent *file* is the supported way to
+        # say that, and it is what `default_baseline` carries.
         if request.baseline_run_id:
             argv += ["--baseline", str(Path(runs_dir) / f"{request.baseline_run_id}.json")]
+        elif default_baseline is not None:
+            argv += ["--baseline", str(default_baseline)]
     elif mode == RunMode.compare.value:
         argv += ["--a", str(Path(runs_dir) / f"{request.run_id_a}.json"),
                  "--b", str(Path(runs_dir) / f"{request.run_id_b}.json")]
@@ -369,10 +393,13 @@ class RunLauncher:
         engine_run_id = new_run_id(pack.spec.name)
         run_id = engine_run_id + _MODE_SUFFIX[RunMode(request.mode).value]
         max_usd = clamp_max_usd(request.max_usd, pack.spec.budget.max_usd_per_run)
-        argv = build_argv(request, pack_path=pack_path, runs_dir=self.runs_dir,
-                          max_usd=max_usd, judge_model=self.judge_model)
-
         directory = sidecar_dir(self.runs_dir, run_id)
+        argv = build_argv(
+            request, pack_path=pack_path, runs_dir=self.runs_dir,
+            max_usd=max_usd, judge_model=self.judge_model,
+            default_baseline=self._default_baseline_for(pack.spec.name,
+                                                        sidecar=directory))
+
         directory.mkdir(parents=True, exist_ok=True)
         # Written BEFORE the spawn, saying the child has not started. If the
         # spawn raises, that is what stays on disk and `derive_status` reports
@@ -397,6 +424,48 @@ class RunLauncher:
                             pid=process.pid, process=process,
                             stderr_handle=handle)
         return run_id
+
+    # -- the baseline the operator did not name -----------------------------
+
+    @staticmethod
+    def _default_baseline_for(pack_name: str, *, sidecar: Path) -> Path:
+        """The `--baseline` for a gate whose request named none.
+
+        **The problem this exists for.** `evalyn gate` defaults `--baseline` to
+        one fixed path, `runs/baseline.json`, and that file belongs to whatever
+        pack blessed it last — in this repository, `example` and its four
+        probes. A pack-hash mismatch is only a *warning* (`cli.py`), so a
+        cockpit launch of any other pack quietly diffed a stranger's baseline
+        and printed a warning about it where the audience could read it. From a
+        terminal the operator sees and can change that path; from the browser
+        there is no such flag, which is precisely why the drift went unnoticed.
+
+        **The rule.** A baseline is passed only when this pack's own name is in
+        it. That is the narrowest test that answers the actual question —
+        *whose* baseline is this — and it deliberately does not look at the
+        pack **hash**: an edited probe makes a baseline stale, not foreign, and
+        silently dropping the diff there would break the ordinary
+        edit-and-compare loop that the existing staleness warning serves.
+
+        Anything else — no such file, unreadable, corrupt, no `pack_name` —
+        cannot be shown to belong here, so it is not passed. That is a
+        deliberate change for a *corrupt* baseline, which used to reach the
+        child and exit it 2: on a stage, losing the run to a file the operator
+        never chose and cannot see is worse than gating against none. The
+        terminal path is untouched and still reports the corruption.
+
+        Read with `json.loads` rather than `load_baseline` on purpose: only one
+        field is wanted, a launch must not depend on the whole artifact schema
+        parsing, and this must never raise on the way into a run.
+        """
+        candidate = Path(DEFAULT_BASELINE).resolve()
+        try:
+            data = json.loads(candidate.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            data = None
+        if isinstance(data, dict) and data.get("pack_name") == pack_name:
+            return candidate
+        return sidecar / ABSENT_BASELINE_FILENAME
 
     # -- control -----------------------------------------------------------
 
