@@ -1,15 +1,21 @@
 # Evalyn
 
 Standalone, project-agnostic **evaluation agent for LLM-powered products** (three modes: `gate`,
-`compare`, `discover`). Built on Inspect AI. Public, MIT-licensed. Currently **pre-code** — docs and
-plans only; Plan #1 (the `gate` foundation) is written and next to build.
+`compare`, `discover`). Built on Inspect AI. Public, MIT-licensed.
+
+**Status (2026-08-11):** Plans #1, #2a, #2b and #3 are **built and merged to `dev`** (v0.4.0) — all
+three modes work from the CLI. **Plan #4 (the `evalyn ui` cockpit) is in progress** on
+`feat/plan4-ui`, roughly half done, with a draft PR open to `dev`. Start a Plan #4 session from the
+newest handoff in `docs/superpowers/handoffs/`, not from this file.
 
 ## Source-of-truth docs (read on demand — don't duplicate them here)
 
 - `docs/CONTEXT.md` — orientation, locked decisions, working preferences. **Read first each session.**
 - `docs/2026-07-21-evalyn-design.md` — full technical design (what Evalyn is).
-- `docs/ROADMAP.md` — how the 3 plans stage; what's in each.
-- `docs/superpowers/plans/` — the executable, task-by-task plans (Plan #1 lives here).
+- `docs/ROADMAP.md` — how the plans stage; what's in each.
+- `docs/superpowers/plans/` — the executable, task-by-task plans (all four live here).
+- `docs/superpowers/handoffs/` — **session handoffs. The newest one is the entry point for
+  in-progress work**, and it outranks this file on anything time-sensitive.
 - `docs/EVALYN_EXPLAINED.md` — plain-English overview.
 - `docs/JOURNAL.md` — progress journal: task status, deferred findings register, decisions.
   **Update at every task completion**; triage its open items at each plan's final review.
@@ -18,8 +24,12 @@ plans only; Plan #1 (the `gate` foundation) is written and next to build.
 
 - Package manager is **`uv`** (`~/.local/bin/uv`); project venv is `.venv` (Python 3.12).
   **Gotcha:** system `python3` is 3.9 — too old for Inspect. Always go through `uv run` / `.venv`.
-- Once the package exists (Plan #1): `uv sync` (install), `uv run pytest -q` (tests),
-  `uv run ruff check src/` (lint), `uv run evalyn ...` (CLI).
+- `uv sync` (install; `uv sync --extra ui` for the cockpit), `uv run pytest -q` (tests),
+  `uv run ruff check src/ tests/` (lint), `uv run evalyn ...` (CLI).
+- **Verify warning-cleanliness with `__pycache__` deleted** (`find . -name __pycache__ -exec rm -rf
+  {} +`) and in **both** colour modes — CI forces colour, and a `SyntaxWarning` is emitted at
+  compile time only, so it is invisible on a warm cache.
+- Frontend (Plan #4): `cd ui && npm run test -- --run && npx tsc --noEmit && npm run build`.
 - The practice target runs via `uv run python examples/toy_target.py` (serves `127.0.0.1:8899`);
   point the engine at a target with the `EVALYN_TARGET_URL` env var.
 

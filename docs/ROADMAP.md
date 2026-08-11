@@ -33,6 +33,7 @@ each stage lives in its own file next to this one.
 | **Plan #2a** | Trusted gate on the *real* product: TwinCore pack + Tier-3 judge + calibration | [`superpowers/plans/2026-07-24-evalyn-plan2a-real-gate.md`](./superpowers/plans/2026-07-24-evalyn-plan2a-real-gate.md) | ✅ **Built** |
 | **Plan #2b** | `compare` (A/B) + CI automation | [`superpowers/plans/2026-07-28-evalyn-plan2b-compare-ci.md`](./superpowers/plans/2026-07-28-evalyn-plan2b-compare-ci.md) | ✅ **Built** (v0.3.0) |
 | **Plan #3** | `discover` (problem-hunting agent) + the flywheel | [`superpowers/plans/2026-08-04-evalyn-plan3-discover.md`](./superpowers/plans/2026-08-04-evalyn-plan3-discover.md) · [spec](./superpowers/specs/2026-08-04-discover-mode-design.md) | ✅ **Built** (v0.4.0) |
+| **Plan #4** | `evalyn ui` — a local cockpit over `runs/`: history, verdicts, transcripts, findings, trends, and live run streaming | [`superpowers/plans/2026-08-07-evalyn-plan4-ui.md`](./superpowers/plans/2026-08-07-evalyn-plan4-ui.md) · [spec](./superpowers/specs/2026-08-07-evalyn-ui-cockpit-design.md) | 🚧 **In progress** on `feat/plan4-ui` (draft PR #8) — tasks 0–9 + 21 steps 1–3 done |
 
 ---
 

@@ -205,17 +205,23 @@ building the pack):
 
 ## 10. Next step
 
-Plan #2b merged to `dev` (PR #6). Plan #3 is built through Task 13 on `feat/plan3-discover`
-(nothing pushed). Immediate next actions, in order:
+**Plan #3 is merged to `dev` (PR #7). Plan #4 — the `evalyn ui` cockpit — is in progress on
+`feat/plan4-ui`, with draft PR #8 open to `dev`.**
 
-1. **Task 14 — USER-GATED:** the first live `discover` run against TwinCore. Needs fresh consent and
-   a cost decision before anything spends. Treat it as a prompt shakedown (`build_prompt` has never
-   met a real model; expect retries).
-2. **Finish the #3 branch:** final whole-branch review — triaging the Plan #3 register in
-   `JOURNAL.md` is part of it — then PR to `dev`.
-3. **Still user-gated from #2b:** bless the first TwinCore baseline (`--update-baseline` on a
-   consented live run), and run the first real A/B compare (two live gate runs + one
-   `evalyn compare`).
+⚠️ **This section is not the live status of Plan #4.** For in-progress work, start from the newest
+handoff in `docs/superpowers/handoffs/` — it and the plan's git-ignored SDD ledger
+(`.superpowers/sdd/2026-08-07-evalyn-plan4-ui/progress.md`) are the recovery map, and they outrank
+this file and anyone's recollection.
+
+As of 2026-08-11: Plan #4 tasks 0–9 and 21 (steps 1–3) are complete and review-clean, plus two prep
+tasks. Next is Task 7, then the engine chain 18 → 19 → 20 and the finish of 21. A demo at AI
+Tinkerers Bremen on **2026-08-14** is driving the sequencing.
+
+**Still user-gated, carried over from #2b:** blessing the first TwinCore baseline
+(`--update-baseline` on a consented live run) and the first real A/B compare. Note that
+`demo.sh bless` **will bless a FAIL** — `cli.py:180-181` exits before the report prints — so use the
+diagnostic form documented in the handoff instead. **No blessed twincore baseline exists**; the only
+one produced was poisoned and is quarantined.
 
 Phase-0 sanity checks — status:
 1. **[done 2026-07-26 (#2a Task 10)]** TwinCore visitor chat endpoints, session-open flow, and SSE
