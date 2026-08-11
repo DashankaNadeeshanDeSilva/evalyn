@@ -82,6 +82,23 @@ def launcher_spawning(argv_to_use: list[str], runs_dir: Path) -> RunLauncher:
 # 1. `python -m evalyn` — the form the launcher actually spawns
 # --------------------------------------------------------------------------
 
+def run_module_form(*args: str) -> subprocess.CompletedProcess:
+    """`python -m evalyn ...`, with colour forced OFF in the child.
+
+    Not cosmetic. CI forces colour, the child inherits the environment, and
+    `rich` then renders `--target` as `-` and `-target` with escape sequences
+    between them — so an assertion on the literal string passes locally and
+    fails only in the coloured leg. These tests are about which commands the
+    module form reaches, not about how they are painted.
+    """
+    env = {k: v for k, v in os.environ.items()
+           if k not in {"FORCE_COLOR", "CLICOLOR_FORCE"}}
+    env["NO_COLOR"] = "1"
+    env["TERM"] = "dumb"
+    return subprocess.run([sys.executable, "-m", "evalyn", *args],
+                          capture_output=True, text=True, timeout=120, env=env)
+
+
 def test_the_module_form_actually_starts_a_process():
     """`sys.executable -m evalyn` must WORK, not merely be the string we build.
 
@@ -90,8 +107,7 @@ def test_the_module_form_actually_starts_a_process():
     argv string would have shipped a launcher that dies with `No module named
     evalyn.__main__` in front of an audience. `--help` spends nothing.
     """
-    done = subprocess.run([sys.executable, "-m", "evalyn", "--help"],
-                          capture_output=True, text=True, timeout=120)
+    done = run_module_form("--help")
     assert done.returncode == 0, done.stderr
     assert "No module named" not in done.stderr
     assert "gate" in done.stdout
@@ -99,8 +115,7 @@ def test_the_module_form_actually_starts_a_process():
 
 def test_the_module_form_reaches_the_same_commands_as_the_console_script():
     """The module entry point must be the same `app`, not a second CLI."""
-    done = subprocess.run([sys.executable, "-m", "evalyn", "gate", "--help"],
-                          capture_output=True, text=True, timeout=120)
+    done = run_module_form("gate", "--help")
     assert done.returncode == 0, done.stderr
     assert "--target" in done.stdout
 
