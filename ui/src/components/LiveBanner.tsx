@@ -128,9 +128,22 @@ function Unreported({ what }: { what: string }) {
 
 export function LiveBanner({
   state,
+  ceiling = null,
+  ceilingSettled = false,
   children,
 }: {
   state: RunEventsState;
+  /**
+   * The pack's own `max_usd_per_run`, or `null` when this build cannot learn it
+   * — the run's pack may not be on the running server's allowlist at all.
+   */
+  ceiling?: number | null;
+  /**
+   * Has the lookup finished? `null` before it settles is "still reading";
+   * `null` after it settles is the claim "there is no ceiling to show", and the
+   * two must not render as the same thing.
+   */
+  ceilingSettled?: boolean;
   /** The controls. Passed in so the rationed orange lives in its own file. */
   children?: ReactNode;
 }) {
@@ -178,6 +191,29 @@ export function LiveBanner({
           ) : (
             <span data-numeric="judge_usd" className="tabular-nums">
               {formatUsd(state.judgeUsd)}
+            </span>
+          )}
+          {/*
+            The ceiling travels with the figure, because `$0.0138` means
+            nothing until you know whether the pack's per-run ceiling is two
+            dollars or two cents — and this is the readout beside a Cancel key.
+            `CostChip` makes the same argument on the pale face; it cannot be
+            reused here (chassis-600, 2.92:1 on this ground), so the comparison
+            is re-rendered rather than dropped.
+          */}
+          {!ceilingSettled ? null : ceiling === null ? (
+            <span className="ml-2 text-legend text-chassis-400">
+              pack ceiling unknown
+            </span>
+          ) : (
+            <span className="ml-2 text-legend text-chassis-400">
+              <span className="tabular-nums">{`of ${formatUsd(ceiling)}`}</span>
+              {" ceiling"}
+              {state.judgeUsd !== null && ceiling > 0 ? (
+                <span className="tabular-nums">
+                  {` · ${((state.judgeUsd / ceiling) * 100).toFixed(1)}% used`}
+                </span>
+              ) : null}
             </span>
           )}
         </Reading>

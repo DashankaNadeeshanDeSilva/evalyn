@@ -113,7 +113,13 @@ export function RunDetailPage() {
        * it is doing. The panel decides for itself whether there is anything to
        * show, and renders nothing when there is not.
        */
-      live={<LiveRunPanel runId={run.run_id} status={run.status} />}
+      live={
+        <LiveRunPanel
+          runId={run.run_id}
+          status={run.status}
+          packName={run.pack_name}
+        />
+      }
       /*
        * The payload, for the one mode that has a gate verdict.
        *
@@ -150,13 +156,22 @@ export function RunDetailPage() {
             <Flatline word="unrecorded" reason="judge model not recorded" />
           )}
         </Field>
-        <Field label="Judge USD">
-          {/* One spend readout per screen. `CostChip` states the same figure
-              against the pack's own ceiling and handles the unrecorded case, so
-              a second bare number here would be the same fact rendered twice
-              with less of it. */}
-          <CostChip judgeUsd={run.judge_usd} packName={run.pack_name} />
-        </Field>
+        {live ? null : (
+          <Field label="Judge USD">
+            {/*
+              One spend readout per screen, and while a run is live that one is
+              the inset window's — which reads the stream, against the same
+              pack ceiling this chip would show.
+
+              The field is suppressed rather than left to render because
+              `judge_usd` comes off the artifact, and a live run has no artifact
+              yet: it would flat-line "unrecorded" directly beneath a window
+              reporting real spend. Two readouts disagreeing about money, on the
+              screen carrying the Cancel key, is worse than one readout.
+            */}
+            <CostChip judgeUsd={run.judge_usd} packName={run.pack_name} />
+          </Field>
+        )}
         <Field label="Probes indexed">
           <span className="tabular-nums">{run.probes.length}</span>
         </Field>

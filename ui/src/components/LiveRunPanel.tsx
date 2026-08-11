@@ -1,10 +1,12 @@
 import { useCallback, useEffect, useState } from "react";
-import { useQueryClient } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 
-import { ApiFailure, apiPost } from "../api/client";
+import { ApiFailure, apiGet, apiPost } from "../api/client";
 import type {
   ControlAction,
   ControlResponse,
+  PackAxes,
+  PackListPage,
   RunId,
   RunStatus,
 } from "../api/types";
@@ -65,9 +67,12 @@ const LIVE_STATUSES: readonly RunStatus[] = ["running", "paused"];
 export function LiveRunPanel({
   runId,
   status,
+  packName = null,
 }: {
   runId: RunId;
   status: RunStatus;
+  /** The run's pack, joined by name to the allowlist to read its ceiling. */
+  packName?: string | null;
 }) {
   const [live] = useState(() => LIVE_STATUSES.includes(status));
   const state = useRunEvents(runId, { enabled: live });
@@ -92,6 +97,44 @@ export function LiveRunPanel({
     void queryClient.invalidateQueries({ queryKey: ["run", runId] });
   }, [live, written, phase, queryClient, runId]);
 
+  /*
+   * The pack's per-run ceiling, joined by **name** — a run records a
+   * `pack_name`, and the allowlist is the only place a browser may learn an
+   * `id`. A run whose pack is not on this server's `--target` list therefore
+   * has no ceiling available, and that is the demo's real case rather than a
+   * hypothetical: the twincore runs in `runs/` were produced by a pack the
+   * running server is unlikely to be serving.
+   *
+   * Same query keys and lifetimes as `CostChip`, so the two share one cache
+   * entry and this costs no extra request.
+   */
+  const packs = useQuery({
+    queryKey: ["packs"],
+    enabled: live,
+    queryFn: () => apiGet<PackListPage>("/packs"),
+    staleTime: Infinity,
+  });
+  const pack =
+    packName === null
+      ? undefined
+      : packs.data?.items.find((row) => row.name === packName);
+  const axes = useQuery({
+    queryKey: ["pack-axes", pack?.id ?? null],
+    enabled: pack !== undefined,
+    queryFn: () =>
+      apiGet<PackAxes>(`/packs/${encodeURIComponent(pack!.id)}/axes`),
+    staleTime: Infinity,
+  });
+  const ceiling = axes.data?.max_usd_per_run ?? null;
+  // "Still reading" is a different claim from "there is no ceiling", and the
+  // window must not render the second while the first is true.
+  const ceilingSettled =
+    packName === null ||
+    packs.isError ||
+    (packs.isSuccess && pack === undefined) ||
+    axes.isError ||
+    axes.isSuccess;
+
   const send = useCallback(
     (action: ControlAction) => {
       setError(null);
@@ -113,7 +156,7 @@ export function LiveRunPanel({
   if (!live) return null;
 
   return (
-    <LiveBanner state={state}>
+    <LiveBanner state={state} ceiling={ceiling} ceilingSettled={ceilingSettled}>
       <ControlButtons
         phase={state.phase}
         requested={requested}
