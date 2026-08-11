@@ -249,12 +249,25 @@ def build_argv(request: LaunchRequest, *, pack_path: Path, runs_dir: Path,
     writes no file (`cli.py:52-78`), and the cockpit's live panel would tail
     something that never appears — a run that looks frozen while it is in fact
     running perfectly.
+
+    `--control` is not optional either, and for the harsher version of the same
+    reason. It defaults to `False` on all three modes, and off means the child
+    never opens the control file: `_open_control` returns `(None, run_id)` and
+    every poll point is skipped. `RunLauncher.control` would still write the
+    file and the endpoint would still answer `202 accepted: True`, because the
+    202 only claims the file was written — so the operator gets an
+    acknowledgement for an action nothing on the other end can perform. That
+    was measured, not reasoned about: a cancel at t+0.44s left the child alive
+    through all 12 trials, with zero `control.*` events in the stream. The flag
+    is unconditional here because it is the *cockpit's* channel; a run started
+    from a terminal still defaults to off, which is what keeps a stale file
+    from steering a run nobody is supervising (`cli.py:_open_control`).
     """
     mode = RunMode(request.mode).value
     argv = [sys.executable, "-m", "evalyn", mode,
             "--target", str(pack_path),
             "--out-dir", str(runs_dir),
-            "--events"]
+            "--events", "--control"]
     if request.allow_uncalibrated:
         argv.append("--allow-uncalibrated")
 

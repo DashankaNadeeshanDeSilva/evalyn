@@ -142,6 +142,38 @@ def test_build_argv_always_asks_for_the_event_stream(mode):
     assert "--events" in argv
 
 
+def cli_option_names(mode: str) -> set[str]:
+    """Every long option `evalyn <mode>` actually accepts, read off the CLI.
+
+    Introspected rather than spelled out, so a test that says "this flag is
+    passed" cannot pass while the flag it names is one the child would reject.
+    """
+    import typer.main
+
+    from evalyn.cli import app as cli_app
+
+    command = typer.main.get_command(cli_app).commands[mode]
+    return {opt for param in command.params for opt in param.opts}
+
+
+@pytest.mark.parametrize("mode", ["gate", "compare", "discover"])
+def test_build_argv_always_arms_the_control_channel(mode):
+    """T20-d(a). `--control` defaults to `False` on all three modes
+    (`cli.py`), so a child spawned without it never opens the control file at
+    all: `_open_control` returns `(None, run_id)` and every poll point is
+    skipped. The cockpit would still answer `202 accepted:true` to a cancel,
+    write the file, and watch the run complete — an acknowledgement of an
+    action nothing can act on. Measured, not reasoned about: the child's live
+    argv was read out of `ps` and a cancel produced zero `control.*` events in
+    a 62-event stream.
+    """
+    argv = build_argv(request_for(mode, run_id_a="20260101T000000000000-aaaaaaaa-example",
+                                  run_id_b="20260101T000000000001-bbbbbbbb-example"),
+                      pack_path=EXAMPLE_PACK, runs_dir=Path("/runs"))
+    assert "--control" in argv
+    assert "--control" in cli_option_names(mode), "the spelling the child accepts"
+
+
 @pytest.mark.parametrize("mode", ["gate", "compare", "discover"])
 def test_build_argv_always_names_the_pack_and_the_runs_directory(mode):
     argv = build_argv(request_for(mode, run_id_a="20260101T000000000000-aaaaaaaa-example",
@@ -975,6 +1007,22 @@ async def test_launch_answers_202_with_the_run_id(tmp_path, asgi_client):
     assert response.status_code == 202
     assert set(response.json()) == {"run_id"}
     assert response.json()["run_id"].endswith("-example")
+
+
+async def test_the_child_this_server_spawns_is_actually_told_to_poll_the_control_file(
+        tmp_path, asgi_client):
+    """T20-d(a), one layer above `build_argv`: the argv the *server* hands to
+    `subprocess` is the one an operator's cancel depends on. Read off the spawn
+    seam rather than off the function, because the seam is where the wiring
+    pass caught it — `ps` on the real child showed no `--control`.
+    """
+    app = cockpit(tmp_path)
+    async with asgi_client(app) as client:
+        response = await client.post("/api/runs", json=launch_body())
+    reap_app(app)
+    assert response.status_code == 202
+    (spawned,) = app.state.spawned
+    assert "--control" in spawned["argv"]
 
 
 @pytest.mark.parametrize("body,because", [
