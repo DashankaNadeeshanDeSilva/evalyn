@@ -520,7 +520,9 @@ commands inline.
 
 - `origin` → https://github.com/DashankaNadeeshanDeSilva/evalyn
 - `feat/plan4-ui` (main feature branch) and `feat/plan4-ui-frontend` (worktree
-  `../Evalyn_frontend_lane`) — both pushed, **not merged into each other**, no PR
+  `../Evalyn_frontend_lane`) — **merged and in sync at `fbbf441`**, both pushed, no PR.
+  Future frontend work still happens on the frontend branch and is **merged back at an explicit
+  maintainer ask**, at a moment when the committed bundle is quiescent (see §3).
 - Commit as: `git -c user.name='dashankanadeeshandesilva' -c user.email='dashankadesilva@gmail.com' commit …`
 - **Pushes pre-authorised. Worktree merges and PRs need an ask.**
 
@@ -546,8 +548,13 @@ Read first, in this order:
    Read the surface brief BEFORE any page task (9, 15, 16, 17, 21).
 6. docs/superpowers/plans/2026-08-07-evalyn-plan4-ui.md — the 22-task plan itself
 
-State: Tasks 0–5 and 8 are complete and review-clean. Tasks 6, 7 and 9–21 are not started. Both
-branches are pushed; feat/plan4-ui-frontend is NOT merged (ask me before merging).
+State: Tasks 0–5 and 8 are complete and review-clean. Tasks 6, 7 and 9–21 are not started.
+feat/plan4-ui and feat/plan4-ui-frontend are MERGED AND IN SYNC at fbbf441, both pushed, no PR —
+verified after the merge: Python 1138 passed on a cold cache, ruff clean, frontend 177 passed, tsc
+clean. Ask me before merging the frontend lane back again.
+
+Note: ui/node_modules exists ONLY in ../Evalyn_frontend_lane, so `npm run test` in the main worktree
+fails with "vitest: command not found" — that is not a broken checkout. Run frontend commands there.
 
 I want maximum parallelism, but I care more about not messing it up than about speed. §4.1 has the
 analysis: two lanes only (Python + TypeScript), the frontend builds mock-first with live checks
