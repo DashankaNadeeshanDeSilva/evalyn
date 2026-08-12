@@ -53,6 +53,20 @@ INERT = [sys.executable, "-c", "pass"]
 INERT_SLEEPER = [sys.executable, "-c", "import time; time.sleep(30)"]
 
 
+def child_that_runs_until(stop: Path) -> list[str]:
+    """A child that waits for *stop* to appear and then exits 0.
+
+    It ends **itself**, on a file — the same one-way channel the engine's own
+    control file is — so a test can place a child's exit exactly where it needs
+    it, and end one when it is finished with it, without reaching for anything
+    from the process-control family this repository keeps out (R4-11).
+    """
+    return [sys.executable, "-c",
+            "import os, sys, time\n"
+            "while not os.path.exists(sys.argv[1]): time.sleep(0.01)\n",
+            str(stop)]
+
+
 @pytest.fixture
 def pack():
     return load_pack(EXAMPLE_PACK)
@@ -1766,20 +1780,22 @@ async def test_asking_liveness_of_current_truth_cannot_relabel_a_live_run(
     running has none. Proved on a real child rather than argued — the run keeps
     its slot, its 202 and its control file across the very call that reaps.
     """
-    app = cockpit(tmp_path, child=INERT_SLEEPER)
-    async with asgi_client(app) as client:
-        run_id = (await client.post("/api/runs", json=launch_body())).json()["run_id"]
-        response = await client.post(f"/api/runs/{run_id}/control",
-                                     json={"action": "cancel"})
-        held = app.state.launcher.live
+    stop = tmp_path / "stop-the-child"
+    app = cockpit(tmp_path, child=child_that_runs_until(stop))
     try:
+        async with asgi_client(app) as client:
+            run_id = (await client.post("/api/runs",
+                                        json=launch_body())).json()["run_id"]
+            response = await client.post(f"/api/runs/{run_id}/control",
+                                         json={"action": "cancel"})
+            held = app.state.launcher.live
+
         assert response.status_code == 202
         assert held is not None and held.run_id == run_id, \
             "the reap did not take the slot from a child that is still running"
         assert control_path(tmp_path / f"{run_id}.json").exists()
     finally:
-        # The same teardown every other sleeper test in this file uses.
-        app.state.launcher.live.process.kill()
+        stop.write_text("", encoding="utf-8")     # it ends itself
         reap_app(app)
 
 
@@ -1944,20 +1960,6 @@ async def test_a_run_that_finishes_DURING_the_write_has_its_file_removed(
         "the file written inside the race window was left on disk"
     assert detail.json()["status"] == "passed"
     assert detail.json()["cancelled"] is False
-
-
-def child_that_runs_until(stop: Path) -> list[str]:
-    """A child that waits for *stop* to appear and then exits 0.
-
-    It ends itself, on a file — the same one-way channel the engine's control
-    file is — so a test can place a child's exit exactly where it needs it
-    without reaching for anything from the process-control family this
-    repository keeps out (R4-11).
-    """
-    return [sys.executable, "-c",
-            "import os, sys, time\n"
-            "while not os.path.exists(sys.argv[1]): time.sleep(0.01)\n",
-            str(stop)]
 
 
 async def test_a_child_that_exits_DURING_the_write_leaves_no_file_either(
