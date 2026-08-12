@@ -659,13 +659,73 @@ async def test_trends_answers_a_bare_json_array_and_never_an_envelope(
     assert [one["probe_id"] for one in body] == ["p-one"]
 
 
-async def test_trends_skips_a_degraded_run_rather_than_emitting_it_as_a_zero(
-        trends_dir, asgi_client):
-    """Guarantee 1, and the whole reason the page exists.
+@pytest.mark.parametrize("metric", ["pass_k", "pass_at_k", "mean_score"])
+async def test_trends_never_plots_a_metric_the_artifact_never_recorded(
+        trends_dir, asgi_client, metric):
+    """**Guarantee 1's discriminating guard, and the whole reason the page
+    exists.**
 
     A `0.0` for a probe nobody measured does not merely mislead: the page ranks
     channels by the metric's worst reading, so the fabricated zero becomes the
-    channel the page OPENS on.
+    channel the page OPENS on — the first thing an audience sees would be a
+    catastrophe that never happened.
+
+    The fixture is the one shape that can actually produce that lie. All three
+    metrics are `ProbeResult` dataclass fields defaulting to `0.0`, so an
+    artifact that is otherwise CURRENT-schema-valid and simply omits the key
+    loads cleanly, is not degraded, and reaches this route carrying a
+    manufactured zero. `p-measured` rides along in the same run as the control:
+    a fix that answered "no reading" for everything would pass a test that only
+    looked at the gap.
+    """
+    unmeasured = _probe("p-unmeasured")
+    for key in ("pass_k", "pass_at_k", "mean_score"):
+        del unmeasured[key]
+    run_id = _gate_artifact(trends_dir, "20260101T000001000000-aaaaaaa1-trend",
+                            created_at="2026-01-01T00:00:01+00:00",
+                            probes=[_probe("p-measured", **{metric: 0.5}),
+                                    unmeasured])
+
+    async with asgi_client(_app(trends_dir)) as client:
+        response = await client.get(
+            f"/api/trends?pack={TREND_PACK}&metric={metric}")
+
+    body = response.json()
+    assert "0.0" not in str([one["points"] for one in body
+                             if one["probe_id"] == "p-unmeasured"])
+    series = _series_by_probe(body)
+    assert set(series) == {"p-measured", "p-unmeasured"}
+    assert series["p-unmeasured"]["points"] == [], (
+        "an unrecorded metric was plotted as a number")
+    assert [one["run_id"] for one in series["p-measured"]["points"]] == [run_id]
+    assert [one["value"] for one in series["p-measured"]["points"]] == [0.5]
+
+
+async def test_trends_skips_a_degraded_run_rather_than_emitting_it_as_a_zero(
+        trends_dir, asgi_client):
+    """Guarantee 1's OUTCOME PIN for the literal *degraded* case.
+
+    **Stated honestly: this test does not discriminate, and cannot.** A
+    degraded run is one whose TYPED load failed, and `index.get()` answers such
+    a run with `probes: []` — so `build_trends`, which iterates `run.probes`,
+    reads nothing from it whatever this route's filters say. Measured by
+    mutation, stripping the status filter, the `degraded` filter, and the mode
+    filter — separately and all three at once — leaves this green. The outcome
+    is enforced by the salvage layer's shape, which is a stronger guarantee
+    than a test: there is no artifact this build can call degraded and still
+    hand probes to the chart.
+
+    Guarantee 1's real, mutation-reddening guards are elsewhere, and a reader
+    who wants to know what protects it should read those instead:
+    `test_trends_never_plots_a_metric_the_artifact_never_recorded` (the
+    fabricated-zero shape that DOES reach the route),
+    `test_trends_reads_nothing_from_a_cancelled_run`, and
+    `test_trends_keeps_a_probe_with_no_reading_as_an_empty_series` /
+    `test_trends_drops_a_non_finite_reading_rather_than_serving_nan`.
+
+    It stays because the outcome is worth pinning: an implementation that went
+    around the typed load and read `probes[]` out of the raw artifact dict
+    would fail here, and nowhere else.
     """
     readable = _gate_artifact(
         trends_dir, "20260101T000001000000-aaaaaaa1-trend",

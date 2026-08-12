@@ -383,6 +383,15 @@ def _number(value: object) -> float | None:
     return float(value)
 
 
+def _recorded(raw_probe: dict, key: str, value: object) -> float | None:
+    """`value` as a number, but only if the artifact actually wrote `key`.
+
+    The one place a dataclass default is told apart from a measurement. See
+    `_probe_row` for why that distinction is load-bearing.
+    """
+    return _number(value) if key in raw_probe else None
+
+
 def _check_view(check: dict) -> CheckView:
     """One artifact check dict as a `CheckView`.
 
@@ -403,13 +412,46 @@ def _check_view(check: dict) -> CheckView:
     )
 
 
-def _probe_row(probe) -> ProbeRow:
+def _probe_row(probe, raw_probe: object) -> ProbeRow:
+    """One typed probe as a `ProbeRow`, with a metric it never recorded `None`.
+
+    **The three trend metrics are read from the RAW entry's key presence, not
+    from the typed value.** `ProbeResult` is a plain dataclass whose
+    `pass_at_k` / `pass_k` / `mean_score` all default to `0.0`, so by the time
+    an artifact is typed, "this run never measured the probe" and "this run
+    measured a total failure" are the same number. The difference survives in
+    exactly one place — whether the artifact wrote the key at all — and it
+    matters more than any other distinction this file draws: `build_trends`
+    plots a `0.0` and skips a `None`, and the trends page ranks channels by the
+    metric's worst reading, so a fabricated zero for an unmeasured probe
+    becomes the channel the page opens on. `None` reads honestly as "no
+    reading" and leaves a gap in the line.
+
+    A *recorded* `0.0` is still a `0.0`: presence of the key is the test, never
+    the value, because a probe that genuinely scored zero is the failure the
+    page exists to show.
+
+    `raw_probe` is this probe's own entry from the artifact's raw `probes`
+    list. It is believed only when it is a dict carrying this probe's id; an
+    entry that cannot be positively paired says nothing about what was
+    recorded, and **unknown resolves to "no reading", never to a number this
+    function cannot vouch for**. That fallback is deliberate: fabricating is
+    the failure mode the whole rule exists to prevent, and a mis-pairing
+    introduced later should degrade to a visibly empty chart rather than
+    quietly restore the zero. In practice the pairing cannot fail —
+    `RunArtifact.from_dict` builds exactly one `ProbeResult` per raw entry, in
+    order, and rejects any entry that is not a dict with an `id` — so this is a
+    guard against a future caller rather than a live branch.
+    """
+    recorded = (raw_probe if isinstance(raw_probe, dict)
+                and raw_probe.get("id") == probe.id else {})
     return ProbeRow(
         id=probe.id, category=probe.category, kind=probe.kind,
         safety_critical=probe.safety_critical, samples=probe.samples,
         trials=probe.trials, expected_trials=probe.expected_trials,
-        pass_at_k=_number(probe.pass_at_k), pass_k=_number(probe.pass_k),
-        mean_score=_number(probe.mean_score),
+        pass_at_k=_recorded(recorded, "pass_at_k", probe.pass_at_k),
+        pass_k=_recorded(recorded, "pass_k", probe.pass_k),
+        mean_score=_recorded(recorded, "mean_score", probe.mean_score),
         unsure_trials=probe.unsure_trials,
         checks=[_check_view(c) for c in probe.checks if isinstance(c, dict)],
         trial_epochs=sorted(rec["epoch"] for rec in probe.trial_records
@@ -822,8 +864,20 @@ class RunIndex:
         # already does, and the endpoint has nothing left to get wrong.
         try:
             if isinstance(typed, RunArtifact):
-                return replace_detail(detail,
-                                      probes=[_probe_row(p) for p in typed.probes])
+                # Paired positionally, because that is the pairing
+                # `RunArtifact.from_dict` itself made: it builds one
+                # `ProbeResult` per raw entry, in order. `_probe_row` re-checks
+                # the id and treats anything it cannot pair as "no reading", so
+                # a raw `probes` that is missing, is not a list, or runs short
+                # costs a gap in the chart rather than an `IndexError` out of a
+                # detail read. (None of those shapes can reach here today —
+                # each one fails the typed load first — which is why the
+                # fallback may be conservative for free.)
+                raw_probes = raw.get("probes")
+                raw_probes = raw_probes if isinstance(raw_probes, list) else []
+                return replace_detail(detail, probes=[
+                    _probe_row(probe, raw_probes[i] if i < len(raw_probes) else None)
+                    for i, probe in enumerate(typed.probes)])
             if isinstance(typed, CompareArtifact):
                 return replace_detail(detail, compare=_scoreboard(run_id, typed))
             if isinstance(typed, DiscoveryArtifact):

@@ -850,6 +850,98 @@ def test_get_on_a_degraded_artifact_still_returns_a_detail():
     assert detail.degraded is True and detail.probes == []
 
 
+def _run_with(tmp_path: Path, probe_entries: list[dict]) -> tuple[RunIndex, str]:
+    """A `runs/` holding one current-schema gate artifact with these probes."""
+    runs = tmp_path / "runs"
+    runs.mkdir()
+    rid = "20260807T170000000000-deadbeef-example"
+    payload = _gate_artifact().to_dict() | {"probes": probe_entries}
+    runs.joinpath(f"{rid}.json").write_text(json.dumps(payload), encoding="utf-8")
+    return RunIndex(runs), rid
+
+
+def _entry(**kw) -> dict:
+    entry = {"id": "p", "category": "c", "kind": "regression",
+             "safety_critical": False, "samples": 1, "trials": 1,
+             "expected_trials": 1, "pass_at_k": 1.0, "pass_k": 1.0,
+             "mean_score": 1.0, "unsure_trials": 0, "checks": [],
+             "trial_records": []}
+    entry.update(kw)
+    return entry
+
+
+def test_get_never_reads_a_metric_the_artifact_omitted_as_a_zero(tmp_path):
+    """The three trend metrics are dataclass fields defaulting to `0.0`, so an
+    artifact that never recorded one is indistinguishable, at the typed layer,
+    from one that measured a total failure.
+
+    The distinction has to be read off the RAW artifact dict, because that is
+    the only place it survives. Getting it wrong puts a catastrophe that never
+    happened at the top of the trends page's worst-first ranking.
+    """
+    entry = _entry()
+    for key in ("pass_k", "pass_at_k", "mean_score"):
+        del entry[key]
+    idx, rid = _run_with(tmp_path, [entry])
+
+    detail = idx.get(rid)
+    assert detail.degraded is False, detail.degraded_reason
+    (row,) = detail.probes
+    assert (row.pass_k, row.pass_at_k, row.mean_score) == (None, None, None)
+
+
+def test_get_still_reads_a_recorded_zero_as_a_zero(tmp_path):
+    """The inverse, and the reason the fix reads key PRESENCE rather than the
+    value: a probe that genuinely scored `0.0` is a real measurement, and
+    suppressing it would erase the failures the page exists to show."""
+    idx, rid = _run_with(tmp_path, [_entry(pass_k=0.0, pass_at_k=0.0,
+                                           mean_score=0.0)])
+
+    (row,) = idx.get(rid).probes
+    assert (row.pass_k, row.pass_at_k, row.mean_score) == (0.0, 0.0, 0.0)
+
+
+def test_a_probe_row_that_cannot_be_paired_to_its_raw_entry_reads_as_no_reading():
+    """The fallback errs towards the honest blank, never towards a number.
+
+    `_probe_row` can only tell "unrecorded" from "recorded 0.0" by looking at
+    the raw entry, so an entry it cannot positively identify as this probe's
+    tells it nothing at all. Answering `0.0` there would quietly restore the
+    fabricated zero the moment a future caller mis-paired the lists; answering
+    `None` degrades to a visibly empty chart instead, which is the failure
+    this module prefers.
+    """
+    probe = _probe(id="p-one", pass_k=1.0, pass_at_k=1.0, mean_score=1.0)
+    for unpairable in (None, "not a dict", {}, _entry(id="a-different-probe")):
+        row = ix._probe_row(probe, unpairable)
+        assert (row.pass_k, row.pass_at_k, row.mean_score) == (None, None, None), (
+            f"unpairable raw entry {unpairable!r} vouched for a number")
+    paired = ix._probe_row(probe, _entry(id="p-one"))
+    assert (paired.pass_k, paired.pass_at_k, paired.mean_score) == (1.0, 1.0, 1.0)
+
+
+def test_get_pairs_each_probe_with_its_own_raw_entry(tmp_path):
+    """Key presence is per PROBE, so the pairing has to be positional too.
+
+    The omitting probe is deliberately FIRST. Order it the other way round and
+    the test stops discriminating: `_probe_row` refuses a raw entry whose id is
+    not this probe's, so a mis-pairing collapses to `None` — which is exactly
+    what the omitting-probe-first arrangement would have expected anyway. With
+    the gap leading, an implementation that consults the first entry for every
+    probe answers `[None, None, None]`, one that consults the artifact-wide
+    union of keys answers `[0.0, 0.25, 0.75]`, and only per-probe positional
+    pairing answers the honest `[None, 0.25, 0.75]`.
+    """
+    first = _entry(id="p-one")
+    del first["pass_k"]
+    idx, rid = _run_with(tmp_path, [first, _entry(id="p-two", pass_k=0.25),
+                                    _entry(id="p-three", pass_k=0.75)])
+
+    detail = idx.get(rid)
+    assert [row.id for row in detail.probes] == ["p-one", "p-two", "p-three"]
+    assert [row.pass_k for row in detail.probes] == [None, 0.25, 0.75]
+
+
 def test_get_populates_the_compare_scoreboard_and_the_discovery_summary():
     idx = RunIndex(FIXTURES)
     comp = idx.get(COMPARE_ID)
