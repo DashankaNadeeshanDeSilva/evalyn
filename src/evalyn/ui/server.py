@@ -885,14 +885,33 @@ def create_app(runs_dir: Path, packs: list[Path], *,
         a legitimate state, and a 404 renders an alarm over a pack that simply
         has not been run yet.
 
+        **Two of the three filters below are unobservable, and both stay.**
+
         Compare and discover artifacts contribute nothing: all four
         `TrendMetric` members are gate metrics. The mode filter is lexical (it
         reads the run id, not the file) so it is free, but it is an
         **optimisation and not the control** — measured by mutation, removing it
         changes nothing observable, because a non-gate artifact carries no
         `probes` and a gate body wearing a compare id fails the typed load and
-        is dropped as degraded. Do not delete it on the strength of that: it is
-        what keeps the honest reason honest.
+        is dropped as degraded.
+
+        `not row.degraded` is unobservable for the same kind of reason, and
+        redundant twice over. A degraded run is one whose TYPED load failed, and
+        `index.get()` answers such a run with `probes: []` — so `build_trends`,
+        which iterates `run.probes`, reads nothing from it even if the row gets
+        through. And on the live corpus the clause selects nobody the status
+        filter had not already dropped: `degraded` is true of exactly the runs
+        whose status is `unreadable`, 26 of 26. Mutation confirms it — removing
+        it reddens nothing.
+
+        Neither is deleted on the strength of that. Each states the intent the
+        chart depends on, each costs one boolean per row, and neither can be
+        made discriminating without inventing an artifact shape `RunIndex`
+        cannot produce — a fixture that lied about the code would be worse than
+        a comment that tells the truth about it. They are what keeps the honest
+        reason honest. What actually enforces guarantee 1 is `_probe_row`
+        answering `None` for a metric no artifact recorded, and `_finite`
+        refusing anything unplottable.
         """
         if not pack:
             # `pack_error`, not the 400's default `launch_refused` — this route
