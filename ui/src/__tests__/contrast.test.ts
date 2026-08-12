@@ -587,6 +587,31 @@ const SURFACES: Record<string, Surface> = {
       },
     ],
   },
+  /**
+   * The judge-trust page. **No status ink and no ground of its own**, for the
+   * reason the trends page carries: `status-*` is keyed to `RunStatus` members
+   * and a calibration record is not a run state. A stale record therefore
+   * announces itself with a glyph and a word rather than a hue, which is what
+   * "never colour alone" asks for anyway — here there simply is no colour to be
+   * alone.
+   *
+   * One ground means every ink is measured against the one surface it can sit
+   * on, so nothing on this page can be exempted from the face.
+   */
+  "pages/Trust.tsx": {
+    inherits: "chassis-25",
+    sets: [],
+    inks: [
+      { ink: "chassis-900", role: "text" },
+      { ink: "chassis-700", role: "text" },
+      { ink: "chassis-600", role: "text" },
+      {
+        ink: "chassis-400",
+        role: "redundant",
+        note: "aria-hidden '·' separators in the readout",
+      },
+    ],
+  },
   "pages/RunDetailPage.tsx": {
     inherits: "chassis-25",
     sets: [],

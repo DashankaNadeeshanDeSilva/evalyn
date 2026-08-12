@@ -467,7 +467,15 @@ export const handlers = [
   http.get("/api/trust", ({ request }) => {
     const pack = new URL(request.url).searchParams.get("pack");
     if (!pack) return fail("pack_error", "?pack= is required");
-    // A pack with no calibration.json is a legitimate 200, not a 404.
+    /*
+     * Exactly the two shapes the route answers on this repository's packs.
+     *
+     * `twincore` is the only pack carrying a `calibration.json`, so it is the
+     * only pack that answers with numbers. **Every other pack answers 200 with
+     * `agreement: null`, never a 404** — including `twincore-injection`, which
+     * is the demo pack, so the uncalibrated body is the ordinary case here
+     * rather than the exceptional one.
+     */
     if (pack !== TRUST_REPORT.pack_name) {
       return HttpResponse.json({ ...TRUST_NEVER_CALIBRATED, pack_name: pack });
     }

@@ -792,30 +792,78 @@ export const TREND_SPEND_SERIES: TrendSeries[] = [
   },
 ];
 
+/**
+ * The one calibrated pack in this repository, transcribed off disk.
+ *
+ * Every number below is read from `packs/twincore/calibration.json` — eight
+ * criteria across four rubrics, eleven anchors, `agreement` 0.9318…, judge
+ * `anthropic/claude-sonnet-5` (which is what `packs/twincore/target.yaml`
+ * names as `judge.rubric_model`, so the record is in force rather than stale),
+ * calibrated 2026-07-31. The threshold is `calibrate.AGREEMENT_THRESHOLD`.
+ *
+ * It replaces an invented two-rubric record whose fractions had two decimal
+ * places, whose judge was `mockllm/model` and whose criterion ids were slugs.
+ * Real ids are `"<rubric>:<Criterion heading>"` — the second half is a rubric
+ * *heading*, with spaces and capitals, and a page built against slugs is a page
+ * nobody ever saw with the strings it will actually render. A mock that
+ * diverges from the route it stands in for is how the trends page shipped a
+ * defect a full green suite could not see.
+ *
+ * `agreement` is **±1-point agreement**: the fraction of (anchor x criterion)
+ * pairs where the judge's 1-5 score landed within one point of the human
+ * label. Nothing computes Cohen's kappa and nothing here may name one.
+ *
+ * The pooled counts are exact rather than decorative: 82 hits over 88 pairs is
+ * 0.93181818…, the recorded overall figure.
+ */
 export const TRUST_REPORT: TrustReport = {
-  pack_name: "example",
-  judge_model: "mockllm/model",
-  // ±1-point agreement as shipped. NOT Cohen's kappa — never label it one.
-  agreement: 0.78,
-  per_rubric_agreement: { grounding: 0.83, "refusal-quality": 0.71 },
+  pack_name: "twincore",
+  judge_model: "anthropic/claude-sonnet-5",
+  agreement: 0.9318181818181818,
+  per_rubric_agreement: {
+    completeness: 0.9090909090909091,
+    groundedness: 0.9545454545454546,
+    honesty: 0.9545454545454546,
+    persona: 0.9090909090909091,
+  },
   per_criterion_agreement: {
-    "grounding:factual": 0.86,
-    "refusal-quality:tone": 0.71,
+    "completeness:Coverage": 0.9090909090909091,
+    "completeness:Usefulness of the answer": 0.9090909090909091,
+    "groundedness:Claim support": 1.0,
+    "groundedness:Specificity without overreach": 0.9090909090909091,
+    "honesty:Calibration": 0.9090909090909091,
+    "honesty:Gap acknowledgment": 1.0,
+    "persona:First-person fidelity": 1.0,
+    "persona:Tone under refusal": 0.8181818181818182,
   },
   per_criterion_counts: {
-    "grounding:factual": { hits: 12, total: 14 },
-    "refusal-quality:tone": { hits: 5, total: 7 },
+    "completeness:Coverage": { hits: 10, total: 11 },
+    "completeness:Usefulness of the answer": { hits: 10, total: 11 },
+    "groundedness:Claim support": { hits: 11, total: 11 },
+    "groundedness:Specificity without overreach": { hits: 10, total: 11 },
+    "honesty:Calibration": { hits: 10, total: 11 },
+    "honesty:Gap acknowledgment": { hits: 11, total: 11 },
+    "persona:First-person fidelity": { hits: 11, total: 11 },
+    "persona:Tone under refusal": { hits: 9, total: 11 },
   },
-  unmatched: ["refusal-quality:brevity"],
-  stale: true,
-  stale_reason: "pack hash changed since calibration",
-  calibrated_at: "2026-07-30T12:00:00.000000+00:00",
-  threshold: 0.8,
+  unmatched: [],
+  stale: false,
+  stale_reason: null,
+  calibrated_at: "2026-07-31T15:25:55.599863+00:00",
+  threshold: 0.85,
 };
 
-/** A pack with no `calibration.json` is a legitimate 200, never a 404. */
+/**
+ * A pack with no `calibration.json` is a legitimate 200, never a 404.
+ *
+ * **This is not an edge case — it is what the demo shows.** Neither
+ * `packs/twincore-injection` (the demo pack) nor `packs/example` carries a
+ * calibration record, so this body is what `/api/trust` answers for every pack
+ * the cockpit is normally started with. `agreement` is `null` rather than `0`,
+ * because zero is a measurement and nobody made one.
+ */
 export const TRUST_NEVER_CALIBRATED: TrustReport = {
-  pack_name: "uncalibrated",
+  pack_name: "twincore-injection",
   judge_model: null,
   agreement: null,
   per_rubric_agreement: {},
@@ -823,7 +871,7 @@ export const TRUST_NEVER_CALIBRATED: TrustReport = {
   per_criterion_counts: {},
   unmatched: [],
   stale: true,
-  stale_reason: "never calibrated",
+  stale_reason: "no calibration record",
   calibrated_at: null,
   threshold: null,
 };
