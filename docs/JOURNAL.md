@@ -1858,3 +1858,81 @@ finished run's verdict" — and "a moment late" is precisely the case only partl
 comment beside the write (`server.py:785-786`, "narrowed, not closed") is accurate. **Correct the
 docstring to match the comment.** Comments that overclaim are treated as first-class defects in this
 project; this is the eighth instance found in Plan #4.
+
+## Plan #4 session 10 (2026-08-12) — Trends merged; the vacuous-guard problem named
+
+**Registered here rather than left in the plan workspace**, because these outlive Plan #4.
+
+### The milestone
+
+`feat/plan4-ui` is at **`621fd6e`**: 1564 Python tests (both colour modes, cold) and 463 UI tests
+across 22 files, ruff and `tsc` clean. The **Trends page is merged** (`dea7911`) and the **served
+bundle is rebuilt and proven** (`621fd6e`), so for the first time it exists in a browser served by a
+real `evalyn ui`. `GET /api/trends` exists. **Nothing was billed; all 7 pre-approved rehearsal runs
+remain unused.**
+
+### Six vacuous guards — the defect class of the week
+
+A **vacuous guard** is a test that passes under *both* arms of a mutation: it looks like coverage and
+proves nothing. Six were found this week, in code that had already passed review:
+
+- The line a commit message called *the fix* could be deleted leaving **1539 passed, 0 failed**.
+- The **flagship** test for the Trends page's load-bearing invariant does not discriminate (open).
+- A contrast guard could not see the family it was written to protect (fixed, and the fix proved
+  non-vacuous).
+- A tooltip prop the docstring called load-bearing could be removed with nothing going red — and
+  underneath it was a **live bug**: the tooltip printed one probe's reading under another probe's
+  timestamp.
+- A "heartbeat" guard asserts the TS constant equals the Python constant, proving two numbers match
+  while **neither number does anything** (open, deliberately).
+- One an implementer **measured and declared itself**, in both the route and the test, rather than
+  shipping it silently.
+
+**The operating rule, which is now the most valuable thing in this plan:** read mutation evidence
+**by test name, never by pass/fail count**. A count that does not move is the loudest signal there is.
+
+### The controller relayed three falsehoods, and all three were caught downstream
+
+"These two files are new" (they pre-existed) · "`/api/trust` sets the 200-not-404 precedent" (no such
+route) · "356 probe entries, all explicit" (**623, with 108 omitting all three keys**). Each was a
+claim passed along without checking. The rule *"the controller's own entries are claims to verify"*
+was written in session 9 and violated three times in session 10 by the person quoting it. **A rule
+you cite but do not apply is a rule you do not have.**
+
+### Measurements that replaced fears
+
+Two controller worries were refuted by measuring rather than arguing:
+
+| | |
+|---|---|
+| A full demo run | **217 trials, ~3.1 min** (2.55–3.54 measured over 4 runs), **~$0.06** |
+| Judge already used | `anthropic/claude-sonnet-5` — the stage run is not a new cost class |
+| Bundle after Recharts | 283,136 → **655,021 bytes (+131%)**, 193 kB gzipped |
+
+A third — that the missing SSE heartbeat threatened the live demo — was killed by four greps: the SPA
+has **no liveness timer**, `EventSource` auto-reconnects and replays, and the 120s `: idle-timeout`
+is a standard SSE keep-alive comment. **A feature was not built.** What remains is a wire contract
+that advertises a cadence nothing delivers.
+
+### Two premises corrected
+
+- **Judge Trust does not read the run corpus.** It reads `<pack>/calibration.json`. The **demo pack
+  has zero calibration and zero rubric checks**; only `packs/twincore` has either. The ordering
+  ratified in session 8 rested on the wrong belief, so it went back to the maintainer rather than
+  being silently re-ordered. **Decision: keep it, pointed at `packs/twincore`.**
+- **Discoveries redaction is not "covered by luck" — it is covered not at all.** The literal harvest
+  takes `not_contains` values only, and **none of `twincore`'s three appears in either discovery
+  file**. Patterns catch emails, credentials, keys, home paths and phones; they do not catch **names,
+  organisations or hostnames**, which is what the at-risk finding's turns contain. **The prescribed
+  one-line fix buys almost nothing.** Decision: allowlist `packs/twincore` but stage the discoveries
+  directory so only the fully-pattern-caught finding renders.
+
+### A process rule deliberately exceeded, once (R4-78)
+
+R4-27 caps a task at review → one fix round → one re-review. That was spent when a reviewer measured
+the pass-threshold line as **indistinguishable from a healthy data line** (1.88:1, invisible at 6×
+zoom) — because at `pass^k` the threshold is 1.00 and a healthy probe is flat at 1.00, so the two
+marks are *geometrically coincident* and **contrast cannot be the lever**. The cap was exceeded for
+one round because the defect was demo-blocking by measurement, the remedy was a label rather than
+infrastructure, and the round cost nothing on the critical path. Recorded as an adjudication, not a
+drift.
