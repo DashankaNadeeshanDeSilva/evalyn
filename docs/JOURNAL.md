@@ -2046,3 +2046,52 @@ see — sixth session running.
 but it is 6050 lines of candid process notes and the repo is public — a disclosure judgement, made
 deliberately. A same-laptop copy exists; the maintainer was told it does not survive laptop loss and
 accepted local-only.
+
+## Plan #4 session 13 (2026-08-12) — every page ships; the metering bug is dead; pause and cancel were finally clicked
+
+**Trunk `feat/plan4-ui` at `5d48986`, pushed. All three lanes merged.** 1613 Python tests (both
+colour modes, cold), 615 UI / 29 files, ruff and `tsc` clean, served bundle rebuilt and proven.
+Rulings R4-89 … R4-107, plus BACKLOG-1. **$0.00 spent.**
+
+**The cockpit is feature-complete.** Discoveries and Compare were reviewed, fixed, merged and built
+into the served bundle. The nav has no unshipped destination left.
+
+**`mockllm` was being billed at opus rates, and fixing it nearly disarmed two real guards.** The free
+local stub matched no `PRICES` key and fell through to the unknown-model upper bound, on *synthesised*
+usage, with the phantom cost counting against the budget cap. Two regression guards — including the
+one written for the live 2026-07-28 `judge_usd == 0.0` bug — were using "mockllm gets billed the opus
+default" as their proof that metering plumbing works. The reviewer didn't settle for "deleting the fix
+reddens the test": it **reintroduced the original bug at its true sites** and watched both go red by
+name. **Verify the fix didn't hollow out the guard.**
+
+**A fixture whose numbers coincide cannot tell you which number was read** — caught twice, in two
+pages, in two shapes: `total=2/confirmed=1/safetyCritical=1`, and `wins_a:1, ties:1, flips:1` under a
+"strict" `toEqual`. On Compare this meant **five independent A/B transpositions shipped green**. No
+transposition was actually present; the defect was that nothing could have told us.
+
+**Two Discoveries defects that only reading the rendered words could find:** the replay region
+claimed the replay both reproduced the finding and never ran — in the same view, and inside the very
+test written to prove that copy honest; and the size readout could print "2 safety-critical" where
+every fixture figure was 1.
+
+**Pause and cancel were driven by a mouse for the first time.** Both work, and both say the honest
+thing: pause "finishes in-flight trials", cancel carries a two-step interlock and names the continued
+spend. **R4-13 as written did not reproduce** — probes kept `trials=3` and the artifact has no
+`exit_code` key, because every trial was already in flight. A **cancelled run still renders
+"GATE FAILED / EXIT CODE 1"** over partial data while the wire says `exit_code: null` — documented as
+BACKLOG-1, deferred by the maintainer, and "don't cancel on stage" added to the runbook.
+
+**A toy target silently shadowed the real twin on port 8000 for ten minutes.** The twin runs at
+`niuwnai-mvp-api-1  0.0.0.0:8000`, exactly where the stage command points, and an IPv4 bind on
+`127.0.0.1:8000` wins for localhost. Had it survived to Saturday the demo would have evaluated a stub
+and looked completely normal doing it. No allowlist catches this — the URL is right, the listener is
+wrong. A required pre-demo port check is now in the runbook. The same incident produced a second
+rule: **never kill by port** — the PID list included the maintainer's Docker backend.
+
+**The flag-falsehoods instruction caught something in every single dispatch.** Including a controller
+claim that was 297 lines wrong, a cost model that repeated an earlier $0.62 mistake in a new shape,
+and **one instruction which, followed literally, would have deleted two working guards.**
+
+**The first compare artifact exists, at $0.0000** — `evalyn compare` makes no target HTTP calls, so
+two existing gate runs were re-judged for free. The board shows the newer run faster on both mean and
+p95, with zero invariant failures on either side.
