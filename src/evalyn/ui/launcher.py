@@ -436,9 +436,14 @@ class RunLauncher:
         pack blessed it last — in this repository, `example` and its four
         probes. A pack-hash mismatch is only a *warning* (`cli.py`), so a
         cockpit launch of any other pack quietly diffed a stranger's baseline
-        and printed a warning about it where the audience could read it. From a
-        terminal the operator sees and can change that path; from the browser
-        there is no such flag, which is precisely why the drift went unnoticed.
+        and said so only in that warning — which the child now writes to
+        **stderr**, so it lands in `stderr.log` and is one click away at
+        `GET /api/runs/{id}/stderr`, but is still nowhere on the page an
+        audience is watching. (Before that `err=True` fix it went to stdout,
+        which `spawn_child` sends to `/dev/null`: unreachable, not merely
+        unread.) From a terminal the operator sees and can change that path;
+        from the browser there is no such flag, which is precisely why the
+        drift went unnoticed.
 
         **The rule.** A baseline is passed only when this pack's own name is in
         it. That is the narrowest test that answers the actual question —

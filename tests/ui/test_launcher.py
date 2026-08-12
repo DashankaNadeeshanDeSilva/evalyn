@@ -2104,8 +2104,13 @@ def test_a_cockpit_gate_never_diffs_against_another_packs_baseline(
 
     `runs/baseline.json` in this repository belongs to the `example` pack;
     launching the demo pack from the cockpit gated it against those four probes
-    and printed `warning: baseline pack hash ... differs` mid-demo. Naming a
-    baseline that is not there is a supported, exercised state —
+    and said so only in `warning: baseline pack hash ... differs`, which the
+    child prints on **stderr** — reachable from the cockpit through
+    `GET /api/runs/{id}/stderr`, but only for an operator who thinks to open it
+    mid-demo, and never on the page the audience is looking at. (Until the
+    `err=True` fix that accompanies this note it went to the child's stdout,
+    which `spawn_child` routes to `/dev/null`, so it was not reachable at all.)
+    Naming a baseline that is not there is a supported, exercised state —
     `load_baseline` returns `None` for a path that does not exist and
     `evaluate_gate(art, None)` is a real code path, which is exactly what the
     documented CLI demo command relies on.

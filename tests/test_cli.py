@@ -277,6 +277,11 @@ def test_gate_update_baseline_writes_and_exits_0(monkeypatch, tmp_path):
 
 
 # Carry-note 1: warn (not fail) when baseline pack hash differs from current.
+# On **stderr**, and that is load-bearing rather than cosmetic: a cockpit-launched
+# gate has its stdout sent to `/dev/null` (`ui/launcher.py`, `spawn_child`), so a
+# staleness warning printed to stdout is not merely unread from the browser, it is
+# unreachable. `stderr.log`, served at `GET /api/runs/{id}/stderr`, is the only
+# channel the operator can see mid-demo.
 def test_gate_warns_on_pack_hash_mismatch(monkeypatch, tmp_path):
     monkeypatch.setenv("EVALYN_TARGET_URL", "http://localhost:8899")
     baseline_art = _artifact([_probe("ok-probe")], pack_hash="b" * 64)
@@ -288,8 +293,9 @@ def test_gate_warns_on_pack_hash_mismatch(monkeypatch, tmp_path):
                                  "--baseline", str(baseline_path)])
     expected = evaluate_gate(current, baseline_art)
     assert result.exit_code == expected.exit_code  # a warning, never a failure
-    assert "warning:" in result.stdout
-    assert "pack hash" in result.stdout
+    assert "warning:" in result.stderr
+    assert "pack hash" in result.stderr
+    assert "pack hash" not in result.stdout, "stdout is /dev/null on the cockpit path"
 
 
 # Carry-note 2: warn about probes present in baseline but absent from current
@@ -305,10 +311,12 @@ def test_gate_warns_on_probes_missing_from_current(monkeypatch, tmp_path):
                                  "--baseline", str(baseline_path)])
     expected = evaluate_gate(current, baseline_art)
     assert result.exit_code == expected.exit_code  # a warning, never a failure
-    assert "warning:" in result.stdout
-    warning_line = next(ln for ln in result.stdout.splitlines() if "dropped-probe" in ln)
+    assert "warning:" in result.stderr
+    warning_line = next(ln for ln in result.stderr.splitlines() if "dropped-probe" in ln)
     assert warning_line.startswith("warning:")
     assert "kept-probe" not in warning_line
+    assert "dropped-probe" not in result.stdout, \
+        "stdout is /dev/null on the cockpit path"
 
 
 # ------------------------------------------------- calibrate + fail-closed gate

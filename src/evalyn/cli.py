@@ -299,13 +299,23 @@ def gate(
         typer.echo(f"gate: baseline error: {e}", err=True)
         raise typer.Exit(2)
     if baseline_art is not None:
+        # Both on **stderr**. A terminal user sees either stream, so nothing is
+        # taken away; a cockpit-launched child has its stdout sent to
+        # `/dev/null` (`ui/launcher.py`, `spawn_child`), so on stdout these two
+        # were not merely unread from the browser but unreachable. `stderr.log`,
+        # served at `GET /api/runs/{id}/stderr`, is the operator's one visible
+        # channel mid-demo — and the cockpit's launch path deliberately hands a
+        # gate a *stale* baseline rather than dropping the diff
+        # (`RunLauncher._default_baseline_for`), which only holds up if the
+        # staleness says so somewhere the operator can reach.
         if baseline_art.pack_hash != art.pack_hash:
             typer.echo(f"warning: baseline pack hash `{baseline_art.pack_hash[:12]}` differs "
-                       f"from current `{art.pack_hash[:12]}` — baseline may be stale")
+                       f"from current `{art.pack_hash[:12]}` — baseline may be stale",
+                       err=True)
         missing = sorted({p.id for p in baseline_art.probes} - {p.id for p in art.probes})
         if missing:
             typer.echo(f"warning: probe(s) in baseline but absent from current run "
-                       f"(invisible to the gate): {', '.join(missing)}")
+                       f"(invisible to the gate): {', '.join(missing)}", err=True)
 
     result = evaluate_gate(art, baseline_art)
     typer.echo(result.report_md)
