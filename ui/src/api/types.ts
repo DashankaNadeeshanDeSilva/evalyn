@@ -564,7 +564,8 @@ export interface TrendPoint {
  *
  * Degraded runs are **skipped entirely** rather than emitted as null points, so
  * a gap in the line means "no readable run", not "zero" — do not connect across
- * it silently.
+ * it silently. The same rule governs a metric a run simply never recorded:
+ * absent, never `0.0`.
  */
 export interface TrendSeries {
   pack_name: string;
