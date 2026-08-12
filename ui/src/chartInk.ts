@@ -44,6 +44,16 @@ import tailwindConfig from "../tailwind.config";
  * product's colourblind failure pair, and a green threshold beside a red
  * failure mark is exactly that pair. The separation from `context` is 2.2x in
  * luminance, which survives greyscale, and the dash carries it on top of that.
+ *
+ * **None of which made the rule findable, and the number says why.** `pass`
+ * against `focal` is **1.88:1** — measured in a browser by a re-reviewer at 1x,
+ * 4x and 6x zoom, and reproduced here from these two tokens. That is the ratio
+ * of a rule to the healthy probe lying on top of it, and no re-hueing raises
+ * it, because the two marks are not adjacent: they are the same pixels. The
+ * rule therefore carries its own name on the chart (`TrendChart`'s
+ * `passLineTag`), drawn in this same `pass` ink — **8.70:1** on `chassis-25`,
+ * measured against the live painted ground and clear of the 4.5:1 text floor.
+ * Ink was never the lever here. Identification was.
  */
 
 const colors = tailwindConfig.theme.extend.colors;

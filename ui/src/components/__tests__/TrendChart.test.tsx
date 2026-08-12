@@ -355,6 +355,46 @@ describe("TrendChart", () => {
     );
   });
 
+  /*
+   * Paint order and a darker ink were both necessary and neither was enough. An
+   * independent reviewer rendered this chart in a browser at 1x, 4x and 6x and
+   * measured the rule at 1.88:1 against the focal line: at `pass^k` the
+   * threshold is 1.00 and a healthy probe is flat at 1.00, so the two marks are
+   * the SAME PIXELS and no contrast exists between them to raise. The rule has
+   * to say what it is.
+   *
+   * This test pins that the tag is drawn and what it says. It does NOT settle
+   * the legibility question — that was settled by looking at the page at 1440
+   * and 820 with a probe flat on the line, which is also how the defect it
+   * fixes was found.
+   */
+  it("names the pass line on the rule, in the band no reading can occupy", () => {
+    const { container } = render(
+      <TrendChart
+        series={[series("healthy", [[1, 1], [2, 1]])]}
+        metric="pass_k"
+        selectedProbeId="healthy"
+      />,
+    );
+
+    const rule = container.querySelector(".recharts-reference-line-line")!;
+    const tag = container.querySelector('[data-trend-rule="pass"]')!;
+
+    expect(tag.textContent).toMatch(/pass line 1\.00/i);
+    // In the rule's own ink, so the tag names the mark it is attached to.
+    expect(tag.getAttribute("fill")).toBe(rule.getAttribute("stroke"));
+    // Above it. `passLine` is the top of the domain for every metric that has
+    // one, so this is the only band of the plot a reading can never reach.
+    expect(Number(tag.getAttribute("y"))).toBeLessThan(
+      Number(rule.getAttribute("y1")),
+    );
+    // And the caption states the overlap rather than sending the eye hunting
+    // for a lone dashed rule that the healthy case does not contain.
+    expect(
+      screen.getByText(/a probe reading 1\.00 lies on it/i),
+    ).toBeInTheDocument();
+  });
+
   it("names no pass line on a metric that has none", () => {
     const { container } = render(
       <TrendChart

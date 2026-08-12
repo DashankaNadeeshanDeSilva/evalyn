@@ -8,7 +8,9 @@ import {
   Tooltip,
   XAxis,
   YAxis,
+  type CartesianViewBox,
   type DotItemDotProps,
+  type LabelProps,
   type TooltipContentProps,
 } from "recharts";
 
@@ -250,6 +252,61 @@ export function TrendChart({ series, metric, selectedProbeId }: TrendChartProps)
       : selected.points.filter((p) => p.value < facts.passLine!).length;
 
   /**
+   * The threshold's own tag, drawn on the rule.
+   *
+   * The rule was made a darker ink than the data, dashed, and painted last, and
+   * it still could not be found: at `pass^k` the threshold is 1.00 and a probe
+   * doing its job is flat at 1.00, so the two marks are **geometrically
+   * coincident** — the same pixels at the same height. An independent reviewer
+   * measured 1.88:1 between the rule and the focal line in a browser and could
+   * not separate them at 6x zoom. No ink can, because there is no ground
+   * between them. So the rule is **identified** rather than contrasted: it
+   * carries its own name at its own right end, and the operator reads "that
+   * rule is the pass line" from the picture instead of inferring it.
+   *
+   * It is drawn ABOVE the rule, which is the one band of this plot that is
+   * guaranteed empty: every metric with a `passLine` puts it at the top of its
+   * own domain (`pass_k` and `pass_at_k`, both `domain [0, 1]` with
+   * `passLine: 1` in `METRIC_FACTS`), so no reading can ever be plotted there
+   * and the tag cannot collide with data at any width. A threshold added below
+   * its domain's ceiling would need somewhere else to put this.
+   *
+   * Nothing clips it: `ReferenceLine`'s `ifOverflow` defaults to `discard`, and
+   * even `hidden` puts the clip path on the line, never on the label.
+   */
+  const passLineTag = ({ viewBox }: LabelProps) => {
+    // `viewBox` is the union of every shape Recharts labels — the polar members
+    // have no `width` at all — and for a horizontal `ReferenceLine` it is the
+    // rule's own box: the plot's x extent at the rule's y. Narrow it by asking
+    // for the three numbers this needs rather than asserting which member it is.
+    const box = viewBox as CartesianViewBox | undefined;
+    if (
+      facts.passLine === null ||
+      typeof box?.x !== "number" ||
+      typeof box.y !== "number" ||
+      typeof box.width !== "number"
+    ) {
+      return null;
+    }
+    return (
+      <text
+        data-trend-rule="pass"
+        x={box.x + box.width}
+        y={box.y - 8}
+        textAnchor="end"
+        fill={CHART_INK.pass}
+        // A step above the 12px ticks, because this is the annotation the
+        // chart is read by and not another number on an axis. Measured in a
+        // browser: at this size the tag's top clears the SVG's own edge by
+        // 12px, which is what the chart's `margin.top` was widened to buy.
+        fontSize={14}
+      >
+        pass line {facts.format(facts.passLine)}
+      </text>
+    );
+  };
+
+  /**
    * A reading's mark. Shape first, colour second — a reading that did not reach
    * the pass line is a filled square in the failure hue, one that did is a small
    * open circle in the ink, and the legend says which is which in words.
@@ -373,7 +430,12 @@ export function TrendChart({ series, metric, selectedProbeId }: TrendChartProps)
       >
         <LineChart
           data={model.rows}
-          margin={{ top: 12, right: 16, bottom: 4, left: 0 }}
+          // `top` is headroom for the pass line's tag, which is drawn above a
+          // rule that sits at the top of the domain. At 12 the tag cleared the
+          // SVG's own edge by 1.8px in a browser — inside the rounding, and an
+          // `<svg>` clips its viewport. It buys nothing else: the scale is
+          // `facts.domain`, unchanged.
+          margin={{ top: 24, right: 16, bottom: 4, left: 0 }}
           title={
             selected
               ? `${facts.label} for ${selected.probeId}, across ${model.rows.length} runs`
@@ -455,12 +517,17 @@ export function TrendChart({ series, metric, selectedProbeId }: TrendChartProps)
             pass^k the threshold is 1.00, which is exactly where every probe
             doing its job sits. Drawn last, the dash shows the reading through
             its own gaps instead of hiding under it.
+
+            Paint order is necessary and not sufficient: a 1px dash lying inside
+            a 2.5px line is still not a second mark to the eye. `label` is what
+            makes the rule findable. See `passLineTag`.
           */}
           {facts.passLine === null ? null : (
             <ReferenceLine
               y={facts.passLine}
               stroke={CHART_INK.pass}
               strokeDasharray="6 4"
+              label={passLineTag}
             />
           )}
         </LineChart>
@@ -501,11 +568,18 @@ export function TrendChart({ series, metric, selectedProbeId }: TrendChartProps)
 
         {/* Keyed whenever the rule is drawn, which is exactly when the metric
             has a threshold this product commits to. It was the one mark on the
-            chart the caption never mentioned. */}
+            chart the caption never mentioned.
+
+            The swatch alone was a promise the picture could not keep: it sends
+            the eye hunting for a lone dashed rule, and in the common case the
+            rule has a healthy probe lying on top of it and looks like one solid
+            line. So the entry now says where the rule names itself, and states
+            the overlap instead of leaving the operator to discover it. */}
         {facts.passLine === null ? null : (
           <span className="flex items-center gap-2">
             <KeyStroke width={1} ink={CHART_INK.pass} dash="6 4" />
-            the pass line at {facts.format(facts.passLine)}
+            the pass line at {facts.format(facts.passLine)}, labelled on the
+            rule — a probe reading {facts.format(facts.passLine)} lies on it
           </span>
         )}
 
