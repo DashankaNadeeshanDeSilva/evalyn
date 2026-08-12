@@ -35,6 +35,7 @@ from evalyn.discovery.run import (
     run_discovery,
     write_discovery_artifact,
 )
+from evalyn.engine.budget import PRICES as budget_prices
 from evalyn.targets.loader import load_pack
 
 MINIPACK = Path(__file__).parent.parent / "fixtures" / "minipack"
@@ -149,13 +150,17 @@ def _patch_eval(monkeypatch, log):
 # Step 2 + R8-10 + trust boundary: a REAL eval, a REAL tier-1 confirmation
 # --------------------------------------------------------------------------
 
-@pytest.mark.filterwarnings("ignore:no price entry")
 async def test_end_to_end_real_scorer_confirms_and_replays(live_pack, tmp_path,
                                                            monkeypatch):
     """Step 2 / R8-10 / trust boundary: awaited from a running loop (R8-10),
     a scripted agent reds a REAL tier-1 invariant (no spy confirmer), the
     finding is staged and replayed, and the artifact lands atomically in runs/.
     """
+    # The run drives the free mockllm stub, priced at zero — which would make
+    # the R8-14 "both spend sources populated" assertions below vacuous (a
+    # genuine 0.0 is indistinguishable from an unwired meter). Price the stub
+    # nonzero FOR THIS TEST ONLY so those assertions still discriminate.
+    monkeypatch.setitem(budget_prices, "mockllm", (0.015, 0.075))
     monkeypatch.setattr(toy, "LEAK_PROBABILITY", 1.0)
     _scripted_brain(monkeypatch, [_send(LEAK_ASK), _propose({"leak_marker": LEAK_MARKER})])
 

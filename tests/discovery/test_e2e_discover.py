@@ -359,11 +359,10 @@ def test_adopted_probe_reds_gate(live_example_pack, tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
 
     def _gate(pack, tag: str):
-        # run_gate meters the unpriced mockllm judge and warns (Plan #2b Task 1).
-        with pytest.warns(RuntimeWarning, match="no price entry"):
-            return run_gate(pack, judge_model="mockllm/model",
-                            log_dir=str(tmp_path / f"logs-{tag}"),
-                            out_dir=str(tmp_path / f"runs-{tag}"))
+        # the mockllm judge is priced at zero (free local stub) — silent metering.
+        return run_gate(pack, judge_model="mockllm/model",
+                        log_dir=str(tmp_path / f"logs-{tag}"),
+                        out_dir=str(tmp_path / f"runs-{tag}"))
 
     # --- BEFORE: the pack as shipped does not red for this probe id ----------
     before = evaluate_gate(_gate(live_example_pack, "before"), None)

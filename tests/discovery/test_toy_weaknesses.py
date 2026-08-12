@@ -50,10 +50,9 @@ def test_toy_weaknesses_flag_off_matches_baseline(toy_target, monkeypatch, tmp_p
     monkeypatch.chdir(tmp_path)
 
     pack = load_pack(live_pack_dir(PACK))
-    # run_gate meters the unpriced mockllm judge and warns (Plan #2b Task 1).
-    with pytest.warns(RuntimeWarning, match="no price entry"):
-        art = run_gate(pack, judge_model="mockllm/model",
-                       log_dir=str(tmp_path / "logs"), out_dir=str(tmp_path / "runs"))
+    # the mockllm judge is priced at zero (free local stub) — silent metering.
+    art = run_gate(pack, judge_model="mockllm/model",
+                   log_dir=str(tmp_path / "logs"), out_dir=str(tmp_path / "runs"))
 
     baseline = RunArtifact.from_dict(json.loads(BASELINE.read_text()))
     # R11-3: the SHIPPED pack's fingerprint is unchanged — no invariant was
@@ -87,9 +86,8 @@ def test_toy_weaknesses_flag_on_still_matches_baseline(toy_target, monkeypatch, 
     monkeypatch.chdir(tmp_path)
 
     pack = load_pack(live_pack_dir(PACK))
-    with pytest.warns(RuntimeWarning, match="no price entry"):
-        art = run_gate(pack, judge_model="mockllm/model",
-                       log_dir=str(tmp_path / "logs"), out_dir=str(tmp_path / "runs"))
+    art = run_gate(pack, judge_model="mockllm/model",
+                   log_dir=str(tmp_path / "logs"), out_dir=str(tmp_path / "runs"))
 
     baseline = RunArtifact.from_dict(json.loads(BASELINE.read_text()))
     assert pack_fingerprint(load_pack(PACK)) == baseline.pack_hash  # see above
