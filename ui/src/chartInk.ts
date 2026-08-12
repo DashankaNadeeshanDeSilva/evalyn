@@ -18,6 +18,7 @@ import tailwindConfig from "../tailwind.config";
  *       focal    chassis-900         16.37   the selected probe's line and dots
  *       context  chassis-500          4.03   every other probe's line
  *       failed   status-gate_failed   6.24   a reading that did not reach the pass line
+ *       pass     chassis-700          8.70   the pass line, the one rule that is not data
  *       axis     chassis-400          2.30   the axis rules and tick marks
  *       grid     chassis-200          1.27   the gridlines
  *       tick     chassis-600          5.98   the tick LABELS, which are text
@@ -32,6 +33,17 @@ import tailwindConfig from "../tailwind.config";
  * held to the 3:1 graphical threshold rather than exempted — and it clears it.
  * It stays subordinate to the focal line by **weight** (1px against 2.5px) and
  * by a 4x contrast gap, not by being too pale to see.
+ *
+ * `pass` is the newest and the one with a story. The pass line was drawn in
+ * `context` — the same bytes as every data line — and at `pass^k` the threshold
+ * is 1.00 while a healthy probe is flat at 1.00, so the rule and a real reading
+ * were the same colour at the same height and nothing on the page said which
+ * was which. It is now a step darker than the data it judges, dashed, drawn
+ * over the lines rather than under them, and named in the caption. It is
+ * deliberately NOT a hue: the surface brief names pass/fail red-green as this
+ * product's colourblind failure pair, and a green threshold beside a red
+ * failure mark is exactly that pair. The separation from `context` is 2.2x in
+ * luminance, which survives greyscale, and the dash carries it on top of that.
  */
 
 const colors = tailwindConfig.theme.extend.colors;
@@ -40,6 +52,7 @@ export const CHART_INK = {
   focal: colors.chassis[900],
   context: colors.chassis[500],
   failed: colors.status.gate_failed,
+  pass: colors.chassis[700],
   axis: colors.chassis[400],
   grid: colors.chassis[200],
   tick: colors.chassis[600],

@@ -306,6 +306,67 @@ describe("TrendChart", () => {
     expect(screen.getByText(/^1 more, drawn as marks alone$/i)).toBeInTheDocument();
   });
 
+  /*
+   * The pass line, which was drawn in `CHART_INK.context` — byte-identical to
+   * every context probe's stroke. At `pass^k` the threshold is 1.00 and a
+   * healthy probe is flat at 1.00, so the rule and a real reading were the same
+   * colour at the same y, and the caption named every other mark but not this
+   * one. Found by looking at the rendered page.
+   */
+
+  it("draws the pass line in an ink no data line uses, and names it", () => {
+    const { container } = render(
+      <TrendChart
+        series={[
+          series("anchor", [[1, 0], [2, 0]]),
+          series("healthy", [[1, 1], [2, 1]]),
+        ]}
+        metric="pass_k"
+        selectedProbeId="anchor"
+      />,
+    );
+
+    const rule = container.querySelector(".recharts-reference-line-line")!;
+    const dataInk = new Set(curves(container).map((c) => c.getAttribute("stroke")));
+    expect(
+      dataInk.has(rule.getAttribute("stroke")),
+      "the threshold is drawn in the same ink as the readings it judges",
+    ).toBe(false);
+    expect(screen.getByText(/the pass line at 1\.00/i)).toBeInTheDocument();
+  });
+
+  it("keeps the pass line on top of a probe lying exactly on it", () => {
+    const { container } = render(
+      <TrendChart
+        series={[series("healthy", [[1, 1], [2, 1]])]}
+        metric="pass_k"
+        selectedProbeId="healthy"
+      />,
+    );
+
+    // SVG paints in document order, so a rule declared before the lines is
+    // covered by any line sitting on it — which at pass^k is every probe that
+    // is doing its job.
+    const painted = [...container.querySelectorAll("svg.recharts-surface *")];
+    const rule = container.querySelector(".recharts-reference-line-line")!;
+    expect(painted.indexOf(rule)).toBeGreaterThan(
+      painted.indexOf(curves(container).at(-1)!),
+    );
+  });
+
+  it("names no pass line on a metric that has none", () => {
+    const { container } = render(
+      <TrendChart
+        series={[series("anchor", [[1, 0.004], [2, 0.9]], "judge_usd")]}
+        metric="judge_usd"
+        selectedProbeId="anchor"
+      />,
+    );
+
+    expect(container.querySelector(".recharts-reference-line-line")).toBeNull();
+    expect(screen.queryByText(/pass line/i)).toBeNull();
+  });
+
   it("counts the context lines in the legend rather than leaving them unexplained", () => {
     render(
       <TrendChart

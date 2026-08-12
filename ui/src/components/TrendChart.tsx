@@ -96,10 +96,26 @@ function tickDate(t: number): string {
  * Both are `aria-hidden`: the word beside each is the accessible content, so
  * nothing here is carried by the mark alone.
  */
-function KeyStroke({ width, ink }: { width: number; ink: string }) {
+function KeyStroke({
+  width,
+  ink,
+  dash,
+}: {
+  width: number;
+  ink: string;
+  dash?: string;
+}) {
   return (
     <svg width="24" height="8" aria-hidden="true" focusable="false">
-      <line x1="0" y1="4" x2="24" y2="4" stroke={ink} strokeWidth={width} />
+      <line
+        x1="0"
+        y1="4"
+        x2="24"
+        y2="4"
+        stroke={ink}
+        strokeWidth={width}
+        strokeDasharray={dash}
+      />
     </svg>
   );
 }
@@ -350,13 +366,6 @@ export function TrendChart({ series, metric, selectedProbeId }: TrendChartProps)
             stroke={CHART_INK.axis}
             tick={{ fill: CHART_INK.tick, fontSize: 12 }}
           />
-          {facts.passLine === null ? null : (
-            <ReferenceLine
-              y={facts.passLine}
-              stroke={CHART_INK.context}
-              strokeDasharray="6 4"
-            />
-          )}
           <Tooltip content={tooltip} cursor={{ stroke: CHART_INK.axis }} />
 
           {context.map((channel) => (
@@ -395,6 +404,21 @@ export function TrendChart({ series, metric, selectedProbeId }: TrendChartProps)
               legendType="none"
             />
           ) : null}
+
+          {/*
+            Declared AFTER the lines on purpose. SVG paints in document order,
+            so a rule declared first is covered by any line lying on it — and at
+            pass^k the threshold is 1.00, which is exactly where every probe
+            doing its job sits. Drawn last, the dash shows the reading through
+            its own gaps instead of hiding under it.
+          */}
+          {facts.passLine === null ? null : (
+            <ReferenceLine
+              y={facts.passLine}
+              stroke={CHART_INK.pass}
+              strokeDasharray="6 4"
+            />
+          )}
         </LineChart>
       </ResponsiveContainer>
 
@@ -430,6 +454,16 @@ export function TrendChart({ series, metric, selectedProbeId }: TrendChartProps)
             {contextMarksOnly} more, drawn as marks alone
           </span>
         ) : null}
+
+        {/* Keyed whenever the rule is drawn, which is exactly when the metric
+            has a threshold this product commits to. It was the one mark on the
+            chart the caption never mentioned. */}
+        {facts.passLine === null ? null : (
+          <span className="flex items-center gap-2">
+            <KeyStroke width={1} ink={CHART_INK.pass} dash="6 4" />
+            the pass line at {facts.format(facts.passLine)}
+          </span>
+        )}
 
         {markedReadings === 0 || facts.passLine === null ? null : (
           <span className="flex items-center gap-2">
