@@ -691,8 +691,6 @@ async def test_trends_never_plots_a_metric_the_artifact_never_recorded(
             f"/api/trends?pack={TREND_PACK}&metric={metric}")
 
     body = response.json()
-    assert "0.0" not in str([one["points"] for one in body
-                             if one["probe_id"] == "p-unmeasured"])
     series = _series_by_probe(body)
     assert set(series) == {"p-measured", "p-unmeasured"}
     assert series["p-unmeasured"]["points"] == [], (
@@ -723,9 +721,8 @@ async def test_trends_skips_a_degraded_run_rather_than_emitting_it_as_a_zero(
     `test_trends_keeps_a_probe_with_no_reading_as_an_empty_series` /
     `test_trends_drops_a_non_finite_reading_rather_than_serving_nan`.
 
-    It stays because the outcome is worth pinning: an implementation that went
-    around the typed load and read `probes[]` out of the raw artifact dict
-    would fail here, and nowhere else.
+    It stays as a regression pin on the outcome only. Nothing in this file
+    makes it discriminate, and the guards that do are named above.
     """
     readable = _gate_artifact(
         trends_dir, "20260101T000001000000-aaaaaaa1-trend",
