@@ -1370,6 +1370,52 @@ async def test_a_child_that_exited_unreaped_is_a_phantom_running_row(
         "and the two endpoints agree from there on"
 
 
+async def test_a_dead_childs_control_request_is_refused_before_the_write_not_after(
+        tmp_path, asgi_client):
+    """Pins the **pre-write** `reap()` in `control_run`, which nothing else can
+    see (F1).
+
+    Everything a caller observes is identical with or without it: the
+    post-write reap catches the same dead child a few lines later, unlinks the
+    file and returns the same 409 with the same `busy` code, so
+    `test_a_child_that_exited_unreaped_is_a_phantom_running_row` above passes
+    either way. The one thing that differs is whether the endpoint ever *asks
+    the launcher to write*: with the pre-write reap the request is refused
+    before `launcher.control` is reached; without it, a control file for a
+    process that is already gone is written into `runs/` and then retracted.
+
+    So this test watches the write itself. The recorder delegates to the real
+    `RunLauncher.control` — the production write still happens if the endpoint
+    calls for it — and the assertion is that for a dead child it never does.
+    Write-then-unlink is not equivalent to not writing: the engine's control
+    file is a one-way channel read by whatever polls it, and a run left behind
+    by a previous server (whose `live` this launcher does not hold) is exactly
+    the reader that could see the transient file.
+    """
+    app = cockpit(tmp_path, child=INERT)
+    asked_to_write: list[tuple[str, str]] = []
+    real_control = app.state.launcher.control
+
+    def recording_control(run_id: str, action) -> None:
+        asked_to_write.append((run_id, ControlAction(action).value))
+        real_control(run_id, action)
+
+    app.state.launcher.control = recording_control
+
+    async with asgi_client(app) as client:
+        unreaped = (await client.post("/api/runs",
+                                      json=launch_body())).json()["run_id"]
+        app.state.launcher.live.process.wait(timeout=60)     # dead, NOT reaped
+        refused = await client.post(f"/api/runs/{unreaped}/control",
+                                    json={"action": "cancel"})
+
+    assert refused.status_code == 409
+    assert asked_to_write == [], (
+        "the endpoint reached launcher.control for a child that had already "
+        "exited: it wrote a control file into runs/ and retracted it, instead "
+        "of asking liveness of current truth first")
+
+
 async def test_the_pending_details_cancelled_flag_tracks_the_operators_click(
         tmp_path, asgi_client):
     """The flag the SPA reads during the seconds between Cancel and the

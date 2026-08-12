@@ -814,16 +814,28 @@ def create_app(runs_dir: Path, packs: list[Path], *,
 
         # Asked of current truth, not of whatever `meta.json` last happened to
         # record (T-A2). A child that has exited but that nothing has reaped
-        # keeps `exit_code: null`, so without this the endpoint answered
-        # `202 accepted: true` for a process that was already gone and left an
+        # keeps `exit_code: null`, so the endpoint used to answer
+        # `202 accepted: true` for a process that was already gone and leave an
         # orphan control file in `runs/` — measured on the running app, where
         # the list and this endpoint then disagreed until somebody opened a
-        # detail page and reaped as a side effect. `reap()` is existing
-        # infrastructure and already runs from `_pending_detail`, a GET; this
-        # is a POST, which writes by definition. It cannot relabel a live run:
-        # `poll()` has to return an exit code for the slot to be released, and
-        # `self.live` is `None` for a run left behind by a previous server, so
-        # such a run stays live and still takes control actions.
+        # detail page and reaped as a side effect.
+        #
+        # **What THIS line contributes, precisely** (F1/F2 — the earlier
+        # wording credited it with the whole fix, and the suite proved
+        # otherwise): the 202-for-a-dead-child and the orphan file are both
+        # stopped by the *post*-write reap below, on its own. What this reap
+        # adds is that a dead child's request is refused **before** anything is
+        # written, instead of a control file being written into `runs/` and
+        # immediately retracted. That transient write is the only difference a
+        # caller-side test can see, and it is what
+        # `test_a_dead_childs_control_request_is_refused_before_the_write_not_after`
+        # pins — deliberately, because deleting this line left the whole suite
+        # green. `reap()` is existing infrastructure and already runs from
+        # `_pending_detail`, a GET; this is a POST, which writes by definition.
+        # It cannot relabel a live run: `poll()` has to return an exit code for
+        # the slot to be released, and `self.live` is `None` for a run left
+        # behind by a previous server, so such a run stays live and still takes
+        # control actions.
         app.state.launcher.reap()
         if not _run_is_live(run_id):
             raise HTTPException(status_code=409, detail=_NOT_LIVE)
