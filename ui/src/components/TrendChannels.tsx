@@ -38,7 +38,10 @@ import { Flatline } from "./Flatline";
  */
 
 const COLUMNS = [
-  { key: "probe", label: "Probe", width: "44%" },
+  // The key stays `probe` — it is internal, and the wire field it mirrors is
+  // frozen. Only the label the operator reads is renamed: on `judge_usd` this
+  // column holds one run-level series, which is a channel and is not a probe.
+  { key: "probe", label: "Channel", width: "44%" },
   { key: "readings", label: "Readings", width: "12%", numeric: true },
   { key: "first", label: "First", width: "14%", numeric: true },
   { key: "latest", label: "Latest", width: "14%", numeric: true },
@@ -61,7 +64,7 @@ function Reading({
   what: string;
 }) {
   if (value === null) {
-    return <Flatline word="no readings" reason={`no readable ${what} for this probe`} />;
+    return <Flatline word="no readings" reason={`no readable ${what} for this channel`} />;
   }
   return (
     <span
@@ -96,7 +99,7 @@ export function TrendChannels({
         data-testid="trend-channels-empty"
         className="engrave-b px-4 py-8 text-readout text-chassis-600 sm:px-6"
       >
-        No probes in this pack's history. Channels appear here as the CLI writes
+        No channels in this pack's history. They appear here as the CLI writes
         run artifacts — nothing is missing.
       </p>
     );
@@ -108,7 +111,7 @@ export function TrendChannels({
     <div className="overflow-x-auto">
       <table className="w-full min-w-[52rem] table-fixed border-collapse text-left">
         <caption className="sr-only">
-          Every probe in this pack, most notable first. Select one to draw it.
+          Every channel in this pack, most notable first. Select one to draw it.
         </caption>
         <colgroup>
           {COLUMNS.map((column) => (

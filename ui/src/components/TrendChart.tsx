@@ -444,11 +444,15 @@ export function TrendChart({ series, metric, selectedProbeId }: TrendChartProps)
               : `${facts.label} across ${model.rows.length} runs`
           }
           desc={
-            // Both counts genuinely reach 1: `judge_usd` is metered per run, so
-            // the route answers it with a single run-level series.
-            `${model.channels.length} ${model.channels.length === 1 ? "probe" : "probes"}, ` +
-            `${model.readings} ${model.readings === 1 ? "reading" : "readings"}. ` +
-            `A break in a line is a run with no readable artifact for that probe.`
+            // Only the channel count reaches 1: `judge_usd` is metered per run,
+            // so the route answers it with a single run-level series. `readings`
+            // cannot be 1 here — every row is built from a placed reading, so
+            // `rows.length <= readings`, and the guard above already returned on
+            // fewer than two rows. So no singular branch for it, same reasoning
+            // as the `title` above.
+            `${model.channels.length} ${model.channels.length === 1 ? "channel" : "channels"}, ` +
+            `${model.readings} readings. ` +
+            `A break in a line is a run with no readable artifact for that channel.`
           }
         >
           <CartesianGrid stroke={CHART_INK.grid} strokeDasharray="2 4" />

@@ -120,18 +120,18 @@ describe("Trends", () => {
     expect(asked[asked.length - 1]).toContain("metric=pass_k");
   });
 
-  it("counts the probes, readings and runs it actually received", async () => {
+  it("counts the channels, readings and runs it actually received", async () => {
     serveCorpus();
     renderPage();
 
-    // 3 probes, 8 readings (3 + 2 + 3), 3 runs. Every figure derived — a
+    // 3 channels, 8 readings (3 + 2 + 3), 3 runs. Every figure derived — a
     // literal in the component would be wrong the day a run lands.
     //
     // Awaited rather than read once: while EITHER read is in flight the page
     // must say so, and asserting on the first render is what caught it
-    // reporting "0 probes" before the allowlist had even landed.
+    // reporting "0 channels" before the allowlist had even landed.
     await waitFor(() =>
-      expect(screen.getByTestId("trends-readout").textContent).toMatch(/3 probes/),
+      expect(screen.getByTestId("trends-readout").textContent).toMatch(/3 channels/),
     );
     const readout = screen.getByTestId("trends-readout");
     expect(readout.textContent).toMatch(/8 readings/);
@@ -141,7 +141,7 @@ describe("Trends", () => {
   /**
    * Zero is a measurement, and before either read lands the client does not
    * have one. This is asserted on the FIRST render deliberately: the page
-   * shipped its first draft reporting "0 probes · 0 readings · 0 runs" for
+   * shipped its first draft reporting "0 channels · 0 readings · 0 runs" for
    * every frame before the pack allowlist arrived, which no `waitFor` would
    * ever have caught.
    */
@@ -151,7 +151,7 @@ describe("Trends", () => {
 
     const readout = screen.getByTestId("trends-readout");
     expect(readout.textContent).toMatch(/reading/i);
-    expect(readout.textContent).not.toMatch(/0 probes/);
+    expect(readout.textContent).not.toMatch(/0 channels/);
   });
 
   /**
@@ -219,6 +219,9 @@ describe("Trends", () => {
    * "1 probes", which is the one finding in this wave an audience can read off
    * a screen. `readings` and `runs` are the same number here for the same
    * reason, so they need the same treatment.
+   *
+   * The noun is `channel` throughout: that single run-level series is not a
+   * probe, and calling it one was the second half of the same defect.
    */
   it("counts the one run-level spend channel in the singular", async () => {
     const user = userEvent.setup();
@@ -227,8 +230,8 @@ describe("Trends", () => {
     await selectSpend(user);
 
     const readout = screen.getByTestId("trends-readout").textContent ?? "";
-    expect(readout).toMatch(/1 probe/);
-    expect(readout).not.toMatch(/1 probes/);
+    expect(readout).toMatch(/1 channel/);
+    expect(readout).not.toMatch(/1 channels/);
     expect(readout).toMatch(/3 readings/);
     expect(readout).toMatch(/3 runs/);
 
@@ -236,7 +239,7 @@ describe("Trends", () => {
     // counts a screen reader reaches.
     await waitFor(() =>
       expect(document.querySelector("svg desc")?.textContent).toMatch(
-        /^1 probe, 3 readings\./,
+        /^1 channel, 3 readings\./,
       ),
     );
   });
@@ -255,8 +258,18 @@ describe("Trends", () => {
     await selectSpend(user);
 
     const readout = screen.getByTestId("trends-readout").textContent ?? "";
-    expect(readout).toMatch(/1 probe/);
-    expect(readout).not.toMatch(/1 probes/);
+    expect(readout).toMatch(/1 channel/);
+    expect(readout).not.toMatch(/1 channels/);
+
+    // All THREE counts are 1 against the shipped handler — one run-level
+    // series, read once, in one run — so this is the only test that renders
+    // the other two singulars, and it was asserting on neither. `\b` is what
+    // makes each pair discriminate: "1 readings" has no word boundary after
+    // "reading", so the positive form cannot be satisfied by the plural.
+    expect(readout).toMatch(/1 reading\b/);
+    expect(readout).not.toMatch(/1 readings/);
+    expect(readout).toMatch(/1 run\b/);
+    expect(readout).not.toMatch(/1 runs/);
 
     // The channel bank names the series for what it is, and names no probe:
     // there is no per-probe spend anywhere in the artifact to name.

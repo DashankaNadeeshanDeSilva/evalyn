@@ -65,6 +65,24 @@ describe("TrendChannels", () => {
     expect(screen.getByRole("button", { name: /never-read/ })).toBeInTheDocument();
   });
 
+  /**
+   * The id column and the table's accessible caption call the row a *channel*,
+   * not a probe, and they do it for every metric. On `judge_usd` the route
+   * answers with one run-level series whose `probe_id` is `(whole run)` — a
+   * column headed "Probe" over that cell is simply wrong, and the two are the
+   * only naming in the bank a screen reader reaches before the ids themselves.
+   */
+  it("heads the id column and the caption with `channel`, whatever the metric", () => {
+    renderBank([seriesOf("(whole run)", [0.02, 0.03], "judge_usd")], {
+      metric: "judge_usd",
+    });
+
+    expect(screen.getByRole("columnheader", { name: "Channel" })).toBeInTheDocument();
+    expect(screen.getByRole("table").querySelector("caption")?.textContent).toMatch(
+      /every channel in this pack/i,
+    );
+  });
+
   it("marks the selected channel with aria-pressed, not with colour alone", () => {
     renderBank([seriesOf("a", [0, 0]), seriesOf("b", [1, 1])], { selected: "a" });
 
@@ -132,12 +150,22 @@ describe("TrendChannels", () => {
     const row = screen.getByRole("button", { name: /never-read/ }).closest("tr")!;
     expect(row.querySelectorAll("[data-flatlined]").length).toBeGreaterThan(0);
     expect(row.textContent).toMatch(/no readings/i);
+
+    // The full reason travels as `title` and as screen-reader text — it is the
+    // only place an empty cell names its own subject, and the noun is
+    // `channel`, for the same reason the column head is. Asserted as whole
+    // strings because un-renaming either one must redden this.
+    const reasons = [...row.querySelectorAll("[data-flatlined]")].map((cell) =>
+      cell.getAttribute("title"),
+    );
+    expect(reasons).toContain("no readable first for this channel");
+    expect(reasons).toContain("no readable latest for this channel");
   });
 
-  it("says the pack has no probes at all rather than rendering an empty table", () => {
+  it("says the pack has no channels at all rather than rendering an empty table", () => {
     renderBank([]);
 
-    expect(screen.getByText(/no probes/i)).toBeInTheDocument();
+    expect(screen.getByText(/no channels/i)).toBeInTheDocument();
     expect(screen.queryByRole("table")).toBeNull();
   });
 

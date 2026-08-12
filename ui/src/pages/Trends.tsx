@@ -139,11 +139,15 @@ export function Trends() {
                   per run, so the route answers it with ONE run-level series
                   however many probes the pack holds — and `readings` equals
                   `runs` in that shape. All three counts reach 1 on a metric
-                  the demo selects in front of an audience. */}
+                  the demo selects in front of an audience.
+
+                  The noun is `channel`, unconditionally: the run-level series
+                  that shape returns is not a probe, and every row of the bank
+                  below still carries its own real id. */}
               <span className="tabular-nums text-chassis-900">
                 {model.channels.length}
               </span>{" "}
-              {model.channels.length === 1 ? "probe" : "probes"}
+              {model.channels.length === 1 ? "channel" : "channels"}
               <Dot />
               <span className="tabular-nums text-chassis-900">
                 {model.readings}
