@@ -7,6 +7,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from evalyn.engine.budget import PRICES as budget_prices
 from evalyn.engine.run import (ProbeResult, RunArtifact, _judge_usd,
                                _reduce_log_to_probes, atomic_write_artifact,
                                new_run_id, pack_fingerprint, run_gate)
@@ -292,12 +293,13 @@ def test_run_gate_produces_artifact_with_per_probe_trial_stats(toy_target, monke
                                                                tmp_path, live_pack_dir):
     monkeypatch.setenv("EVALYN_TARGET_URL", toy_target)
     pack = load_pack(live_pack_dir(REPO_EXAMPLE))
-    # mockllm/model is unpriced, so real metering warns and prices it at the
-    # conservative upper bound — capturing it here also PROVES the eval's own
-    # usage reaches _judge_usd (the ContextVar seam silently returned {}).
-    with pytest.warns(RuntimeWarning, match="no price entry"):
-        art = run_gate(pack, judge_model="mockllm/model", log_dir=str(tmp_path / "logs"),
-                       out_dir=str(tmp_path / "runs"))  # keep runs/ out of the repo CWD
+    # mockllm/model is priced at zero (free local stub), which would make the
+    # judge_usd guard below vacuous — a real 0.0 and the ContextVar-seam bug's
+    # 0.0 are indistinguishable. Price the stub nonzero FOR THIS TEST ONLY so
+    # judge_usd > 0.0 still proves the eval's own usage reaches _judge_usd.
+    monkeypatch.setitem(budget_prices, "mockllm", (0.015, 0.075))
+    art = run_gate(pack, judge_model="mockllm/model", log_dir=str(tmp_path / "logs"),
+                   out_dir=str(tmp_path / "runs"))  # keep runs/ out of the repo CWD
     # Plan #2b Task 1 regression guard: a REAL run must meter nonzero judge
     # spend from the returned log (live bug 2026-07-28: judge_usd == 0.0)
     assert art.judge_usd > 0.0
@@ -387,7 +389,8 @@ def test_run_gate_out_dir_writes_artifact_there_not_cwd(toy_target, monkeypatch,
     monkeypatch.setenv("EVALYN_TARGET_URL", toy_target)
     pack = load_pack(live_pack_dir(REPO_EXAMPLE))
     monkeypatch.chdir(tmp_path)  # a CWD runs/ write would be visible here
-    # metering is not this test's concern (and unpriced mockllm would warn)
+    # metering is not this test's concern — stubbed out so it cannot influence
+    # the artifact-write assertions (mockllm meters to $0.00 anyway)
     monkeypatch.setattr("evalyn.engine.run._judge_usd", lambda log: 0.0)
     out = tmp_path / "artifacts"
     art = run_gate(pack, judge_model="mockllm/model",

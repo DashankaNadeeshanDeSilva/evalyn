@@ -38,6 +38,38 @@ def test_unknown_model_warns_and_gets_conservative_upper_bound():
         assert price_for("someprovider/never-heard-of-this-model") == (0.015, 0.075)
 
 
+def test_mockllm_stub_is_priced_zero_and_never_warns():
+    # `mockllm/model` is not an UNKNOWN model, it is the free local stub that
+    # is the CLI's default judge. Falling through to the opus-tier default
+    # invented spend ($0.419310 of a recorded $1.043643 on a real 150-trial run
+    # on 2026-08-12) and charged it against budget.max_usd_per_run, so a long
+    # enough free rehearsal could falsely trip the cap. Zero is the true price;
+    # the warning must not fire for it either (nothing needs adding to PRICES).
+    import warnings as _w
+
+    with _w.catch_warnings():
+        _w.simplefilter("error", RuntimeWarning)
+        assert price_for("mockllm/model") == (0.0, 0.0)
+        assert price_for("mockllm/anything-else") == (0.0, 0.0)
+
+
+def test_estimate_cost_of_mockllm_usage_is_exactly_zero():
+    # discovery/run.py:39 records that mockllm SYNTHESISES token usage, so the
+    # token counts are fiction; whatever they are, the cost is exactly 0.0.
+    import warnings as _w
+
+    with _w.catch_warnings():
+        _w.simplefilter("error", RuntimeWarning)
+        assert estimate_cost({"mockllm/model": _U(88_035, 27_037)}) == 0.0
+
+
+def test_mockllm_key_does_not_steal_a_priced_model():
+    # CONTROL: the substring key must not shadow a real id, and a real id must
+    # not be shadowed by it. This test must stay GREEN through the fix.
+    assert price_for("anthropic/claude-sonnet-5") == (0.003, 0.015)
+    assert price_for("openai/gpt-4o-mini") == (0.00015, 0.0006)
+
+
 def test_price_for_matches_longest_key_first_not_dict_order():
     # "gpt-4o-mini" contains "gpt-4o": correctness must come from longest-key
     # matching, never from dict insertion order (alphabetizing must not break it)

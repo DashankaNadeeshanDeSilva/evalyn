@@ -290,11 +290,10 @@ def test_gate_live_exit_code_matches_gate_policy(toy_target, monkeypatch, tmp_pa
     monkeypatch.setenv("EVALYN_TARGET_URL", toy_target)
     live_pack = str(live_pack_dir(PACK))  # allowlist must name the live port
     monkeypatch.chdir(tmp_path)  # run_gate writes runs/ relative to cwd
-    # real post-hoc metering prices the unpriced mockllm judge at the
-    # conservative upper bound and warns (Plan #2b Task 1: log-based metering)
-    with pytest.warns(RuntimeWarning, match="no price entry"):
-        result = runner.invoke(app, ["gate", "--target", live_pack,
-                                     "--baseline", str(tmp_path / "none.json")])
+    # the default mockllm judge is priced at zero (free local stub), so real
+    # post-hoc metering runs silently — no unknown-model warning to capture.
+    result = runner.invoke(app, ["gate", "--target", live_pack,
+                                 "--baseline", str(tmp_path / "none.json")])
     artifacts = sorted((tmp_path / "runs").glob("*-example.json"))
     assert artifacts, "gate run wrote no artifact"
     art = RunArtifact.from_dict(json.loads(artifacts[-1].read_text()))

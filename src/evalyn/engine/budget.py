@@ -24,6 +24,11 @@ PRICES: dict[str, tuple[float, float]] = {
     "gpt-4o-mini": (0.00015, 0.0006),
     "gpt-5-mini": (0.00025, 0.002),
     "gpt-5-nano": (0.00005, 0.0004),
+    # Not a cheap model — the free local stub (the CLI's default judge). It
+    # synthesises token usage, so the opus-tier unknown-model default below
+    # billed fabricated tokens against max_usd_per_run and could falsely trip
+    # the cap on a run that spent nothing. Zero is the true price, not a guess.
+    "mockllm": (0.0, 0.0),
 }
 # Unknown-model fallback: a genuine conservative UPPER bound (opus-tier). A
 # mid-tier guess would under-meter an expensive judge ~5x and silently keep the
