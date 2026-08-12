@@ -41,6 +41,7 @@ is the only one that round-trips to a file on disk.
 """
 from __future__ import annotations
 
+import math
 import sys
 import webbrowser
 from pathlib import Path
@@ -49,9 +50,12 @@ from typing import TYPE_CHECKING
 import evalyn
 from evalyn.targets.loader import load_pack
 from evalyn.ui.models import (
+    ApiError,
     Capabilities,
     ControlRequest,
     ControlResponse,
+    ErrorCode,
+    ErrorEnvelope,
     GateVerdict,
     HealthResponse,
     LaunchRequest,
@@ -65,6 +69,9 @@ from evalyn.ui.models import (
     RunMode,
     RunStatus,
     TranscriptTurn,
+    TrendMetric,
+    TrendPoint,
+    TrendSeries,
     TrialView,
     TurnRole,
     display_path,
@@ -103,9 +110,10 @@ from starlette.requests import Request
 if TYPE_CHECKING:                       # pragma: no cover - typing only
     from fastapi import FastAPI
 
-__all__ = ["create_app", "serve", "build_redactor", "split_transcript", "STATIC_DIR",
-           "INDEX_HTML", "DEFAULT_PORT", "LOOPBACK_HOST", "DEFAULT_PAGE_SIZE",
-           "MAX_PAGE_SIZE", "BASELINE_FILENAME"]
+__all__ = ["create_app", "serve", "build_redactor", "split_transcript",
+           "build_trends", "STATIC_DIR", "INDEX_HTML", "DEFAULT_PORT",
+           "LOOPBACK_HOST", "DEFAULT_PAGE_SIZE", "MAX_PAGE_SIZE",
+           "BASELINE_FILENAME", "RUN_LEVEL_SERIES", "TREND_STATUSES"]
 
 #: Refusal for a control action aimed at a run that is no longer in flight.
 #:
@@ -230,6 +238,93 @@ def build_redactor(packs: list[Path]) -> Redactor:
     return redactor
 
 
+#: `TrendSeries.probe_id` for the one metric that is **not** a probe's.
+#:
+#: `judge_usd` is metered once per run (`RunArtifact.judge_usd`); there is no
+#: per-probe spend anywhere in the artifact and none can be derived. Repeating
+#: the run's figure on every probe's series would draw N identical lines, each
+#: one asserting a per-probe cost nobody measured — the same class of invention
+#: as plotting a degraded run as `0.0`. So spend is one series, and its
+#: `probe_id` says what it is. The parentheses make it uncollidable with a real
+#: probe id, whose grammar is a slug.
+RUN_LEVEL_SERIES = "(whole run)"
+
+#: The only two statuses a trend reading may come from.
+#:
+#: `passed` and `gate_failed` are both real measurements — a failing gate is
+#: precisely what the operator opened this page to watch. Every other status is
+#: an absence dressed as a number: `unreadable` has no parsed probes at all,
+#: `invalid` measured nothing, `cancelled` leaves un-run probes sitting at the
+#: dataclass default of `0.0`, and `running` / `paused` / `interrupted` /
+#: `failed_to_start` have no artifact to read.
+TREND_STATUSES = (RunStatus.passed, RunStatus.gate_failed)
+
+
+def _finite(value: object) -> float | None:
+    """A value fit to be plotted, or `None`.
+
+    **The client validates `created_at` and does not validate `value` at all**,
+    so this is the only thing between an artifact and the chart's scale. Two
+    shapes get through everything upstream: `json.loads` accepts the bare `NaN`
+    and `Infinity` literals by default, and pydantic's `float` admits both — and
+    `json.dumps` then writes them back out as `NaN` / `Infinity`, which no JSON
+    parser is required to accept. A non-finite reading is dropped, which makes
+    it a gap; the alternative is a body the browser may refuse whole.
+    """
+    if value is None or isinstance(value, bool):
+        return None
+    if not isinstance(value, (int, float)):
+        return None
+    number = float(value)
+    return number if math.isfinite(number) else None
+
+
+def build_trends(runs: list[RunDetail], pack_name: str,
+                 metric: TrendMetric) -> list[TrendSeries]:
+    """`GET /api/trends`'s body, from `runs` already in ascending time order.
+
+    Two rules carry the page, and both are about what is **not** emitted.
+
+    **A run that did not measure a probe is absent from that probe's points.**
+    Never `0.0`, never `null`: the page ranks channels by the metric's worst
+    reading, so a fabricated zero for an unmeasured probe becomes the channel
+    the page opens on — the first thing an audience sees would be a catastrophe
+    that never happened. A gap in the line means "no readable run".
+
+    **A probe with no readable reading at all still gets a series**, with
+    `points: []`. The page renders it as a live "no readings" channel and
+    counts it in the readout; dropping it would silently shrink the probe count
+    instead of showing an honest blank.
+
+    The probe universe is the union of the probe ids the contributing runs
+    actually recorded — never the pack on disk. A pack is not needed to read a
+    history, `runs/` holds runs of packs this cockpit was never pointed at, and
+    a pack's current probe list is not the list its old runs measured.
+    """
+    if metric is TrendMetric.judge_usd:
+        return [TrendSeries(
+            pack_name=pack_name, probe_id=RUN_LEVEL_SERIES, metric=metric,
+            points=[TrendPoint(run_id=run.run_id, created_at=run.created_at,
+                               value=spend)
+                    for run in runs
+                    # `None` is "not metered", which is not "free" — the runs
+                    # table already refuses to render that as `$0.0000`.
+                    if (spend := _finite(run.judge_usd)) is not None])]
+
+    points_by_probe: dict[str, list[TrendPoint]] = {}
+    for run in runs:
+        for probe in run.probes:
+            points = points_by_probe.setdefault(probe.id, [])
+            value = _finite(getattr(probe, metric.value, None))
+            if value is None:
+                continue
+            points.append(TrendPoint(run_id=run.run_id,
+                                     created_at=run.created_at, value=value))
+    return [TrendSeries(pack_name=pack_name, probe_id=probe_id, metric=metric,
+                        points=points)
+            for probe_id, points in points_by_probe.items()]
+
+
 def create_app(runs_dir: Path, packs: list[Path], *,
                allow_discover: bool = False,
                judge_model: str | None = None) -> FastAPI:
@@ -247,6 +342,7 @@ def create_app(runs_dir: Path, packs: list[Path], *,
     from fastapi import APIRouter, FastAPI, HTTPException
     from fastapi.responses import (
         FileResponse,
+        JSONResponse,
         PlainTextResponse,
         StreamingResponse,
     )
@@ -761,6 +857,67 @@ def create_app(runs_dir: Path, packs: list[Path], *,
         """
         return PackListPage(items=pack_rows(app.state.packs_by_id),
                             next_cursor=None)
+
+    @api.get("/trends", response_model=list[TrendSeries])
+    async def trends(pack: str | None = None,
+                     metric: TrendMetric = TrendMetric.pass_k):
+        """One pack's history, one series per probe.
+
+        **A bare top-level array**, and the only route here that is. Every other
+        list is `{items, next_cursor}`, so this is the shape a later hand will
+        "correct" by analogy — `Trends.tsx` types the read as
+        `apiGet<TrendSeries[]>` and has no unwrap, so an envelope renders the
+        page's error branch. It is not paginated for the same reason it is not
+        capped: nothing bounds it client-side, and the readout reports "N runs"
+        as though N were the whole history (guarantee 11). The cost is bounded
+        by `RunIndex`'s cache, which is keyed on `(path, mtime, size)` — the
+        second request over a 100-run corpus is one `stat` per file.
+
+        **`?pack=` is the pack's NAME** — `PackRow.name`, the string the artifact
+        itself records and the same field `/api/runs?pack=` filters on. It is
+        compared for equality against already-loaded data and is never joined
+        into a path, interpolated into one, or opened: a traversal-shaped value
+        is simply a pack nobody has ever run, and gets the same `200 []` as any
+        other unknown name. `PackRow.id` is the identifier for the routes that
+        *address* a pack on disk; see its docstring.
+
+        **A pack with no history is `200 []`, never a 404** — an empty chart is
+        a legitimate state, and a 404 renders an alarm over a pack that simply
+        has not been run yet.
+
+        Compare and discover artifacts contribute nothing: all four
+        `TrendMetric` members are gate metrics. The mode filter is lexical (it
+        reads the run id, not the file) so it is free, but it is an
+        **optimisation and not the control** — measured by mutation, removing it
+        changes nothing observable, because a non-gate artifact carries no
+        `probes` and a gate body wearing a compare id fails the typed load and
+        is dropped as degraded. Do not delete it on the strength of that: it is
+        what keeps the honest reason honest.
+        """
+        if not pack:
+            # `pack_error`, not the 400's default `launch_refused` — this route
+            # starts nothing, and a client told its read "was refused a launch"
+            # is being lied to about which contract it broke. The envelope is
+            # built here because the status->code map cannot see the difference.
+            return JSONResponse(
+                status_code=400,
+                content=ErrorEnvelope(error=ApiError(
+                    code=ErrorCode.pack_error,
+                    message="?pack= is required: /api/trends reports the history "
+                            "of one pack, and there is no all-packs answer",
+                )).model_dump(mode="json", exclude_none=True))
+
+        rows = [row for row in app.state.index.list(mode=RunMode.gate, pack=pack,
+                                                    limit=None)
+                if row.status in TREND_STATUSES and not row.degraded]
+        # Ascending, and by the row's OWN `created_at` — the artifact's stamp,
+        # which is what the runs table shows. The filename's stamp usually
+        # agrees, and sorting on it (or on the directory listing, which is the
+        # same order) would be right until the day a run is written under an id
+        # minted earlier than the moment it finished.
+        rows.sort(key=lambda row: (row.created_at, row.run_id))
+        return build_trends([app.state.index.get(row.run_id) for row in rows],
+                            pack, metric)
 
     @api.get("/packs/{pack_id}/axes", response_model=PackAxes)
     async def pack_axes_view(pack_id: str) -> PackAxes:

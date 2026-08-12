@@ -577,3 +577,437 @@ def test_importing_the_server_is_the_only_thing_that_imports_the_run_index():
     done = subprocess.run([sys.executable, "-c", probe], check=True,
                           capture_output=True, text=True)
     assert json.loads(done.stdout) is False, done.stdout
+
+
+# --------------------------------------------------------------------------
+# 9. `GET /api/trends` — the Trends page's only read
+#
+# The page is a chart, and a chart's failure mode is not an error page: it is a
+# line that looks like a measurement and is not one. Almost every assertion
+# below is therefore about a value the route must NOT invent.
+# --------------------------------------------------------------------------
+
+#: The pack these fixtures record. Deliberately not `example`: the shared
+#: `runs_dir` fixture already carries `example` history, and a test that meant
+#: to measure its own artifacts would silently be measuring those too.
+TREND_PACK = "trend-fixture"
+
+
+def _probe(probe_id: str, **metrics) -> dict:
+    """One artifact `ProbeResult` dict, every metric a real number by default.
+
+    Gaps are opt-in (`pass_k=None`) so a test that wants one has to say so —
+    the inverse would make "no reading" the accidental default and every
+    absence test vacuous.
+    """
+    entry = {
+        "id": probe_id, "category": "grounding", "kind": "behaviour",
+        "safety_critical": False, "samples": 1, "trials": 1,
+        "expected_trials": 1, "pass_at_k": 1.0, "pass_k": 1.0,
+        "mean_score": 1.0, "unsure_trials": 0, "checks": [], "trial_records": [],
+    }
+    entry.update(metrics)
+    return entry
+
+
+def _gate_artifact(runs_dir: Path, run_id: str, *, created_at: str,
+                   probes=(), pack: str = TREND_PACK, judge_usd: float = 0.0,
+                   raw_text: str | None = None, **extra) -> str:
+    """Write one gate artifact and return its run id."""
+    payload = {
+        "pack_name": pack,
+        "pack_hash": "sha256:trendfixture",
+        "judge_model": "mockllm/model",
+        "created_at": created_at,
+        "log_path": "logs/trend.eval",
+        "probes": list(probes),
+        "judge_usd": judge_usd,
+        "total_unsure_trials": 0,
+    }
+    payload.update(extra)
+    text = raw_text if raw_text is not None else json.dumps(payload)
+    (runs_dir / f"{run_id}.json").write_text(text, encoding="utf-8")
+    return run_id
+
+
+def _series_by_probe(body: list) -> dict:
+    return {one["probe_id"]: one for one in body}
+
+
+@pytest.fixture
+def trends_dir(tmp_path: Path) -> Path:
+    """An empty `runs/` of this test's own."""
+    made = tmp_path / "trend-runs"
+    made.mkdir()
+    return made
+
+
+async def test_trends_answers_a_bare_json_array_and_never_an_envelope(
+        trends_dir, asgi_client):
+    """Guarantee 4. Every *other* list route here is `{items, next_cursor}`,
+    so the enveloped shape is the one this route will be given by accident.
+    `Trends.tsx` types the read as `apiGet<TrendSeries[]>` and has no unwrap."""
+    _gate_artifact(trends_dir, "20260101T000001000000-aaaaaaa1-trend",
+                   created_at="2026-01-01T00:00:01+00:00",
+                   probes=[_probe("p-one")])
+    async with asgi_client(_app(trends_dir)) as client:
+        response = await client.get(f"/api/trends?pack={TREND_PACK}")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert isinstance(body, list), f"expected a bare array, got {type(body).__name__}"
+    assert [one["probe_id"] for one in body] == ["p-one"]
+
+
+async def test_trends_skips_a_degraded_run_rather_than_emitting_it_as_a_zero(
+        trends_dir, asgi_client):
+    """Guarantee 1, and the whole reason the page exists.
+
+    A `0.0` for a probe nobody measured does not merely mislead: the page ranks
+    channels by the metric's worst reading, so the fabricated zero becomes the
+    channel the page OPENS on.
+    """
+    readable = _gate_artifact(
+        trends_dir, "20260101T000001000000-aaaaaaa1-trend",
+        created_at="2026-01-01T00:00:01+00:00",
+        probes=[_probe("p-one", pass_k=1.0)])
+    # Unreadable at the *typed* layer, readable at the salvage layer — so it
+    # still lists as a row of this pack, which is what makes it a candidate.
+    _gate_artifact(trends_dir, "20260101T000002000000-aaaaaaa2-trend",
+                   created_at="2026-01-01T00:00:02+00:00",
+                   raw_text=json.dumps({"pack_name": TREND_PACK,
+                                        "created_at": "2026-01-01T00:00:02+00:00",
+                                        "probes": "not a list"}))
+
+    async with asgi_client(_app(trends_dir)) as client:
+        body = (await client.get(f"/api/trends?pack={TREND_PACK}")).json()
+
+    points = _series_by_probe(body)["p-one"]["points"]
+    assert [one["run_id"] for one in points] == [readable]
+    assert [one["value"] for one in points] == [1.0]
+
+
+async def test_trends_answers_200_and_an_empty_array_for_a_pack_with_no_history(
+        trends_dir, asgi_client):
+    """Guarantee 3. A 404 renders the page's error branch; an empty chart is a
+    legitimate state and must render as one."""
+    async with asgi_client(_app(trends_dir)) as client:
+        response = await client.get("/api/trends?pack=never-been-run")
+
+    assert response.status_code == 200
+    assert response.json() == []
+
+
+async def test_trends_orders_points_by_created_at_and_not_by_the_run_id(
+        trends_dir, asgi_client):
+    """Ascending `created_at`, pinned against BOTH orders a lazier implementation
+    would fall into.
+
+    The three ids sort — in either direction — into an order that is not the
+    chronological one, because each artifact's own `created_at` disagrees with
+    the stamp in its filename. Reading the directory listing, or sorting on the
+    id, therefore cannot pass this.
+    """
+    _gate_artifact(trends_dir, "20260101T000003000000-aaaaaaa3-trend",
+                   created_at="2026-01-01T00:00:01+00:00",
+                   probes=[_probe("p-one", pass_k=0.1)])
+    _gate_artifact(trends_dir, "20260101T000001000000-aaaaaaa1-trend",
+                   created_at="2026-01-01T00:00:02+00:00",
+                   probes=[_probe("p-one", pass_k=0.2)])
+    _gate_artifact(trends_dir, "20260101T000002000000-aaaaaaa2-trend",
+                   created_at="2026-01-01T00:00:03+00:00",
+                   probes=[_probe("p-one", pass_k=0.3)])
+
+    async with asgi_client(_app(trends_dir)) as client:
+        body = (await client.get(f"/api/trends?pack={TREND_PACK}")).json()
+
+    points = _series_by_probe(body)["p-one"]["points"]
+    assert [one["created_at"] for one in points] == sorted(
+        one["created_at"] for one in points)
+    assert [one["value"] for one in points] == [0.1, 0.2, 0.3]
+
+
+async def test_trends_defaults_the_metric_to_pass_k(trends_dir, asgi_client):
+    _gate_artifact(trends_dir, "20260101T000001000000-aaaaaaa1-trend",
+                   created_at="2026-01-01T00:00:01+00:00",
+                   probes=[_probe("p-one", pass_k=0.25, pass_at_k=0.5,
+                                  mean_score=0.75)])
+    async with asgi_client(_app(trends_dir)) as client:
+        body = (await client.get(f"/api/trends?pack={TREND_PACK}")).json()
+
+    assert [one["metric"] for one in body] == ["pass_k"]
+    assert [one["value"] for one in body[0]["points"]] == [0.25]
+
+
+@pytest.mark.parametrize("metric,expected", [
+    ("pass_k", 0.25), ("pass_at_k", 0.5), ("mean_score", 0.75),
+])
+async def test_trends_reports_the_metric_it_was_asked_for(
+        trends_dir, asgi_client, metric, expected):
+    """Guarantee 9. Nothing client-side converts one metric into another: the
+    page labels the axis with the metric it REQUESTED, so a server that answers
+    with a different one puts a silent lie on screen."""
+    _gate_artifact(trends_dir, "20260101T000001000000-aaaaaaa1-trend",
+                   created_at="2026-01-01T00:00:01+00:00",
+                   probes=[_probe("p-one", pass_k=0.25, pass_at_k=0.5,
+                                  mean_score=0.75)])
+    async with asgi_client(_app(trends_dir)) as client:
+        body = (await client.get(
+            f"/api/trends?pack={TREND_PACK}&metric={metric}")).json()
+
+    assert [one["metric"] for one in body] == [metric]
+    assert [one["value"] for one in body[0]["points"]] == [expected]
+
+
+async def test_trends_refuses_a_missing_pack_as_pack_error_at_400(
+        trends_dir, asgi_client):
+    """`?pack=` is not optional, and the refusal is the frozen `pack_error`
+    code — not the 400's default `launch_refused`, which would tell a client
+    this read had tried to start something."""
+    async with asgi_client(_app(trends_dir)) as client:
+        response = await client.get("/api/trends")
+
+    assert response.status_code == 400
+    body = response.json()
+    assert set(body) == {"error"}
+    assert body["error"]["code"] == "pack_error"
+
+
+async def test_trends_never_turns_the_pack_parameter_into_a_filesystem_path(
+        trends_dir, asgi_client, monkeypatch):
+    """`?pack=` filters loaded data by equality. It is never joined, never
+    interpolated, never opened.
+
+    Recording every `Path.read_text` the request makes is the structural half:
+    a route that had built a path out of the parameter would show up here even
+    if it then failed to open it and answered `200 []` anyway.
+    """
+    _gate_artifact(trends_dir, "20260101T000001000000-aaaaaaa1-trend",
+                   created_at="2026-01-01T00:00:01+00:00",
+                   probes=[_probe("p-one")])
+
+    read: list[str] = []
+    original = Path.read_text
+
+    def recording_read_text(self, *args, **kwargs):
+        read.append(str(self))
+        return original(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "read_text", recording_read_text)
+
+    hostile = "../../etc/passwd"
+    async with asgi_client(_app(trends_dir)) as client:
+        response = await client.get("/api/trends", params={"pack": hostile})
+
+    assert response.status_code == 200
+    assert response.json() == []
+    assert "passwd" not in response.text
+    assert [one for one in read if "passwd" in one or ".." in one] == [], read
+
+
+async def test_trends_never_turns_an_absolute_pack_parameter_into_a_path(
+        trends_dir, asgi_client):
+    """The other traversal shape: an absolute path swallows a `/`-join whole.
+
+    The answer is the same `200 []` an unknown pack name gets — the server does
+    not answer whether a path exists, and does not say a word about a file.
+    """
+    async with asgi_client(_app(trends_dir)) as client:
+        response = await client.get("/api/trends", params={"pack": "/etc/passwd"})
+
+    assert response.status_code == 200
+    assert response.json() == []
+    for leak in ("No such file", "Errno", "passwd", "directory"):
+        assert leak not in response.text, response.text
+
+
+async def test_trends_keeps_a_probe_with_no_reading_as_an_empty_series(
+        trends_dir, asgi_client):
+    """Guarantee 8. The page renders it as a live "no readings" channel, and
+    dropping it silently shrinks the probe count in the readout."""
+    _gate_artifact(trends_dir, "20260101T000001000000-aaaaaaa1-trend",
+                   created_at="2026-01-01T00:00:01+00:00",
+                   probes=[_probe("p-read", pass_k=1.0),
+                           _probe("p-unread", pass_k=None)])
+
+    async with asgi_client(_app(trends_dir)) as client:
+        body = (await client.get(f"/api/trends?pack={TREND_PACK}")).json()
+
+    series = _series_by_probe(body)
+    assert set(series) == {"p-read", "p-unread"}
+    assert series["p-unread"]["points"] == []
+
+
+async def test_trends_stamps_a_point_exactly_as_the_runs_index_stamps_the_row(
+        trends_dir, asgi_client):
+    """Guarantee 6. A stamp that merely *parses* is not enough: the operator
+    reads the chart beside the runs table, and two spellings of one moment make
+    the two views stop agreeing about which run a point is."""
+    run_id = _gate_artifact(
+        trends_dir, "20260101T000009000000-aaaaaaa1-trend",
+        # Deliberately NOT the moment the id encodes, and carrying microseconds.
+        created_at="2026-01-01T00:00:01.123456+00:00",
+        probes=[_probe("p-one")])
+
+    async with asgi_client(_app(trends_dir)) as client:
+        listed = (await client.get("/api/runs")).json()["items"]
+        body = (await client.get(f"/api/trends?pack={TREND_PACK}")).json()
+
+    row = next(one for one in listed if one["run_id"] == run_id)
+    point = _series_by_probe(body)["p-one"]["points"][0]
+    assert point["created_at"] == row["created_at"]
+
+
+async def test_trends_drops_a_non_finite_reading_rather_than_serving_nan(
+        trends_dir, asgi_client):
+    """Guarantee 5, and the client has NO second line of defence.
+
+    `json.loads` accepts the `NaN` literal, so an artifact carrying one loads,
+    types, and reaches the wire — where `NaN` is not JSON at all, and where the
+    page feeds `value` straight to the chart's scale without validating it.
+    """
+    _gate_artifact(trends_dir, "20260101T000001000000-aaaaaaa1-trend",
+                   created_at="2026-01-01T00:00:01+00:00",
+                   raw_text=json.dumps({
+                       "pack_name": TREND_PACK,
+                       "pack_hash": "sha256:trendfixture",
+                       "judge_model": "mockllm/model",
+                       "created_at": "2026-01-01T00:00:01+00:00",
+                       "log_path": "logs/trend.eval", "judge_usd": 0.0,
+                       "total_unsure_trials": 0,
+                       "probes": [_probe("p-one")],
+                   }).replace('"pass_k": 1.0', '"pass_k": NaN'))
+
+    async with asgi_client(_app(trends_dir)) as client:
+        response = await client.get(f"/api/trends?pack={TREND_PACK}")
+
+    assert "NaN" not in response.text, response.text
+    assert _series_by_probe(response.json())["p-one"]["points"] == []
+
+
+async def test_trends_reads_nothing_from_a_cancelled_run(trends_dir, asgi_client):
+    """A cancelled run's un-run probes come back as zeros the gate reads as
+    MISSING. Plotting those would draw the operator's own stop button as a
+    collapse in the product."""
+    kept = _gate_artifact(trends_dir, "20260101T000001000000-aaaaaaa1-trend",
+                          created_at="2026-01-01T00:00:01+00:00",
+                          probes=[_probe("p-one", pass_k=1.0)])
+    _gate_artifact(trends_dir, "20260101T000002000000-aaaaaaa2-trend",
+                   created_at="2026-01-01T00:00:02+00:00", cancelled=True,
+                   probes=[_probe("p-one", pass_k=0.0)])
+
+    async with asgi_client(_app(trends_dir)) as client:
+        body = (await client.get(f"/api/trends?pack={TREND_PACK}")).json()
+
+    assert [one["run_id"] for one in _series_by_probe(body)["p-one"]["points"]] == [kept]
+
+
+async def test_trends_reads_nothing_from_a_non_gate_artifact(
+        trends_dir, asgi_client):
+    """All four `TrendMetric` members are gate metrics.
+
+    The fixture is the hostile one — a `-compare` artifact whose BODY is
+    gate-shaped and carries probes with real numbers — so that the test is not
+    passing merely because a compare scoreboard has no `probes` attribute.
+
+    **What this pins, stated honestly.** Three independent controls keep this
+    file out: the route asks the index for gate runs only, the mode-typed load
+    refuses a gate body under a compare id (so the row is `degraded`), and the
+    status filter drops a degraded row. Measured by mutation: removing the mode
+    filter **alone changes nothing observable**, because the other two still
+    hold — so this is an outcome pin, not a proof of the filter, and the filter
+    is an optimisation rather than the control. It fails only when an
+    implementation goes around the typed load entirely, e.g. by reading
+    `probes[]` out of the raw artifact dict.
+    """
+    kept = _gate_artifact(trends_dir, "20260101T000001000000-aaaaaaa1-trend",
+                          created_at="2026-01-01T00:00:01+00:00",
+                          probes=[_probe("p-one", pass_k=1.0)])
+    _gate_artifact(trends_dir, "20260101T000002000000-aaaaaaa2-trend-compare",
+                   created_at="2026-01-01T00:00:02+00:00",
+                   probes=[_probe("p-one", pass_k=0.0)])
+
+    async with asgi_client(_app(trends_dir)) as client:
+        body = (await client.get(f"/api/trends?pack={TREND_PACK}")).json()
+
+    assert [one["run_id"] for one in _series_by_probe(body)["p-one"]["points"]] == [kept]
+
+
+async def test_trends_reports_judge_spend_as_one_run_level_series(
+        trends_dir, asgi_client):
+    """`judge_usd` is metered per RUN, not per probe, and sub-cent values are
+    real.
+
+    Attributing a run's whole spend to each of its probes would be four
+    identical lines each claiming a cost nobody measured, so the spend series is
+    the run's and says so in its `probe_id`. The value is carried at full
+    precision: the client formats to four decimals precisely so a sub-cent run
+    does not read as free.
+    """
+    _gate_artifact(trends_dir, "20260101T000001000000-aaaaaaa1-trend",
+                   created_at="2026-01-01T00:00:01+00:00", judge_usd=0.013875,
+                   probes=[_probe("p-one"), _probe("p-two")])
+
+    async with asgi_client(_app(trends_dir)) as client:
+        body = (await client.get(
+            f"/api/trends?pack={TREND_PACK}&metric=judge_usd")).json()
+
+    assert len(body) == 1, [one["probe_id"] for one in body]
+    assert [one["value"] for one in body[0]["points"]] == [0.013875]
+
+
+async def test_trends_omits_a_run_that_recorded_no_judge_spend_at_all(
+        trends_dir, asgi_client):
+    """`judge_usd: None` means "not metered", which is not "free"."""
+    metered = _gate_artifact(
+        trends_dir, "20260101T000001000000-aaaaaaa1-trend",
+        created_at="2026-01-01T00:00:01+00:00", judge_usd=0.0042,
+        probes=[_probe("p-one")])
+    _gate_artifact(trends_dir, "20260101T000002000000-aaaaaaa2-trend",
+                   created_at="2026-01-01T00:00:02+00:00", judge_usd=None,
+                   probes=[_probe("p-one")])
+
+    async with asgi_client(_app(trends_dir)) as client:
+        body = (await client.get(
+            f"/api/trends?pack={TREND_PACK}&metric=judge_usd")).json()
+
+    assert [one["run_id"] for one in body[0]["points"]] == [metered]
+
+
+async def test_trends_caps_nothing_so_the_pages_run_count_is_the_whole_history(
+        trends_dir, asgi_client):
+    """Guarantee 11. Nothing caps this client-side, and the readout says
+    "N runs" as though N were the whole history — so a server-side bound would
+    make the page lie without either side noticing."""
+    ids = [
+        _gate_artifact(trends_dir,
+                       f"2026010{n}T000001000000-aaaaaaa{n}-trend",
+                       created_at=f"2026-01-0{n}T00:00:01+00:00",
+                       probes=[_probe("p-one")])
+        for n in range(1, 10)
+    ]
+
+    async with asgi_client(_app(trends_dir)) as client:
+        body = (await client.get(f"/api/trends?pack={TREND_PACK}")).json()
+
+    assert [one["run_id"] for one in body[0]["points"]] == ids
+
+
+async def test_trends_goes_through_the_redaction_chokepoint(
+        trends_dir, tmp_path, asgi_client):
+    """Not a new serialisation path. The probe id is the one operator-authored
+    string this response carries, and a pack's `not_contains` literal can end up
+    in one."""
+    pack = _pack_with_a_secret(tmp_path / "pack")
+    _gate_artifact(trends_dir, "20260101T000001000000-aaaaaaa1-trend",
+                   created_at="2026-01-01T00:00:01+00:00",
+                   probes=[_probe(f"leaks-{PACK_SECRET}")])
+
+    async with asgi_client(_app(trends_dir, [pack])) as client:
+        response = await client.get(f"/api/trends?pack={TREND_PACK}")
+
+    assert response.status_code == 200
+    assert PACK_SECRET not in response.text, response.text
+    # An absence alone would pass on an empty body; the marker proves the
+    # scrubber actually rewrote this response rather than never seeing it.
+    assert redaction_marker("check_value") in response.text, response.text
