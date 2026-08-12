@@ -329,11 +329,12 @@ def build_trends(runs: list[RunDetail], pack_name: str,
 
 #: `stale_reason` for a pack that has never been calibrated at all.
 #:
-#: Frozen wording: `TrustReport`'s own docstring names it, and the SPA's mock
-#: suite asserts on this exact string. `is_stale` spells the same state "no
-#: calibration record", which is why this route answers before ever calling it
-#: — one sentence for one state, in the words the page was written against.
-NEVER_CALIBRATED = "never calibrated"
+#: The engine's locked staleness rule already names this state, in these words
+#: (`calibrate.is_stale` -> `"no calibration record"`). The route answers it
+#: before calling `is_stale` only because there is no record left to evaluate —
+#: not because it holds a second opinion about what the state is called. One
+#: state, one sentence, and the sentence is the engine's.
+NO_CALIBRATION_RECORD = "no calibration record"
 
 
 def _agreements(raw: object) -> dict[str, float]:
@@ -421,7 +422,7 @@ def build_trust(pack) -> TrustReport:
       minus the ones the record holds a pair for. A criterion added to a rubric
       after calibration has an agreement figure of nothing, and a healthy
       overall number must not be allowed to stand in for it. It stays empty for
-      a pack with no record at all — "never calibrated" already says every
+      a pack with no record at all — "no calibration record" already says every
       criterion is uncovered, and listing them would repeat one fact N times.
     * `threshold` is `calibrate.AGREEMENT_THRESHOLD`, the bar the gate fails
       closed against — and it is `None` when there is no record, because there
@@ -464,7 +465,7 @@ def build_trust(pack) -> TrustReport:
                          f"{e.__class__.__name__}: {e}")
     if record is None:
         return TrustReport(pack_name=name, stale=True,
-                           stale_reason=NEVER_CALIBRATED)
+                           stale_reason=NO_CALIBRATION_RECORD)
     if not isinstance(record, dict):
         return TrustReport(
             pack_name=name, stale=True,

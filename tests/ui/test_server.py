@@ -1198,7 +1198,9 @@ async def test_a_pack_with_no_calibration_record_is_a_200_with_a_null_agreement(
     assert body["agreement"] is None
     assert body["judge_model"] is None
     assert body["stale"] is True
-    assert body["stale_reason"] == "never calibrated"
+    # The engine's own words for this state (`calibrate.is_stale`), not a
+    # second sentence invented by the route for the case the engine names.
+    assert body["stale_reason"] == "no calibration record"
     # No record measured anything against a threshold, so there is no bar to
     # draw a pass line at either.
     assert body["threshold"] is None
@@ -1254,7 +1256,7 @@ async def test_a_pack_outside_the_allowlist_says_so_rather_than_claiming_it_is_u
     assert body["pack_name"] == "no-such-pack"
     assert body["agreement"] is None
     assert body["stale"] is True
-    assert body["stale_reason"] != "never calibrated"
+    assert body["stale_reason"] != "no calibration record"
     assert "allowlist" in body["stale_reason"]
 
 
@@ -1290,7 +1292,7 @@ async def test_a_calibration_record_that_will_not_parse_degrades_rather_than_500
     assert body["agreement"] is None
     assert body["stale"] is True
     assert body["stale_reason"] is not None
-    assert body["stale_reason"] != "never calibrated"
+    assert body["stale_reason"] != "no calibration record"
     assert body["per_criterion_counts"] == {}
 
 
