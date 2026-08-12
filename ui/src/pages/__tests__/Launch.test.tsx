@@ -6,7 +6,7 @@ import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { describe, expect, it } from "vitest";
 
 import { createQueryClient } from "../../api/client";
-import type { PackListPage } from "../../api/types";
+import type { PackListPage, PackRow } from "../../api/types";
 import { META, PACKS, RUN_ID_RUNNING } from "../../mocks/fixtures";
 import { server } from "../../mocks/server";
 import { onlySocket, useFakeEventSource } from "../../test/fakeEventSource";
@@ -99,6 +99,30 @@ async function selectDiscover(user: ReturnType<typeof userEvent.setup>) {
   await user.click(discover);
 }
 
+/**
+ * A second pack in the allowlist. The shipped fixture holds one, so the
+ * per-pack interlock has never had two packs to come apart between — and the
+ * stage command carries three.
+ */
+const TWINCORE: PackRow = {
+  ...PACKS[0]!,
+  id: "pack-7c4f19ab",
+  name: "twincore-injection",
+  path: "~/Drive/Projects/evalyn/packs/twincore-injection",
+  probe_count: 31,
+};
+
+function servingTwoPacks() {
+  server.use(
+    http.get("/api/packs", () =>
+      HttpResponse.json({
+        items: [PACKS[0]!, TWINCORE],
+        next_cursor: null,
+      } satisfies PackListPage),
+    ),
+  );
+}
+
 async function armGate(user: ReturnType<typeof userEvent.setup>) {
   const pack = PACKS[0]!;
   await user.click(await screen.findByTestId("pack-key"));
@@ -160,6 +184,44 @@ describe("the launch console", () => {
     await user.type(screen.getByLabelText(/Type example/), "e");
     expect(screen.getByTestId("safety-key")).toBeEnabled();
     expect(screen.queryByTestId("launch-refusal")).toBeNull();
+  });
+
+  /**
+   * The per-pack interlock, and the only guard between a mistyped intention
+   * and a live run of the wrong pack.
+   *
+   * The dangerous order is this one: the operator types the name of the pack
+   * they *mean* while a different pack is still selected — the field refuses,
+   * as it should — and then clicks the pack they meant. If the confirmation
+   * survived that click it would already equal the newly selected pack's name,
+   * so a single click would arm a launch whose confirmation was never typed
+   * against it. The interlock is per pack precisely so a name typed for one
+   * pack cannot arm a launch of another.
+   */
+  it("does not let a name typed for one pack arm a launch of another", async () => {
+    const user = userEvent.setup();
+    servingTwoPacks();
+    renderLaunch();
+
+    const keys = await screen.findAllByTestId("pack-key");
+    expect(keys).toHaveLength(2);
+    await user.click(keys[0]!);
+    // Typed against `example`, which refuses it — this is the wrong pack.
+    await user.type(screen.getByLabelText(/Type example/), TWINCORE.name);
+    expect(screen.getByTestId("safety-key")).toBeDisabled();
+
+    // ...and now the pack it *was* typed for is selected.
+    await user.click(screen.getAllByTestId("pack-key")[1]!);
+
+    // Asserted first because it is the outcome that spends money: a confirmed
+    // launch of a pack whose confirmation was never typed against it.
+    expect(screen.getByTestId("safety-key")).toBeDisabled();
+    expect(screen.getByTestId("launch-refusal").textContent).toContain(
+      TWINCORE.name,
+    );
+    expect(screen.getByLabelText(new RegExp(`Type ${TWINCORE.name}`))).toHaveValue(
+      "",
+    );
   });
 
   it("names the pack by id and echoes its name, then follows the run it started", async () => {

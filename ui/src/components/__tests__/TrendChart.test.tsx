@@ -391,7 +391,7 @@ describe("TrendChart", () => {
     // And the caption states the overlap rather than sending the eye hunting
     // for a lone dashed rule that the healthy case does not contain.
     expect(
-      screen.getByText(/a probe reading 1\.00 lies on it/i),
+      screen.getByText(/any probe reading 1\.00 lies on it/i),
     ).toBeInTheDocument();
   });
 

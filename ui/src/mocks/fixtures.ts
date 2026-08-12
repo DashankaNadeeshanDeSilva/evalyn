@@ -765,6 +765,33 @@ export const TREND_SERIES: TrendSeries[] = [
   },
 ];
 
+/**
+ * `judge_usd`, in the shape the route actually answers it: **one** run-level
+ * series, not one per probe.
+ *
+ * Spend is metered once per run (`RunArtifact.judge_usd`) and no per-probe
+ * figure exists anywhere in the artifact, so repeating the run's figure across
+ * the pack's probes would draw N identical lines, each asserting a cost nobody
+ * measured. `probe_id` says what the series is instead, parenthesised so it
+ * cannot collide with a real probe id — whose grammar is a slug.
+ *
+ * Same single readable run as `TREND_SERIES`, because it is the same history.
+ */
+export const TREND_SPEND_SERIES: TrendSeries[] = [
+  {
+    pack_name: "example",
+    probe_id: "(whole run)",
+    metric: "judge_usd",
+    points: [
+      {
+        run_id: RUN_ID_GATE,
+        created_at: "2026-08-04T08:15:44.953115+00:00",
+        value: 0.0041,
+      },
+    ],
+  },
+];
+
 export const TRUST_REPORT: TrustReport = {
   pack_name: "example",
   judge_model: "mockllm/model",

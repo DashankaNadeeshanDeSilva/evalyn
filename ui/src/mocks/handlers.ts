@@ -55,6 +55,7 @@ import {
   RUN_SUMMARIES,
   SCOREBOARD,
   TREND_SERIES,
+  TREND_SPEND_SERIES,
   TRIAL_VIEW,
   TRUST_NEVER_CALIBRATED,
   TRUST_REPORT,
@@ -448,6 +449,16 @@ export const handlers = [
     const pack = url.searchParams.get("pack");
     const metric = url.searchParams.get("metric") ?? "pass_k";
     if (!pack) return fail("pack_error", "?pack= is required");
+    // The route branches on the metric, and so must this: `judge_usd` is
+    // metered once per run, so it answers with ONE run-level series while
+    // every other metric answers with one series per probe. Returning the
+    // per-probe shape for spend meant no test the page ever ran had met the
+    // body the server sends.
+    if (metric === "judge_usd") {
+      return HttpResponse.json(
+        TREND_SPEND_SERIES.map((s) => ({ ...s, pack_name: pack })),
+      );
+    }
     return HttpResponse.json(
       TREND_SERIES.map((s) => ({ ...s, pack_name: pack, metric })),
     );

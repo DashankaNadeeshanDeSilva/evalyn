@@ -437,13 +437,22 @@ export function TrendChart({ series, metric, selectedProbeId }: TrendChartProps)
           // `facts.domain`, unchanged.
           margin={{ top: 24, right: 16, bottom: 4, left: 0 }}
           title={
+            // No singular branch: the guard above returns before this on fewer
+            // than two rows, so `runs` here can never be 1.
             selected
               ? `${facts.label} for ${selected.probeId}, across ${model.rows.length} runs`
               : `${facts.label} across ${model.rows.length} runs`
           }
           desc={
-            `${model.channels.length} probes, ${model.readings} readings. ` +
-            `A break in a line is a run with no readable artifact for that probe.`
+            // Only the channel count reaches 1: `judge_usd` is metered per run,
+            // so the route answers it with a single run-level series. `readings`
+            // cannot be 1 here — every row is built from a placed reading, so
+            // `rows.length <= readings`, and the guard above already returned on
+            // fewer than two rows. So no singular branch for it, same reasoning
+            // as the `title` above.
+            `${model.channels.length} ${model.channels.length === 1 ? "channel" : "channels"}, ` +
+            `${model.readings} readings. ` +
+            `A break in a line is a run with no readable artifact for that channel.`
           }
         >
           <CartesianGrid stroke={CHART_INK.grid} strokeDasharray="2 4" />
@@ -574,12 +583,16 @@ export function TrendChart({ series, metric, selectedProbeId }: TrendChartProps)
             the eye hunting for a lone dashed rule, and in the common case the
             rule has a healthy probe lying on top of it and looks like one solid
             line. So the entry now says where the rule names itself, and states
-            the overlap instead of leaving the operator to discover it. */}
+            the overlap instead of leaving the operator to discover it.
+
+            "Any", not "a": this clause renders whenever the rule does, and the
+            chart may hold no reading at the threshold at all. The conditional
+            reading is the only one that is true on every render. */}
         {facts.passLine === null ? null : (
           <span className="flex items-center gap-2">
             <KeyStroke width={1} ink={CHART_INK.pass} dash="6 4" />
             the pass line at {facts.format(facts.passLine)}, labelled on the
-            rule — a probe reading {facts.format(facts.passLine)} lies on it
+            rule — any probe reading {facts.format(facts.passLine)} lies on it
           </span>
         )}
 
