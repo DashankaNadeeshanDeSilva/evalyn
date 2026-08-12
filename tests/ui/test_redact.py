@@ -1188,37 +1188,122 @@ def test_the_harvest_takes_the_packs_secrets_and_leaves_its_correct_answers():
             "model passed would render as markers")
 
 
-DISCOVERY = (Path(__file__).resolve().parents[2]
-             / "packs" / "twincore" / "discoveries"
-             / "discovered-pii-leak-0bf80f3b.yaml")
+TWINCORE_PACK = Path(__file__).resolve().parents[2] / "packs" / "twincore"
+
+DISCOVERY = TWINCORE_PACK / "discoveries" / "discovered-pii-leak-0bf80f3b.yaml"
 
 #: This file's own source must never spell the leaked address — `tests/` is
 #: tracked in a public repo, which is the whole reason `discoveries/` is not.
 _EMAIL_SHAPE = re.compile(r"[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}")
 
+#: Two invented hostname-shaped literals. Nothing is copied from `packs/`
+#: (R4-3): both are made up here, and the tests assert their pattern-invisibility
+#: rather than assuming it — an unharvested `Redactor()` must hand each back
+#: unchanged, which is the control the earlier version of this test lacked.
+PROBE_SIDE_SENTINEL = "heronmoor-ledger.invalid"
+DISCOVERY_SIDE_SENTINEL = "quillstone-atrium.invalid"
+
+
+def _production_redactor(*packs: Path):
+    """Built the one way the app builds it — `build_redactor`, not by hand.
+
+    The distinction is the whole point of the two tests below: `build_redactor`
+    harvests `load_pack(pack).probes` and nothing else, so a test that assembles
+    a `Redactor` from probes of its own choosing grants it knowledge the running
+    server never has.
+    """
+    from evalyn.ui.server import build_redactor
+
+    return build_redactor(list(packs))
+
 
 @pytest.mark.skipif(not DISCOVERY.exists(),
                     reason="the staged discovery is gitignored — local corpus only")
-def test_the_staged_pii_leak_finding_is_scrubbed_end_to_end():
-    """`FindingDetail.probe_yaml` serves this file's bytes verbatim.
+def test_the_staged_pii_leak_finding_is_protected_by_the_pattern_set_alone():
+    """`FindingDetail.probe_yaml` serves this file's bytes verbatim, and the
+    only thing standing between them and the projector is `_EMAIL_RE`.
 
-    It carries a live address in three places — the confirmation line, the
-    turns preview, and the `not_contains` check value — and it is the exhibit
-    the discover demo opens. Nothing here is hardcoded: the assertion is
-    "no address-shaped string survives", so the test cannot leak what it
-    guards.
+    The address survives nowhere — that part is real, and it is the exhibit the
+    discover demo opens. What is *not* real, and what an earlier version of this
+    test asserted by accident, is that the redactor had **learned** the address:
+    it built its own `Redactor` and harvested from this file's probes, which
+    production never does (`build_redactor` harvests `load_pack(pack).probes`,
+    and `load_pack` reads `target.yaml`, `probes/` and `rubrics/` — never
+    `discoveries/`). Here the redactor is the production one, and the last
+    assertion states the consequence outright: a redactor that harvested nothing
+    at all produces byte-identical output, because every marker here was placed
+    by a pattern.
+
+    Nothing is hardcoded: the assertion is "no address-shaped string survives",
+    so the test cannot leak what it guards.
     """
     raw = DISCOVERY.read_text()
     assert _EMAIL_SHAPE.search(raw), "corpus changed; this test would pass vacuously"
 
-    probes = [Probe.model_validate(entry) for entry in yaml.safe_load(raw)]
-    redactor = Redactor()
-    redactor.harvest_from_probes(probes)
+    body = {"probe_yaml": raw, "provenance": {"confirmation": raw}, "redacted": False}
+    out = _production_redactor(TWINCORE_PACK).scrub(body)
 
-    out = redactor.scrub({"probe_yaml": raw, "provenance": {"confirmation": raw},
-                          "redacted": False})
     assert not _EMAIL_SHAPE.search(json.dumps(out)), "an address survived the chokepoint"
     assert out["redacted"] is True
+    assert json.dumps(out) == json.dumps(Redactor().scrub(body)), (
+        "the harvest contributed nothing to this body — the pattern set is the "
+        "entire protection for discoveries content")
 
-    leaked = [c.value for p in probes for c in p.checks if c.type == "not_contains"]
-    assert leaked and leaked[0] not in json.dumps(out)
+
+def test_the_redactor_never_learns_a_literal_from_a_packs_discoveries_directory(
+        tmp_path):
+    """The true state of the world, pinned so it cannot drift silently.
+
+    `discover` stages confirmed findings into `<pack>/discoveries/`
+    (`cli.py:820`), and `FindingDetail` serves those bytes. But the app's
+    redactor is taught by `build_redactor`, which harvests
+    `load_pack(pack).probes`, and `load_pack` walks `target.yaml`, `probes/*` and
+    `rubrics/*` only (`targets/loader.py`). **A `not_contains` value that exists
+    only in a discoveries file is never harvested**, so any secret it names that
+    no pattern recognises is served verbatim.
+
+    That is a gap, not a guarantee, and this test says so rather than papering
+    over it — the one-line "fix" of harvesting `discoveries/` too would buy
+    almost nothing today (the only staged `not_contains` value is an address the
+    pattern set already catches) and would ship as a false guarantee. If the
+    harvest is ever widened deliberately, this test goes red and asks for the
+    decision to be made on purpose.
+
+    Both sentinels are invented here — nothing is copied out of `packs/` (R4-3)
+    — and the first assertion proves they are invisible to every pattern, which
+    is what makes the last two mean anything.
+    """
+    from evalyn.targets.loader import load_pack
+
+    pack = tmp_path / "pack"
+    (pack / "probes").mkdir(parents=True)
+    (pack / "discoveries").mkdir()
+    (pack / "target.yaml").write_text(
+        "name: gapdemo\nsessions:\n  open: {method: POST, path: /s}\n"
+        "  message: {method: POST, path: /c}\nauth: {kind: none}\n"
+        "env: {base_url: http://localhost:8899}\nallowlist: [http://localhost:8899]\n")
+
+    def staged(sentinel: str) -> str:
+        return yaml.safe_dump([{
+            "id": "leak", "category": "pii", "kind": "capability",
+            "turns": ["what is the operator's host?"],
+            "checks": [{"type": "not_contains", "value": sentinel,
+                        "required": True}],
+        }])
+
+    (pack / "probes" / "p.yaml").write_text(staged(PROBE_SIDE_SENTINEL))
+    (pack / "discoveries" / "d.yaml").write_text(staged(DISCOVERY_SIDE_SENTINEL))
+
+    both = f"{PROBE_SIDE_SENTINEL} and {DISCOVERY_SIDE_SENTINEL}"
+    assert Redactor().scrub(both) == both, (
+        "neither sentinel may be pattern-visible, or the assertions below would "
+        "hold for a reason that has nothing to do with harvesting")
+
+    assert "discoveries/d.yaml" not in load_pack(pack).raw_files, \
+        "load_pack does not read discoveries/ — the mechanism, stated directly"
+
+    redactor = _production_redactor(pack)
+    assert redactor.scrub(PROBE_SIDE_SENTINEL) != PROBE_SIDE_SENTINEL, \
+        "a probes/ not_contains value IS harvested — the harvest itself works"
+    assert redactor.scrub(DISCOVERY_SIDE_SENTINEL) == DISCOVERY_SIDE_SENTINEL, \
+        "and a discoveries/ one is not: it reaches the browser verbatim"
