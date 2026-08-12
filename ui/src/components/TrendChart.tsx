@@ -437,12 +437,17 @@ export function TrendChart({ series, metric, selectedProbeId }: TrendChartProps)
           // `facts.domain`, unchanged.
           margin={{ top: 24, right: 16, bottom: 4, left: 0 }}
           title={
+            // No singular branch: the guard above returns before this on fewer
+            // than two rows, so `runs` here can never be 1.
             selected
               ? `${facts.label} for ${selected.probeId}, across ${model.rows.length} runs`
               : `${facts.label} across ${model.rows.length} runs`
           }
           desc={
-            `${model.channels.length} probes, ${model.readings} readings. ` +
+            // Both counts genuinely reach 1: `judge_usd` is metered per run, so
+            // the route answers it with a single run-level series.
+            `${model.channels.length} ${model.channels.length === 1 ? "probe" : "probes"}, ` +
+            `${model.readings} ${model.readings === 1 ? "reading" : "readings"}. ` +
             `A break in a line is a run with no readable artifact for that probe.`
           }
         >

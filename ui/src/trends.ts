@@ -73,7 +73,12 @@ export interface TrendModel {
   rows: ChartRow[];
   /** Plotted readings, summed across channels. */
   readings: number;
-  /** Distinct runs represented — never the same number as `readings`. */
+  /**
+   * Distinct runs represented. Below `readings` whenever two channels read the
+   * same run, and **equal** to it on a single-channel model — which is exactly
+   * what `judge_usd` is: spend is metered per run, so the route answers that
+   * metric with one run-level series and every reading is its own run.
+   */
   runs: number;
   /**
    * Readings dropped because `created_at` would not parse. Surfaced rather than
