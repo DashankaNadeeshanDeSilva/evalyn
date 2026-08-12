@@ -54,6 +54,7 @@ from evalyn.ui.models import (
     Capabilities,
     ControlRequest,
     ControlResponse,
+    CriterionCounts,
     ErrorCode,
     ErrorEnvelope,
     GateVerdict,
@@ -73,6 +74,7 @@ from evalyn.ui.models import (
     TrendPoint,
     TrendSeries,
     TrialView,
+    TrustReport,
     TurnRole,
     display_path,
     is_run_id,
@@ -111,7 +113,7 @@ if TYPE_CHECKING:                       # pragma: no cover - typing only
     from fastapi import FastAPI
 
 __all__ = ["create_app", "serve", "build_redactor", "split_transcript",
-           "build_trends", "STATIC_DIR", "INDEX_HTML", "DEFAULT_PORT",
+           "build_trends", "build_trust", "STATIC_DIR", "INDEX_HTML", "DEFAULT_PORT",
            "LOOPBACK_HOST", "DEFAULT_PAGE_SIZE", "MAX_PAGE_SIZE",
            "BASELINE_FILENAME", "RUN_LEVEL_SERIES", "TREND_STATUSES"]
 
@@ -323,6 +325,198 @@ def build_trends(runs: list[RunDetail], pack_name: str,
     return [TrendSeries(pack_name=pack_name, probe_id=probe_id, metric=metric,
                         points=points)
             for probe_id, points in points_by_probe.items()]
+
+
+#: `stale_reason` for a pack that has never been calibrated at all.
+#:
+#: Frozen wording: `TrustReport`'s own docstring names it, and the SPA's mock
+#: suite asserts on this exact string. `is_stale` spells the same state "no
+#: calibration record", which is why this route answers before ever calling it
+#: — one sentence for one state, in the words the page was written against.
+NEVER_CALIBRATED = "never calibrated"
+
+
+def _agreements(raw: object) -> dict[str, float]:
+    """A `{key: fraction}` block of a calibration record, defensively.
+
+    Everything in `calibration.json` is operator-editable text that predates
+    this route by three weeks, so nothing in it is trusted to be the shape the
+    wire model wants. A key that is not a string or a value that is not a
+    finite number is **dropped rather than coerced**: a missing agreement
+    rendered as `0.0` would be the worst possible lie this page could tell.
+
+    **Dropped, specifically — not nulled**, and that is the part the wire can
+    see. Measured on this route: FastAPI serialises through the response model
+    and pydantic already renders a non-finite float as `null`, so on a scalar
+    field the guard changes nothing an HTTP client can observe. On this map it
+    changes the only thing that matters — an absent key reads as "never
+    measured", where a key sitting there holding `null` reads as a criterion
+    that was scored and came back as nothing.
+    """
+    if not isinstance(raw, dict):
+        return {}
+    return {key: number for key, value in raw.items()
+            if isinstance(key, str) and (number := _finite(value)) is not None}
+
+
+def _counts(raw: object) -> dict[str, CriterionCounts]:
+    """`{"<rubric>:<criterion>": [hits, total]}` as `CriterionCounts`.
+
+    JSON has no tuples, so `calibrate.write_record` stores each pair as a
+    two-element list; this is the one place that shape is turned back into the
+    named pair the SPA reads. Anything that is not a pair of plain integers is
+    dropped — a partially-typed count is not a measurement.
+    """
+    if not isinstance(raw, dict):
+        return {}
+    out: dict[str, CriterionCounts] = {}
+    for key, value in raw.items():
+        if not isinstance(key, str) or not isinstance(value, (list, tuple)):
+            continue
+        if len(value) != 2 or not all(isinstance(n, int) and not isinstance(n, bool)
+                                      for n in value):
+            continue
+        out[key] = CriterionCounts(hits=value[0], total=value[1])
+    return out
+
+
+def _scored_criteria(record: dict) -> set[str]:
+    """Every `"<rubric>:<criterion>"` the record holds a matched pair for.
+
+    Keys only, and from **both** blocks: a criterion whose agreement value is
+    unusable was still scored against a human label, and calling it "never
+    scored" on the strength of a corrupt float would be a different claim than
+    the one the record supports.
+    """
+    blocks = [record.get(block) for block in ("per_criterion",
+                                              "per_criterion_counts")]
+    return {key for block in blocks if isinstance(block, dict)
+            for key in block if isinstance(key, str)}
+
+
+def build_trust(pack) -> TrustReport:
+    """`GET /api/trust?pack`'s body — one pack's `calibration.json`, mapped.
+
+    This page reports a **record**, not a corpus. `runs/` is never opened: the
+    subject is the file `evalyn calibrate` wrote and `evalyn gate` fails closed
+    without, and its numbers are reported as measured or not at all.
+
+    **What is read, and what is derived** — the distinction is the whole job:
+
+    * `agreement`, `per_criterion_agreement` (the record's `per_criterion`),
+      `per_criterion_counts`, `judge_model` and `calibrated_at` (its
+      `created_at`) are **verbatim** off the record, type-checked and dropped
+      if unusable, never recomputed.
+    * `per_rubric_agreement` is the record's own field where it has one, and
+      otherwise `calibrate.per_rubric_agreement`'s legacy mean-of-fractions —
+      the same preference, in the same order, that `is_stale` applies. It is
+      spelled once, there, so the page and the gate cannot disagree about a
+      rubric's agreement.
+    * `stale` / `stale_reason` are **`calibrate.is_stale`'s verdict**, asked
+      against `pack.spec.judge.rubric_model`, which is the model `evalyn gate`
+      itself judges rubrics with absent a `--rubric-judge-model` override.
+      There is no second staleness rule here, because a page that called a
+      record fresh while the gate refused it would be worse than no page.
+    * `unmatched` is **derived, honestly**: the pack's rubric criteria on disk
+      minus the ones the record holds a pair for. A criterion added to a rubric
+      after calibration has an agreement figure of nothing, and a healthy
+      overall number must not be allowed to stand in for it. It stays empty for
+      a pack with no record at all — "never calibrated" already says every
+      criterion is uncovered, and listing them would repeat one fact N times.
+    * `threshold` is `calibrate.AGREEMENT_THRESHOLD`, the bar the gate fails
+      closed against — and it is `None` when there is no record, because there
+      is then nothing that was measured against it.
+
+    **What is NOT derived, deliberately.** The record carries no confusion
+    matrix, no per-anchor detail and no second rater, so nothing here computes
+    Cohen's κ — and the field is `agreement`, ±1-point agreement exactly as
+    shipped. `CalibrationResult.unmatched` (human labels naming no rubric
+    criterion) is a different quantity pointing the other way and is not
+    written to the record at all; it is not what this field reports.
+
+    **Every failure degrades, and degrades closed.** An unreadable record, a
+    record that is not an object, a rubric this build cannot parse — each
+    answers 200 with `stale: True` and a reason. `stale` defaults to `True` in
+    the wire model for exactly this reason: the safe direction for "we could
+    not tell" is "do not trust it".
+    """
+    # Inside the function for the reason every other engine import here is
+    # (C-T7b): `calibrate` reaches `inspect_ai` through `scoring.tier3`.
+    from evalyn.engine.calibrate import (
+        AGREEMENT_THRESHOLD,
+        _pack_rubric_ids,
+        is_stale,
+        load_record,
+        per_rubric_agreement,
+    )
+    from evalyn.scoring.rubrics import load_rubric, parse_criteria
+
+    name = pack.spec.name
+    try:
+        record = load_record(pack)
+    except (OSError, ValueError) as e:
+        # `json.JSONDecodeError` and `UnicodeDecodeError` are both ValueError.
+        # The message is the parser's own ("Expecting value: line 1 …"), which
+        # is what an operator needs to find the edit that broke the file.
+        return TrustReport(
+            pack_name=name, stale=True,
+            stale_reason=f"the calibration record could not be read: "
+                         f"{e.__class__.__name__}: {e}")
+    if record is None:
+        return TrustReport(pack_name=name, stale=True,
+                           stale_reason=NEVER_CALIBRATED)
+    if not isinstance(record, dict):
+        return TrustReport(
+            pack_name=name, stale=True,
+            stale_reason="the calibration record is not a JSON object, so "
+                         "nothing in it can be read")
+
+    try:
+        stale, reason = is_stale(pack, pack.spec.judge.rubric_model)
+    except (AttributeError, KeyError, OSError, TypeError, ValueError) as e:
+        # `is_stale` reads the record's fields positionally-typed and re-reads
+        # every rubric off disk; a hand-edited record or a missing rubric can
+        # raise any of these. The page must still render, so the verdict fails
+        # closed with the reason attached rather than 500ing.
+        stale, reason = True, (f"the calibration record could not be "
+                               f"evaluated: {e.__class__.__name__}: {e}")
+
+    per_criterion = _agreements(record.get("per_criterion"))
+    # The recorded pooled value first, the legacy mean-of-fractions second —
+    # `is_stale`'s own order (calibrate.py:290), not a second policy.
+    by_rubric = (_agreements(record.get("per_rubric_agreement"))
+                 or _agreements(per_rubric_agreement(per_criterion)))
+
+    scored = _scored_criteria(record)
+    unmatched: list[str] = []
+    for rubric_id in sorted(_pack_rubric_ids(pack)):
+        try:
+            criteria = parse_criteria(load_rubric(pack, rubric_id)[0])
+        except (OSError, ValueError):
+            # A rubric this build cannot read says nothing about which of its
+            # criteria were scored, so it contributes no claim either way.
+            continue
+        unmatched += [key for criterion in criteria
+                      if (key := f"{rubric_id}:{criterion}") not in scored]
+
+    judge_model = record.get("judge_model")
+    calibrated_at = record.get("created_at")
+    return TrustReport(
+        pack_name=name,
+        judge_model=judge_model if isinstance(judge_model, str) else None,
+        agreement=_finite(record.get("agreement")),
+        per_rubric_agreement=by_rubric,
+        per_criterion_agreement=per_criterion,
+        per_criterion_counts=_counts(record.get("per_criterion_counts")),
+        unmatched=unmatched,
+        stale=stale,
+        # The reason it is STALE. `is_stale` answers "calibrated" when it is
+        # not, and a non-null reason on a healthy record is precisely the
+        # shape a banner renders as a warning.
+        stale_reason=reason if stale else None,
+        calibrated_at=calibrated_at if isinstance(calibrated_at, str) else None,
+        threshold=AGREEMENT_THRESHOLD,
+    )
 
 
 def create_app(runs_dir: Path, packs: list[Path], *,
@@ -937,6 +1131,52 @@ def create_app(runs_dir: Path, packs: list[Path], *,
         rows.sort(key=lambda row: (row.created_at, row.run_id))
         return build_trends([app.state.index.get(row.run_id) for row in rows],
                             pack, metric)
+
+    @api.get("/trust", response_model=TrustReport)
+    async def trust(pack: str | None = None):
+        """One pack's judge-calibration record — the Judge Trust page's read.
+
+        **`?pack=` is the pack's NAME**, the same string `/api/trends?pack=`
+        takes and the same one `PackRow.name` reports, because the page picks
+        it out of `/api/packs` exactly as the Trends page does.
+
+        **It is never turned into a path.** This route genuinely opens a file
+        inside a pack directory, so the resolution runs through
+        `pack_id_for(name)` into `app.state.packs_by_id` — the same start-time
+        allowlist `/api/packs` lists and `/api/packs/{pack_id}/axes` addresses.
+        That id is a SHA-256 digest, so a traversal-shaped `?pack=` is not a
+        path that fails to open: it is a dictionary key nobody holds. The pack
+        *root* comes from the operator's own `--target` and from nowhere else.
+
+        **A name outside the allowlist is `200`, not `404`** — but it says so.
+        This server cannot read a record for a pack it was never pointed at,
+        which is a different fact from "this pack has never been calibrated",
+        and the two must not be reported with the same sentence. `runs/` may
+        hold history for packs the allowlist does not name (which is why
+        `/api/trends` accepts any name); a *record* has no such reading.
+        """
+        if not pack:
+            # `pack_error` rather than the 400's default `launch_refused`,
+            # exactly as `/api/trends` does: this read starts nothing, and a
+            # client told it "was refused a launch" is being lied to about
+            # which contract it broke.
+            return JSONResponse(
+                status_code=400,
+                content=ErrorEnvelope(error=ApiError(
+                    code=ErrorCode.pack_error,
+                    message="?pack= is required: /api/trust reports the judge "
+                            "calibration of one pack, and there is no "
+                            "all-packs answer",
+                )).model_dump(mode="json", exclude_none=True))
+
+        found = app.state.packs_by_id.get(pack_id_for(pack))
+        if found is None:
+            return TrustReport(
+                pack_name=pack, stale=True,
+                stale_reason="this pack is not in the allowlist this server "
+                             "was started with, so its calibration record is "
+                             "not one this server can read")
+        return build_trust(found[0])
 
     @api.get("/packs/{pack_id}/axes", response_model=PackAxes)
     async def pack_axes_view(pack_id: str) -> PackAxes:

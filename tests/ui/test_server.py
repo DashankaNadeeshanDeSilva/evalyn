@@ -28,6 +28,7 @@ was in the spec; this is the resolution, asserted below by name.
 from __future__ import annotations
 
 import json
+import shutil
 import sys
 from pathlib import Path
 
@@ -1068,3 +1069,347 @@ async def test_trends_goes_through_the_redaction_chokepoint(
     # An absence alone would pass on an empty body; the marker proves the
     # scrubber actually rewrote this response rather than never seeing it.
     assert redaction_marker("check_value") in response.text, response.text
+
+
+# --------------------------------------------------------------------------
+# 10. `GET /api/trust` — the Judge Trust page's only read
+#
+# This route reports a *record*, not a corpus: `<pack>/calibration.json`, the
+# file `evalyn calibrate` writes and the file `evalyn gate` refuses rubric
+# checks without. Two rules run through every test below.
+#
+# **The number is `agreement` — ±1-point agreement as shipped — and never
+# `kappa`.** Nothing in this repository computes Cohen's κ, and a page that
+# used the word would be claiming a certification nobody performed.
+#
+# **A pack with no record is a legitimate 200 with a null agreement**, not a
+# 404. "Never calibrated" is the state most packs are in; rendering it as a
+# missing resource turns an honest blank into an alarm.
+# --------------------------------------------------------------------------
+
+#: The shipped packs, read-only. `twincore` is the ONE pack in this repository
+#: carrying a `calibration.json` (measured, 2026-08-12); `example` carries none
+#: and is therefore the never-calibrated case with no fixture to build.
+_PACKS = Path(__file__).resolve().parents[2] / "packs"
+
+
+@pytest.fixture
+def calibrated_pack(tmp_path: Path) -> Path:
+    """A **copy** of `packs/twincore`, rubrics and calibration record included.
+
+    Copied because half these tests edit a rubric or corrupt the record, and
+    `packs/twincore/calibration.json` is the committed output of a real,
+    paid calibration run (run #5, 93% agreement). Nothing here may rewrite it.
+    """
+    dest = tmp_path / "twincore"
+    shutil.copytree(_PACKS / "twincore", dest)
+    return dest
+
+
+async def test_trust_reports_the_calibration_record_the_pack_actually_carries(
+        runs_dir, calibrated_pack, asgi_client):
+    """The real numbers off the real record — none of them recomputed.
+
+    Every figure asserted here was read off `packs/twincore/calibration.json`
+    before this test was written. The route's job is to *map* that file onto
+    the wire shape, and the one thing it must never do is derive a figure the
+    calibration run did not measure.
+    """
+    async with asgi_client(_app(runs_dir, [calibrated_pack])) as client:
+        response = await client.get("/api/trust", params={"pack": "twincore"})
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["pack_name"] == "twincore"
+    assert body["judge_model"] == "anthropic/claude-sonnet-5"
+    assert body["agreement"] == pytest.approx(0.9318181818181818)
+    # The record's own `per_rubric_agreement` — the pooled value `calibrate`
+    # writes — and not a mean this route computed for itself.
+    assert set(body["per_rubric_agreement"]) == {
+        "completeness", "groundedness", "honesty", "persona"}
+    assert body["per_rubric_agreement"]["persona"] == pytest.approx(
+        0.9090909090909091)
+    assert len(body["per_criterion_agreement"]) == 8
+    assert body["per_criterion_agreement"]["persona:Tone under refusal"] == (
+        pytest.approx(0.8181818181818182))
+    # `[9, 11]` on disk; a `{hits, total}` object on the wire.
+    assert body["per_criterion_counts"]["persona:Tone under refusal"] == {
+        "hits": 9, "total": 11}
+    assert body["calibrated_at"] == "2026-07-31T15:25:55.599863+00:00"
+    # `AGREEMENT_THRESHOLD` — the bar the gate itself fails closed against.
+    assert body["threshold"] == 0.85
+    # This record is current for these rubrics and this judge model, so the
+    # page may say so. `stale_reason` is the reason it is STALE; there is none.
+    assert body["stale"] is False
+    assert body["stale_reason"] is None
+    # All eight of the pack's rubric criteria were scored against human labels.
+    assert body["unmatched"] == []
+
+
+async def test_the_per_rubric_figure_is_the_records_pooled_value_not_a_mean_of_fractions(
+        runs_dir, calibrated_pack, asgi_client):
+    """Round-2 N8, and the reason this route prefers the recorded field.
+
+    When a rubric's criteria scored **different** numbers of anchor pairs, the
+    mean of their fractions is not that rubric's agreement — and the error can
+    fall *open*, across the 85% threshold, which is the direction that costs
+    something. `calibrate` records the pooled value for exactly that reason,
+    and this route reports the recorded value first and the legacy mean only
+    as a fallback: `is_stale`'s own order, so the page and the gate cannot
+    disagree about whether a rubric passed.
+
+    The committed twincore record cannot show this — all eight of its criteria
+    scored 11 pairs, so pooled and mean agree to the bit. This record is built
+    with divergent counts on purpose.
+    """
+    (calibrated_pack / "calibration.json").write_text(json.dumps({
+        "judge_model": "anthropic/claude-sonnet-5",
+        "rubric_hashes": {},
+        "agreement": 11 / 12,
+        "per_criterion": {"honesty:Gap acknowledgment": 1.0,
+                          "honesty:Calibration": 0.5},
+        "per_criterion_counts": {"honesty:Gap acknowledgment": [10, 10],
+                                 "honesty:Calibration": [1, 2]},
+        "per_rubric_agreement": {"honesty": 11 / 12},
+        "created_at": "2026-08-12T00:00:00+00:00",
+    }), encoding="utf-8")
+
+    async with asgi_client(_app(runs_dir, [calibrated_pack])) as client:
+        response = await client.get("/api/trust", params={"pack": "twincore"})
+
+    body = response.json()
+    assert body["per_rubric_agreement"]["honesty"] == pytest.approx(11 / 12)
+    # 0.75 is the mean of 1.0 and 0.5 — what a route that recomputed this for
+    # itself would report, and seventeen points below the pooled truth.
+    assert body["per_rubric_agreement"]["honesty"] != pytest.approx(0.75)
+
+
+async def test_a_pack_with_no_calibration_record_is_a_200_with_a_null_agreement(
+        runs_dir, asgi_client):
+    """**Not a 404.** `packs/example` has never been calibrated, which is the
+    state nearly every pack starts in — the page renders an empty state and an
+    invitation to run `evalyn calibrate`, and a 404 would render an alarm."""
+    async with asgi_client(_app(runs_dir, [_PACKS / "example"])) as client:
+        response = await client.get("/api/trust", params={"pack": "example"})
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["pack_name"] == "example"
+    assert body["agreement"] is None
+    assert body["judge_model"] is None
+    assert body["stale"] is True
+    assert body["stale_reason"] == "never calibrated"
+    # No record measured anything against a threshold, so there is no bar to
+    # draw a pass line at either.
+    assert body["threshold"] is None
+    assert body["per_rubric_agreement"] == {}
+    assert body["per_criterion_agreement"] == {}
+    assert body["per_criterion_counts"] == {}
+    assert body["unmatched"] == []
+
+
+async def test_trust_never_turns_the_pack_parameter_into_a_filesystem_path(
+        runs_dir, calibrated_pack, asgi_client, monkeypatch):
+    """`?pack=` is a NAME resolved against the start-time allowlist by
+    equality. It is never joined onto a path, never interpolated into one and
+    never opened — which matters more here than on `/api/trends`, because this
+    route genuinely does read a file out of a pack directory.
+
+    Recording every `Path.read_text` the request makes is the structural half:
+    a route that had built `<pack>/calibration.json` out of the parameter would
+    show up here even if it then failed to open it and answered 200 anyway.
+    """
+    read: list[str] = []
+    original = Path.read_text
+
+    def recording_read_text(self, *args, **kwargs):
+        read.append(str(self))
+        return original(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "read_text", recording_read_text)
+
+    hostile = "../../etc/passwd"
+    async with asgi_client(_app(runs_dir, [calibrated_pack])) as client:
+        response = await client.get("/api/trust", params={"pack": hostile})
+
+    assert response.status_code == 200
+    assert [one for one in read if "passwd" in one or ".." in one] == [], read
+    # `pack_name` echoes the *subject* of the report, which is the one place
+    # the parameter is allowed to reappear — the SPA needs it to tell a stale
+    # answer from a fresh one. It is a JSON string in a JSON body and it never
+    # became a path, which is what the recording above proves.
+    assert response.json()["pack_name"] == hostile
+
+
+async def test_a_pack_outside_the_allowlist_says_so_rather_than_claiming_it_is_uncalibrated(
+        runs_dir, calibrated_pack, asgi_client):
+    """A name this server was never pointed at has no record this server can
+    read — which is **not** the same fact as "this pack was never calibrated",
+    and the reason must not say it was."""
+    async with asgi_client(_app(runs_dir, [calibrated_pack])) as client:
+        response = await client.get("/api/trust", params={"pack": "no-such-pack"})
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["pack_name"] == "no-such-pack"
+    assert body["agreement"] is None
+    assert body["stale"] is True
+    assert body["stale_reason"] != "never calibrated"
+    assert "allowlist" in body["stale_reason"]
+
+
+async def test_trust_refuses_a_missing_pack_as_pack_error_at_400(
+        runs_dir, asgi_client):
+    """`?pack=` is not optional, and the refusal is the frozen `pack_error`
+    code — not the 400's default `launch_refused`, which would tell a client
+    this read had tried to start something."""
+    async with asgi_client(_app(runs_dir)) as client:
+        response = await client.get("/api/trust")
+
+    assert response.status_code == 400
+    body = response.json()
+    assert set(body) == {"error"}
+    assert body["error"]["code"] == "pack_error"
+
+
+async def test_a_calibration_record_that_will_not_parse_degrades_rather_than_500ing(
+        runs_dir, calibrated_pack, asgi_client):
+    """A truncated or hand-edited record is a page that says so, never a 500.
+
+    And it degrades **closed**: `stale` stays true, because a record this
+    server cannot read is a record it cannot vouch for.
+    """
+    (calibrated_pack / "calibration.json").write_text("{not json at all",
+                                                      encoding="utf-8")
+
+    async with asgi_client(_app(runs_dir, [calibrated_pack])) as client:
+        response = await client.get("/api/trust", params={"pack": "twincore"})
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["agreement"] is None
+    assert body["stale"] is True
+    assert body["stale_reason"] is not None
+    assert body["stale_reason"] != "never calibrated"
+    assert body["per_criterion_counts"] == {}
+
+
+async def test_a_calibration_record_whose_fields_are_the_wrong_type_degrades_rather_than_500ing(
+        runs_dir, calibrated_pack, asgi_client):
+    """Valid JSON, nonsense contents. Every field is read defensively, because
+    the alternative is a pydantic validation error rendered as a 500 over a
+    file an operator can edit by hand."""
+    (calibrated_pack / "calibration.json").write_text(json.dumps({
+        "judge_model": 7,
+        "agreement": "high",
+        "per_criterion": ["not", "a", "mapping"],
+        "per_criterion_counts": {"honesty:Calibration": "nine of eleven"},
+        "created_at": {"when": "recently"},
+    }), encoding="utf-8")
+
+    async with asgi_client(_app(runs_dir, [calibrated_pack])) as client:
+        response = await client.get("/api/trust", params={"pack": "twincore"})
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["judge_model"] is None
+    assert body["agreement"] is None
+    assert body["calibrated_at"] is None
+    assert body["per_criterion_agreement"] == {}
+    assert body["per_criterion_counts"] == {}
+    assert body["stale"] is True
+
+
+async def test_a_non_finite_criterion_agreement_is_absent_rather_than_null(
+        runs_dir, calibrated_pack, asgi_client):
+    """`json.loads` accepts the bare `NaN` and `Infinity` literals and
+    pydantic's `float` admits both, so a hand-edited record can carry one.
+
+    **What is observable here, measured rather than assumed.** FastAPI
+    serialises this response through the model, and pydantic's JSON serialiser
+    already renders a non-finite float as `null` — so on the scalar
+    `agreement` field the `_finite` guard and no guard produce the *same* wire
+    bytes, and no assertion below can tell them apart. On the per-criterion
+    **map** it is the whole difference: dropped means the key is absent, which
+    reads as "not measured", where a key whose value is `null` reads as a
+    criterion that was scored and came back as nothing.
+    """
+    record = json.loads((calibrated_pack / "calibration.json").read_text())
+    record["agreement"] = float("nan")
+    record["per_criterion"]["honesty:Calibration"] = float("inf")
+    (calibrated_pack / "calibration.json").write_text(json.dumps(record),
+                                                      encoding="utf-8")
+
+    async with asgi_client(_app(runs_dir, [calibrated_pack])) as client:
+        response = await client.get("/api/trust", params={"pack": "twincore"})
+
+    assert response.status_code == 200
+    body = response.json()
+    # THE discriminating assertion: absent, not present-and-null.
+    assert "honesty:Calibration" not in body["per_criterion_agreement"]
+    assert body["agreement"] is None
+    # A tripwire, not a discriminator, and kept knowingly: it cannot fail
+    # while this route answers through `response_model=TrustReport`. It fails
+    # the day somebody hand-rolls a `JSONResponse` here — `json.dumps` writes
+    # the bare `NaN` literal back out, and no JSON parser is required to
+    # accept it.
+    assert "NaN" not in response.text
+    assert "Infinity" not in response.text
+
+
+async def test_a_rubric_edited_since_calibration_is_reported_stale_with_the_reason(
+        runs_dir, calibrated_pack, asgi_client):
+    """The staleness verdict is the **gate's own** (`calibrate.is_stale`), so
+    the page and `evalyn gate` cannot disagree about whether these rubric
+    scores may be trusted.
+
+    The measured numbers keep being reported: they are what the run actually
+    found, and blanking them would hide the evidence for the warning.
+    """
+    rubric = calibrated_pack / "rubrics" / "honesty.md"
+    rubric.write_text(rubric.read_text() + "\n- **6** — invented after the fact.\n",
+                      encoding="utf-8")
+
+    async with asgi_client(_app(runs_dir, [calibrated_pack])) as client:
+        response = await client.get("/api/trust", params={"pack": "twincore"})
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["stale"] is True
+    assert body["stale_reason"] is not None
+    assert "honesty" in body["stale_reason"]
+    assert body["agreement"] == pytest.approx(0.9318181818181818)
+
+
+async def test_a_criterion_the_calibration_never_scored_is_reported_as_unmatched(
+        runs_dir, calibrated_pack, asgi_client):
+    """`unmatched` is the pack's rubric criteria minus the ones the record
+    holds a matched pair for — a criterion added to a rubric after calibration
+    has an agreement figure of *nothing*, and the page must not let a healthy
+    overall number stand in for it."""
+    rubric = calibrated_pack / "rubrics" / "honesty.md"
+    rubric.write_text(rubric.read_text()
+                      + "\n## Brevity\n\n- **1** — rambles.\n- **5** — does not.\n",
+                      encoding="utf-8")
+
+    async with asgi_client(_app(runs_dir, [calibrated_pack])) as client:
+        response = await client.get("/api/trust", params={"pack": "twincore"})
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["unmatched"] == ["honesty:Brevity"]
+    # The eight criteria that WERE scored are not swept in with it.
+    assert "honesty:Calibration" in body["per_criterion_agreement"]
+
+
+async def test_trust_never_calls_the_number_a_kappa(
+        runs_dir, calibrated_pack, asgi_client):
+    """±1-point agreement is not Cohen's κ, and no string in this body may
+    imply it was. The frozen wire field is `agreement`; the SPA's own mock
+    suite asserts the same thing from the other side."""
+    async with asgi_client(_app(runs_dir, [calibrated_pack])) as client:
+        response = await client.get("/api/trust", params={"pack": "twincore"})
+
+    assert "agreement" in response.json()
+    assert "kappa" not in response.text.lower()
+    assert "κ" not in response.text
