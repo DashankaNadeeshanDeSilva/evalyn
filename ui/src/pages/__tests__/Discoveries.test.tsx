@@ -65,6 +65,45 @@ async function settled() {
   return await screen.findByTestId("discoveries-bench");
 }
 
+/**
+ * The utilities that clip a value to one line, spelled in halves.
+ *
+ * jsdom performs no layout, so no assertion here can measure a pixel — what a
+ * test *can* hold is the class contract, and it is the only thing in this suite
+ * that discriminates the three layout defects this page had: a provenance
+ * sentence clipped to one line, a ~691px file path shredded into a narrow
+ * gutter, and a `git mv` whose destination fell off the right edge behind a
+ * scrollbar. All three leave `textContent` identical, which is why the test
+ * named for the first of them could not observe it.
+ *
+ * The halves are not decoration: the build scans every `.ts`/`.tsx` under
+ * `src/` for utility candidates, does not strip comments, and does not exempt
+ * test files — so spelling one of these whole would ship a real CSS rule that
+ * nothing renders. Split, the extractor sees nothing and the assertion is
+ * unchanged.
+ */
+const CLIPS_TO_ONE_LINE = [
+  "trun" + "cate",
+  "text-" + "ellipsis",
+  "whitespace-" + "no" + "wrap",
+  "over" + "flow-hidden",
+];
+
+/** Which one-line-clipping utilities this element carries, if any. */
+function clippingOn(element: Element): string[] {
+  const carried = element.className.toString().split(/\s+/);
+  return CLIPS_TO_ONE_LINE.filter((utility) => carried.includes(utility));
+}
+
+/** The `<dd>` whose whole value is `text`, searched under `root`. */
+function valueCell(root: HTMLElement, text: string): HTMLElement {
+  const found = [...root.querySelectorAll("dd")].find(
+    (dd) => dd.textContent === text,
+  );
+  if (!found) throw new Error(`no value cell holding: ${text.slice(0, 60)}…`);
+  return found;
+}
+
 function rowFor(probeId: string): HTMLElement {
   const found = screen
     .getAllByTestId("finding-row")
@@ -284,10 +323,52 @@ describe("adopting a finding is presented as the consequential act it is", () =>
       within(rowFor(HALLUCINATION)).getByRole("button", { name: HALLUCINATION }),
     );
 
-    const command = (await screen.findByTestId("adopt-command")).textContent ?? "";
+    const move = await screen.findByTestId("adopt-command");
+    const command = move.textContent ?? "";
     expect(command).toContain("git mv");
     expect(command).toContain("discoveries/");
     expect(command).toContain("probes/");
+
+    /*
+     * And legibly. The line is ~130 characters and its two halves are the whole
+     * message — *from* the gitignored directory, *to* the tracked one. Clipped
+     * or scrolled, the half that disappears is the destination, and on a
+     * projector that is a `git mv` whose target nobody in the room can read.
+     * Both renditions leave the assertions above passing, so the wrapping is
+     * held here rather than inferred from the text.
+     */
+    const carried = move.className.split(/\s+/);
+    expect(
+      clippingOn(move),
+      "the git mv destination was clipped off the end of the line",
+    ).toEqual([]);
+    expect(
+      carried,
+      "the git mv destination was put behind a horizontal scrollbar",
+    ).not.toContain("overflow-x-auto");
+    expect(carried).toContain("whitespace-pre-wrap");
+  });
+
+  /**
+   * The path is the one value an operator retypes or pastes, and at 1440 the
+   * two-column span offered ~620px for the ~691px it needs — so it broke
+   * mid-identifier and read as two different files. It takes the whole grid
+   * row, and it is never clipped: an elided path is a path that moves a file
+   * somewhere nobody meant.
+   */
+  it("gives the staged file's path the whole row, unclipped", async () => {
+    renderDiscoveries();
+    await settled();
+
+    const path = valueCell(rowFor(HALLUCINATION), FINDING_ROWS[0]!.probe_path);
+    expect(
+      clippingOn(path),
+      "the staged file's path was clipped to one line",
+    ).toEqual([]);
+    expect(
+      path.parentElement?.className,
+      "the path was put back into a two-column span it does not fit",
+    ).toContain("col-span-full");
   });
 
   it("does not offer a staging notice when nothing is staged", async () => {
@@ -558,6 +639,34 @@ describe("opening a finding brings the answer to the operator", () => {
 
     const panel = await screen.findByTestId("finding-panel");
     expect(panel.textContent).toContain(confirmation);
+
+    /*
+     * The half the name promises and `textContent` cannot deliver. Clipping is
+     * CSS: it leaves the DOM text byte-identical, so the assertion above passes
+     * unchanged over a cell clipped to one line with an ellipsis. The class
+     * contract is what separates "in the DOM" from "on the screen".
+     */
+    const sentence = valueCell(panel, confirmation);
+    expect(
+      clippingOn(sentence),
+      "the confirmation sentence was clipped to one line",
+    ).toEqual([]);
+    expect(
+      sentence.className.split(/\s+/),
+      "the sentence breaks mid-token instead of between words",
+    ).toContain("break-words");
+
+    /*
+     * And the gutter it breaks into. Provenance is eight keys, one of which is
+     * this sentence; at four columns it gets ~180px on a projector, which is a
+     * column of shredded prose whether or not it is clipped.
+     */
+    const provenance = sentence.closest("dl");
+    expect(provenance?.className).toContain("sm:grid-cols-2");
+    expect(
+      provenance?.className,
+      "the long provenance sentence was put back into a narrow four-column gutter",
+    ).not.toContain("lg:grid-cols-4");
   });
 
   it("renders the staged file's own bytes, so what is adopted is what is shown", async () => {
