@@ -802,11 +802,22 @@ class TrendPoint(_Model):
 
 
 class TrendSeries(_Model):
-    """`GET /api/trends?pack&metric`, one series per probe.
+    """`GET /api/trends?pack&metric`, one series per probe — with one
+    exception, which is `judge_usd`.
+
+    The three gate metrics are measured per probe and answer one series each.
+    Judge spend is metered per RUN and does not exist per probe, so that metric
+    answers a SINGLE run-level series whose `probe_id` is the literal string
+    `"(whole run)"` (`server.RUN_LEVEL_SERIES`). Splitting one run's spend
+    across its probes would invent a number nobody recorded — thirty-one
+    identical lines, each claiming to be a measurement of its own channel — so
+    the route says once, honestly, what it actually knows.
 
     Built from `RunSummary`-level data only — never by re-opening `.eval`
     logs — and degraded runs are **skipped entirely** rather than emitted as
-    null points, so a gap in the line means "no readable run", not "zero".
+    null points, so a gap in the line means "no readable run", not "zero". The
+    same rule governs a metric a run simply never recorded: absent, never
+    `0.0`.
     """
 
     pack_name: str
