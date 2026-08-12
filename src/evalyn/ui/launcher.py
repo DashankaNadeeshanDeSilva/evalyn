@@ -474,7 +474,19 @@ class RunLauncher:
         candidate = Path(DEFAULT_BASELINE).resolve()
         try:
             baseline = load_baseline(str(candidate))
-        except (RuntimeError, OSError):
+        except Exception:
+            # Deliberately every class, not a list (F5). This runs *before*
+            # `launch` has made the sidecar directory or written the
+            # `launched: False` meta, and `POST /api/runs` catches only `Busy`
+            # and `OSError` — so anything escaping here is a bare 500 with no
+            # run row at all, the "Launch does nothing" shape. A list of
+            # classes was already wrong once: `load_baseline` reads through
+            # `Path.read_text()`, whose `UnicodeDecodeError` is a `ValueError`,
+            # not an `OSError`. Nothing is swallowed that the operator needed:
+            # this function's contract is "return a path I can defend", any
+            # failure to read the file is a reason not to pass it, and a
+            # *terminal* gate still reports the same file's corruption exactly
+            # as before.
             baseline = None
         if baseline is not None and baseline.pack_name == pack_name:
             return candidate

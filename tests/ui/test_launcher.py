@@ -2191,6 +2191,36 @@ def test_a_default_baseline_the_child_could_not_load_is_never_handed_to_it(
     assert not Path(argv[argv.index("--baseline") + 1]).exists(), because
 
 
+def test_a_baseline_that_is_not_even_text_still_lets_the_run_start(
+        tmp_path, pack, monkeypatch):
+    """The one exception class the guard did not catch, and the worst shape it
+    produces (F5).
+
+    `load_baseline` reads through `Path.read_text()`, so a `runs/baseline.json`
+    holding non-UTF-8 bytes raises `UnicodeDecodeError` — a `ValueError`, **not**
+    an `OSError`, and so not caught by a guard listing `(RuntimeError, OSError)`.
+    It escapes from inside `launch`, *before* `directory.mkdir()` and before the
+    `launched: False` meta is written, and `POST /api/runs` catches only `Busy`
+    and `OSError` — so the operator gets a bare 500 with **no run row at all**:
+    the "Launch button does nothing" shape, which is the worst one to debug in
+    front of an audience.
+
+    The contract of `_default_baseline_for` is "return a path I can defend", so
+    *any* failure to read that file is a reason not to pass it. Written with
+    `write_bytes` deliberately: this case cannot be expressed through the
+    `encoding="utf-8"` sibling above.
+    """
+    monkeypatch.chdir(tmp_path)
+    runs = tmp_path / "runs"
+    runs.mkdir()
+    (runs / "baseline.json").write_bytes(b'{"pack_name": "\xff\xfe not utf-8"}')
+
+    _, argv = gate_launch_argv(launcher_spawning(INERT, runs), pack)
+
+    assert not Path(argv[argv.index("--baseline") + 1]).exists(), \
+        "unreadable is undefendable — the child is handed the absent path"
+
+
 def test_an_explicitly_chosen_baseline_is_never_second_guessed(
         tmp_path, pack, monkeypatch):
     """A baseline the operator picked in the browser is a run *they* named, and
