@@ -402,6 +402,15 @@ def create_app(runs_dir: Path, packs: list[Path], *,
         Returns `(None, None)` for every failure mode — absent, unreadable,
         escaping the runs directory, or blessed from another pack. A corrupt
         baseline must not turn a readable run's verdict into an error page.
+
+        **The stricter of a divergent pair** (F3). The launch path's
+        `RunLauncher._default_baseline_for` decides the same-sounding question
+        by `pack_name`, tolerating a stale baseline, and resolves the path
+        relative to the working directory rather than to `runs_dir`. Its
+        docstring carries the full statement of the divergence and its
+        consequence — a child's exit code and this displayed verdict can be
+        computed against different baselines. Do not change either rule without
+        reading the other.
         """
         from evalyn.engine.baseline import load_baseline
 

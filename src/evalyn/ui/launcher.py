@@ -468,6 +468,40 @@ class RunLauncher:
         failure on a stage; a terminal run still reports the corruption
         exactly as before, and a baseline chosen in the browser is still passed
         untouched.
+
+        **This rule is deliberately laxer than its sibling, and the divergence
+        is not free** (F3). `server._blessed_baseline` answers the same-sounding
+        question for the verdict the cockpit *displays*, and answers it
+        differently in two ways:
+
+        - it matches on **`pack_hash`** and refuses on mismatch, where this
+          matches on **`pack_name`** and tolerates staleness;
+        - it reads `<runs_dir>/baseline.json`, where this reads
+          `runs/baseline.json` **relative to the working directory** — the same
+          resolution `cli.gate` will do in the child, which is the point, but a
+          different file whenever the cockpit was started with a `runs_dir`
+          that is not `./runs`.
+
+        Neither rule is wrong for its own job: this one predicts what the child
+        would do and must therefore resolve the path exactly as the child does,
+        while the display path may not silently pair probes by id across two
+        pack revisions in a JSON response that has no field in which to say so.
+        The **consequence** is what has to be stated plainly, because no code
+        anywhere says it: for a stale-but-same-pack baseline the child computes
+        its **exit code** against that baseline while the cockpit computes the
+        **verdict it renders** against no baseline at all, and the two can
+        disagree with nothing on any surface telling the reader which they are
+        looking at.
+
+        That is a real gap, not a harmless one — it is tolerated rather than
+        endorsed, and the only signal an operator gets is the child's
+        `warning: baseline pack hash ... differs`, which reaches `stderr.log`
+        and `GET /api/runs/{id}/stderr` and nowhere else. What keeps it out of
+        the way today, and only today, is that `runs/baseline.json` in this
+        repository is an `example` baseline that predates the Plan #2a schema
+        and does not load at all, so both rules independently answer "no
+        baseline": re-bless that file for a pack and then edit the pack, and the
+        divergence is live. Reconciling the two rules is deferred, not decided.
         """
         from evalyn.engine.baseline import load_baseline
 
