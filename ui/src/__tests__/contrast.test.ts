@@ -565,6 +565,35 @@ const SURFACES: Record<string, Surface> = {
     ],
   },
   /**
+   * The discoveries bench. **No status ink and no ground of its own**, the same
+   * ruling the trends and judge-trust pages carry: `status-*` is keyed to
+   * `RunStatus` members and a staged finding is not a run state.
+   *
+   * That constraint is load-bearing here rather than incidental. This page's
+   * most consequential fact is whether a finding is safety-critical, and it is
+   * carried entirely by a glyph, a word, a size step and a weight step — so the
+   * one row on the bench that must be legible from the back of a projected room
+   * does not depend on a hue at all, and survives greyscale and every
+   * colourblind reading intact.
+   *
+   * One ground means every ink is measured against the one surface it can sit
+   * on, so nothing on this page can be exempted from the face.
+   */
+  "pages/Discoveries.tsx": {
+    inherits: "chassis-25",
+    sets: [],
+    inks: [
+      { ink: "chassis-900", role: "text" },
+      { ink: "chassis-700", role: "text" },
+      { ink: "chassis-600", role: "text" },
+      {
+        ink: "chassis-400",
+        role: "redundant",
+        note: "aria-hidden '·' separators in the readout and the row lines",
+      },
+    ],
+  },
+  /**
    * `chassis-50/60` is the loading skeleton's slab, standing in for the chart
    * while the two reads land; it carries no text, exactly as the runs list's
    * skeleton bars do not.
