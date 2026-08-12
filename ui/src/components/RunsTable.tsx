@@ -138,7 +138,43 @@ const HINT_INK: Record<VerdictHint, string> = {
   unknown: "text-chassis-600",
 };
 
-function VerdictHintCell({ hint }: { hint: VerdictHint | null }) {
+/**
+ * `verdict_hint` is not readable as a verdict on a run an operator stopped.
+ *
+ * `verdict_hint_of` reds any probe with `trials == 0` or `trials <
+ * expected_trials`, which is right for a run that failed to collect its trials
+ * and wrong for one that was never allowed to try. A cancelled run's un-run
+ * probes satisfy it trivially, so the server sends `verdict_hint: "failed"` for
+ * a run whose only fault is that somebody pressed Cancel — measured on
+ * `20260811T212955379968-abc9a71e-example`, which renders `cancelled` in STATUS
+ * beside `gate failed` in this column.
+ *
+ * The field is left alone deliberately: it is documented as a cheap
+ * approximation over `probes[]`, and it is *this column's* job not to read an
+ * approximation as a verdict. `status` is the signal rather than the detail
+ * page's `cancelled`, because `RunSummary` carries no such field — but both
+ * come from the same `cancelled_by`, and `derive_status` returns `cancelled`
+ * for exactly the runs where it is true.
+ *
+ * Not the `n/a` mark and not "no gate": `compare` and `discover` genuinely have
+ * no gate to report, whereas this run has one and nobody let it finish.
+ */
+function VerdictHintCell({
+  hint,
+  stopped,
+}: {
+  hint: VerdictHint | null;
+  /** An operator cancelled this run, so no verdict was earned. */
+  stopped: boolean;
+}) {
+  if (stopped) {
+    return (
+      <Flatline
+        word="stopped"
+        reason="an operator stopped this run before its probes finished, so the gate earned no verdict"
+      />
+    );
+  }
   if (hint === null) {
     // Correctness, not damage: `compare` and `discover` have no gate verdict
     // to report. A dead-channel mark here would dilute the one that means the
@@ -226,7 +262,10 @@ function RunRow({ run }: { run: RunSummary }) {
       </td>
 
       <td className="py-2 pr-3">
-        <VerdictHintCell hint={run.verdict_hint} />
+        <VerdictHintCell
+          hint={run.verdict_hint}
+          stopped={run.status === "cancelled"}
+        />
       </td>
 
       <td className="py-2 pl-3 pr-4 text-right sm:pr-6">
