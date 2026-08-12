@@ -447,23 +447,31 @@ class RunLauncher:
         silently dropping the diff there would break the ordinary
         edit-and-compare loop that the existing staleness warning serves.
 
-        Anything else — no such file, unreadable, corrupt, no `pack_name` —
-        cannot be shown to belong here, so it is not passed. That is a
-        deliberate change for a *corrupt* baseline, which used to reach the
-        child and exit it 2: on a stage, losing the run to a file the operator
-        never chose and cannot see is worse than gating against none. The
-        terminal path is untouched and still reports the corruption.
+        Anything else — no such file, corrupt, too old to parse, another
+        pack's — cannot be shown to belong here, so it is not passed. Read
+        through `load_baseline`, the very function the child will use, so
+        "passed only if the child can actually use it" is checked by the same
+        code rather than approximated by a second reader that could disagree.
 
-        Read with `json.loads` rather than `load_baseline` on purpose: only one
-        field is wanted, a launch must not depend on the whole artifact schema
-        parsing, and this must never raise on the way into a run.
+        That last part is a deliberate change of behaviour, and it was measured
+        rather than imagined: this repository's own `runs/baseline.json`
+        predates the Plan #2a artifact schema, so every cockpit gate launched
+        from the repo root — including the free `example` runs this project
+        debugs the UI with — reached `load_baseline`, raised, and **exited 2
+        after the artifact had already been written**. Losing a run to a file
+        the operator never named and cannot see from the browser is the worse
+        failure on a stage; a terminal run still reports the corruption
+        exactly as before, and a baseline chosen in the browser is still passed
+        untouched.
         """
+        from evalyn.engine.baseline import load_baseline
+
         candidate = Path(DEFAULT_BASELINE).resolve()
         try:
-            data = json.loads(candidate.read_text(encoding="utf-8"))
-        except (OSError, ValueError):
-            data = None
-        if isinstance(data, dict) and data.get("pack_name") == pack_name:
+            baseline = load_baseline(str(candidate))
+        except (RuntimeError, OSError):
+            baseline = None
+        if baseline is not None and baseline.pack_name == pack_name:
             return candidate
         return sidecar / ABSENT_BASELINE_FILENAME
 

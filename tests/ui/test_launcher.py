@@ -2103,24 +2103,39 @@ def test_a_cockpit_gate_still_uses_the_baseline_that_belongs_to_its_own_pack(
     assert Path(argv[argv.index("--baseline") + 1]) == own.resolve()
 
 
-def test_a_default_baseline_that_cannot_be_read_is_never_handed_to_a_child(
-        tmp_path, pack, monkeypatch):
-    """Unreadable is not "belongs to this pack", so it is not passed.
+@pytest.mark.parametrize("contents,because", [
+    pytest.param("{ this is not json", "corrupt", id="corrupt-json"),
+    pytest.param(
+        json.dumps({"pack_name": "example", "pack_hash": "0" * 8,
+                    "judge_model": "mockllm/model", "log_path": "logs/none.eval",
+                    "created_at": "2026-08-11T00:00:00+00:00",
+                    "probes": [{"id": "g", "category": "g", "kind": "probe",
+                                "safety_critical": False, "samples": 1,
+                                "trials": 1, "expected_trials": 1,
+                                "pass_at_k": 1.0, "pass_k": 1.0,
+                                "reducers": []}]}),
+        "too old to parse", id="pre-plan-2a-schema"),
+])
+def test_a_default_baseline_the_child_could_not_load_is_never_handed_to_it(
+        tmp_path, pack, monkeypatch, contents, because):
+    """"Belongs to this pack" is only worth asking of a baseline the child can
+    actually load, so both questions go through `load_baseline` itself.
 
-    A deliberate change of behaviour: a corrupt `runs/baseline.json` used to
-    reach the child and exit it 2 with `gate: baseline error`. A cockpit launch
-    now runs, and gates against nothing. Losing a run to a file the operator
-    did not choose and cannot see is the worse of the two on a stage, and the
-    terminal path still reports the corruption exactly as before.
+    The second case is not hypothetical: this repository's own
+    `runs/baseline.json` predates the Plan #2a artifact schema, and a cockpit
+    gate launched from the repo root — including the free `example` run this
+    project debugs the UI with — reached it, raised `gate: baseline error` and
+    exited 2 *after* writing its artifact. Observed on the running app, which
+    is the only reason it is covered here at all.
     """
     monkeypatch.chdir(tmp_path)
     runs = tmp_path / "runs"
     runs.mkdir()
-    (runs / "baseline.json").write_text("{ this is not json", encoding="utf-8")
+    (runs / "baseline.json").write_text(contents, encoding="utf-8")
 
     _, argv = gate_launch_argv(launcher_spawning(INERT, runs), pack)
 
-    assert not Path(argv[argv.index("--baseline") + 1]).exists()
+    assert not Path(argv[argv.index("--baseline") + 1]).exists(), because
 
 
 def test_an_explicitly_chosen_baseline_is_never_second_guessed(
