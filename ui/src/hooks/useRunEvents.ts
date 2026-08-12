@@ -64,9 +64,15 @@ import { EVENT_NAMES, type EventName, type RunId } from "../api/types";
  *    `{mode, status, judge_usd, probes, total_unsure_trials}` — no `exit_code`,
  *    which this fold had been reading since the day it was written because the
  *    MSW handler invented one. `status` is what it reads now.
- * 3. A heartbeat every `MetaResponse.heartbeat_seconds` keeps the connection
- *    open through an idle run, and the `: idle-timeout` comment frame does not
- *    reach a named listener.
+ * 3. **Answered, and the answer is that no heartbeat exists.** Ruling R4-74 was
+ *    do-not-build one, and the server emits none: the stream's only keep-alive
+ *    is `: idle-timeout`, an SSE *comment* written once after 120s of silence,
+ *    after which the stream ends. So `MetaResponse.heartbeat_seconds` describes
+ *    no traffic, an idle run does end its own connection, and the fold's
+ *    ignoring of a `heartbeat` event is there for a frozen wire enum rather
+ *    than for frames it will meet. What is left to check against a real server
+ *    is that the comment reaches no named listener and that `EventSource`
+ *    reconnects from its `Last-Event-ID` after the stream ends.
  * 4. The three `control.*` acks arrive after their 202, and a cancel that is
  *    never acknowledged still ends as an honest `interrupted` run (ruling
  *    R4-11) rather than a UI stuck on "cancelling".
