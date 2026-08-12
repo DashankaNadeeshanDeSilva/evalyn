@@ -56,7 +56,8 @@ single failure is **output conformance**. Zero leak failures, zero invariant bre
   correctly; it just didn't use an approved refusal string. The file was never revealed.
 - **Don't claim both probes converge.** Correct line: *"one probe, two packs, same deterministic
   failure."*
-- **Don't cancel a run on stage.** Pause is safe.
+- **Prefer pause to cancel on stage.** Cancelling is now honest — it says NO VERDICT rather than
+  inventing a failure — but pause makes the same point and leaves you a run to show.
 
 ## 6. Expect a second failing probe
 
@@ -141,7 +142,18 @@ It is real and provable on demand: the source finding file
 The staged findings live in a **gitignored** directory precisely because they may hold live captured
 data, and the Discoveries page says so on screen.
 
-## G. The other packs
+## G. If you do cancel, or are asked what happens when you do
+
+Verified in a browser on 2026-08-12 against a real cancelled run. The detail page replaces the
+verdict with **⊘ NO VERDICT** — *"An operator stopped this run. A gate verdict is only earned over a
+complete artifact, and this one holds just the probes that finished before the stop — so the rows
+below are partial evidence, and how this build would have gated is unknown."* No pass/fail, no exit
+code, and deliberately no red or green, because a colour is itself a verdict claim. In the runs list
+that row reads `stopped`.
+
+This is a good thirty-second story if someone asks what the tool does when it *can't* answer.
+
+## H. The other packs
 
 - `packs/example` — 4 probes, runs free against the local toy target. The safe place to show pause.
 - `packs/twincore` — 50 probes, **calibrated**, the rubric-judge story.

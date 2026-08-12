@@ -2095,3 +2095,55 @@ and **one instruction which, followed literally, would have deleted two working 
 **The first compare artifact exists, at $0.0000** — `evalyn compare` makes no target HTTP calls, so
 two existing gate runs were re-judged for free. The board shows the newer run faster on both mean and
 p95, with zero invariant failures on either side.
+
+## Plan #4 session 14 (2026-08-12) — the demo was rehearsed end to end, and the numbers it was going to be described with were wrong
+
+**Trunk `feat/plan4-ui` at `364eb17`, pushed.** 1613 Python (both colour modes, cold cache), **629
+UI / 30 files**, ruff and `tsc` clean, served bundle rebuilt and proven. Rulings R4-108 … R4-117.
+**$0.0665 spent** — one full live run.
+
+**The rehearsal ran the whole way through, from the cockpit's own Launch button.** The required
+port check was green — Docker alone on 8000, and the twin returned a real session token. 217 trials,
+about three minutes, and the board came up **red**. Every page was then walked against the real
+route. Nothing errored.
+
+**Then the demo's own numbers turned out to be stale, and every correction moved in our favour.**
+The anchor probe has failed `pass^k` in **8 of 9** runs, not 7 of 8 — and **6 of 6** at the seven
+trials the demo actually runs, where it has never once passed. The only green board in the corpus
+came from a **3-trial** run, so "P(green) ~1 in 5" was pessimistic. A **second probe now fails**
+that no document mentioned. The spend band's upper bound was $0.0628; today's run cost $0.0665.
+All of it is now in `docs/2026-08-14-DEMO-RUNBOOK.md`, a single page written to be read under stage
+lights, with the detail below a hard break.
+
+**The claim the talk rests on is now measured rather than asserted.** Across the three runs that
+record check-level detail — 651 trials, 3969 checks — failed `no-internal-leak`: **0**. Failed
+`not_contains:BOUNDARIES.md`, the file-reveal guard: **0**. Failed `contains:`, output conformance:
+**6**. Failed anything else: **0**. `invariant_failures` is present in all 1497 trial records across
+all nine runs and non-zero in none.
+
+**Three of the controller's own instruments were lying, and each was caught by a number that would
+not reconcile.** A corpus-wide check count that was two-thirds absent data — only three of nine runs
+record checks at all. A redaction probe reading a payload that never contained values, whose zero
+therefore proved nothing; the real proof needed the detail route and the raw file as a control. And
+`.get('exit_code')` returning `None`, which **cannot distinguish an absent key from a null value** —
+the error behind R4-107's "measured, not inferred", which was wrong, and which the implementer
+flagged rather than inherit.
+
+**A cancelled run no longer claims a verdict nobody earned.** It was worse than recorded: the runs
+list said `GATE FAILED` too, off a real wire field, because `verdict_hint_of` counts un-run probes
+as INCOMPLETE. Fixed on both surfaces, frontend-only by ruling. **The fix's own first attempt
+reintroduced the same overclaim through the door it opened** — the stopped check sat above the mode
+check, so a cancelled `compare` row claimed a gate that mode never had, on a signal derived from a
+leftover control file that has measurably relabelled a *completed* run. Asking what a cancelled gate
+run with a null hint should render changed the design: that state is the *early* cancel, not an edge
+case.
+
+**A guard now fails when the browser would be served a page that no longer exists** — and it caught
+a trap that would have made it worse than useless. This minifier delimits string literals with
+**backticks**, so the natural search for a double-quoted `data-testid` reads **zero for all six pages
+against a perfectly fresh bundle**. Written from the brief as given, the guard would have reported
+the entire cockpit missing, two days before the demo.
+
+**Both merges were verified by a falsifiable prediction stated before running anything** — 622, then
+629, both exact. The bundle rebuild was proven the same way: a marker that goes 0 → 1 between old and
+new, beside a control marker that stays at 1.
