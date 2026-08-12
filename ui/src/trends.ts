@@ -22,12 +22,19 @@ import { formatUsd } from "./format";
  *
  * ## Why the chart cannot just hand each line its own points
  *
- * Recharts 2.x let a `<Line>` carry a `data` prop of its own, which would have
- * made the union table unnecessary. **Recharts 3.x removed it** — `LineProps`
- * has no `data` — so the chart takes one array and the series are separated by
- * `dataKey`. That is exactly the arrangement that tempts an author into filling
- * the holes, which is why the filling is prohibited here rather than in the
- * component.
+ * A `<Line>` **can** carry its own `data` in 3.x — `LineProps extends
+ * DataProvider`, and `tsc` accepts it. It is not the escape hatch it looks
+ * like, and the reason is this module's whole subject. A per-series array holds
+ * only the runs that probe read, so it has **no holes to leave** — and rendered
+ * (checked, not assumed) two such lines share one x scale while each draws
+ * straight across the runs it never read. Per-series arrays bridge every gap by
+ * construction, which would turn 26 skipped degraded runs into a line asserting
+ * a history that was never measured.
+ *
+ * So the chart takes one array and the series are separated by `dataKey`. That
+ * is exactly the arrangement that tempts an author into filling the holes,
+ * which is why the filling is prohibited here rather than in the component: the
+ * hole is the point, and the union table is the only shape that has one.
  */
 
 /** One run's readings, keyed by probe. A probe absent from `values` did not read. */

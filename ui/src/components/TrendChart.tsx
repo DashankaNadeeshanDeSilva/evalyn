@@ -49,23 +49,42 @@ import {
  *   because bridging is the exact defect that would turn 26 skipped degraded
  *   runs into 26 invented failures).
  *
- * ## Recharts 3.x, verified against the installed types rather than assumed
+ * ## Recharts 3.x — each claim below carries the check that produced it
  *
- * - `<Line data={…}>` **no longer exists** — 3.x's `LineProps` has no `data`
- *   key at all, so per-series arrays are out and the union table in `trends.ts`
- *   is not a preference.
+ * An earlier draft of this block asserted that `<Line data={…}>` no longer
+ * exists, under a header saying the block had been verified. It was the one
+ * claim in it that had been reasoned about instead of run, and it was false. So
+ * every line now names its own evidence, which is the only form of this note
+ * that a later reader can audit.
+ *
+ * - `<Line data={…}>` **does still exist**: `LineProps extends DataProvider`,
+ *   whose `data?: ChartData<…>` is right there in the installed
+ *   `types/util/types.d.ts`, and `tsc` accepts it on this file's own `<Line>`.
+ *   What it does not do is scope that array to the item — the same types say
+ *   item data "is visible for the main chart, and all axes, tooltip, legend …
+ *   This is not scoped to the graphical item only." **Rendered** (two `<Line>`s
+ *   with their own arrays, one holding t=1 and t=3, the other t=2 and t=4): both
+ *   draw, they share one x scale — and the first draws a single unbroken segment
+ *   straight across t=2, a run it never read. Per-series arrays therefore
+ *   **bridge every gap**, which is the one thing this page may not do. That, and
+ *   not the absence of a prop, is why the union table in `trends.ts` is
+ *   load-bearing.
  * - `accessibilityLayer` **defaults to `true`** on cartesian charts in 3.x (it
- *   was opt-in in 2.x). The surface is rendered `role="application"` with
- *   `tabIndex=0` and arrow keys walk the readings, which is what makes the
- *   tooltip keyboard-reachable without any work here.
+ *   was opt-in in 2.x): nothing here passes it, and the rendered chart is
+ *   `role="application"` with a `tabIndex` — read out of the live accessibility
+ *   tree in a browser, where arrow keys walk the readings. That is what makes
+ *   the tooltip keyboard-reachable without any work here.
  * - `title` / `desc` fill the SVG's `<title>` / `<desc>`, which is where the
- *   chart's accessible name comes from.
+ *   chart's accessible name comes from — queried in the browser DOM, and
+ *   asserted by name in `TrendChart.test.tsx`.
  * - `initialDimension` on `ResponsiveContainer` gives the chart a size before
  *   the first `ResizeObserver` callback. jsdom has no `ResizeObserver` at all,
- *   so without it the chart renders nothing in every test — and in a browser it
- *   removes a zero-width first paint.
- * - `activeIndex` was removed in 3.0; interaction is the `Tooltip`'s job now.
- *   Nothing here needed it, but a 2.x snippet would have carried it.
+ *   so without it the chart renders nothing in every test — which is exactly
+ *   what the suite showed — and in a browser it removes a zero-width first
+ *   paint.
+ * - `activeIndex` is gone from `LineProps` in the installed types (grepped: no
+ *   occurrence in `types/cartesian/Line.d.ts`); interaction is the `Tooltip`'s
+ *   job now. Nothing here needed it, but a 2.x snippet would have carried it.
  */
 
 export interface TrendChartProps {
