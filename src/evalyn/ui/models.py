@@ -166,8 +166,20 @@ def redaction_marker(kind: str) -> str:
     return f"«redacted:{kind}»"
 
 
-#: The SSE stream emits a `heartbeat` comment at this cadence so an idle run
-#: does not look like a dead connection to a proxy or to the browser.
+#: The cadence at which the SSE stream was *intended* to emit a `heartbeat`
+#: comment. **Nothing emits one** (R4-74): there is no heartbeat reference in
+#: `server.py` and none on `stream.py`'s emission path, so this is a declared
+#: intention and not a description of the wire. It is exported, given an
+#: `EventName` member and advertised as `MetaResponse.heartbeat_seconds` all
+#: the same — and the SPA consumes none of that: it has no liveness timer.
+#:
+#: What actually keeps an idle subscription honest is `stream.py`'s
+#: `IDLE_COMMENT` (`: idle-timeout`), an SSE **comment** sent once when a
+#: subscription passes `DEFAULT_IDLE_TIMEOUT` — 120 seconds, not 15. That is
+#: sufficient on its own: the browser's native `EventSource` reconnects by
+#: itself and replays from the last `id:`, so a silent stream is recoverable
+#: without a server-side pulse. Read this constant as a number the wire
+#: reports, not as a promise the server keeps.
 HEARTBEAT_SECONDS = 15.0
 
 
@@ -846,18 +858,29 @@ class PackRow(_Model):
     `evalyn ui --target <path>` — the complete set of packs a browser may name.
     """
 
-    #: An **index into that allowlist, never a path**. It is the only pack
-    #: identifier a request may carry, which is what stops a body from pointing
-    #: the engine at an arbitrary file — `LaunchRequest` has no path field at
-    #: all, and `extra="forbid"` rejects a body that invents one.
+    #: An **opaque handle into that allowlist, never a path**. It is the only
+    #: identifier that *resolves* to a pack on disk, which is what stops a body
+    #: from pointing the engine at an arbitrary file — `LaunchRequest` has no
+    #: path field at all, and `extra="forbid"` rejects a body that invents one.
+    #:
+    #: Deliberately narrower than this used to claim. "The only pack identifier
+    #: a request may carry" was already false when it was written: a request may
+    #: also carry a pack's **name**, and two read routes take one
+    #: (`/api/runs?pack=`, `/api/trends?pack=`). A name is safe there for a
+    #: different reason — it is compared for equality against data the server
+    #: has already loaded, and is never joined into a path or opened — and it is
+    #: necessary, because `runs/` holds the history of packs this cockpit was
+    #: never pointed at, which no allowlist id can name. The invariant is **no
+    #: request names a filesystem location**, not "no request names a pack any
+    #: other way".
     id: str
     #: What `LaunchRequest.confirm` must echo — the type-to-confirm interlock
     #: that stops a drive-by `curl` from starting spend.
     name: str
     #: A **display-safe label**, `~`-collapsed like `MetaResponse.packs`, and
     #: like those it is no longer a usable filesystem path. Never round-trip it
-    #: back into a `Path()`, and never send it back to the server: `id` is the
-    #: only thing that names a pack on the wire.
+    #: back into a `Path()`, and never send it back to the server: no route
+    #: accepts a path, and `id` is the only thing that resolves to a pack.
     path: str
     version: str | None = None
     probe_count: int = 0
