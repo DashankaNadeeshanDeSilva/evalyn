@@ -138,8 +138,10 @@ a discoveries view whose `probe_path` directory is empty.
 ## 7. Constraints and open decisions
 
 **Binding:** WCAG 2.1 AA (body ≥ 4.5:1, large ≥ 3:1, visible focus, full keyboard, never
-colour-alone). React 18 + Vite + TypeScript + Tailwind v3 + Recharts, versions pinned exactly by
-Task 5 — do not bump. Charts follow the same rules: legends present, tooltips keyboard-reachable,
+colour-alone). React 18 + Vite + TypeScript + Tailwind v3, versions pinned exactly by Task 5 — do
+not bump. **Recharts was NOT pinned by Task 5**, which never installed it; it arrived with the
+Trends wave under ruling R4-65 and is pinned exactly at `3.10.1` in `ui/package.json` — same rule,
+do not bump. Charts follow the same rules: legends present, tooltips keyboard-reachable,
 never colour-alone, subtle gridlines, empty-data states that say "no data" rather than rendering an
 empty axis frame.
 

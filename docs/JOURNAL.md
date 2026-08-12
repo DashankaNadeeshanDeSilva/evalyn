@@ -1797,7 +1797,7 @@ only, and was over-generalised. The real corpus:
 |---|---|
 | Trends | **78** gate runs on `example`, **7 on the injection pack being demoed** |
 | Discoveries | **2** real findings (`packs/twincore/discoveries/*.yaml`) + **2** discover run artifacts |
-| Judge Trust | reads the same run corpus |
+| Judge Trust | **reads `<pack>/calibration.json`, NOT the run corpus** (corrected 2026-08-12, R4-77). Only `packs/twincore` has one: agreement **0.9318**, 4 rubric hashes, 8 criteria, judge `anthropic/claude-sonnet-5`. `twincore-injection` and `example` have **none**, so the page pointed at the demo pack renders the never-calibrated empty state |
 | Compare | **0 compare artifacts.** Genuinely empty |
 
 Trends ranks first because 7 runs of the *demo pack* reinforce the demo's own claim: the failure is
