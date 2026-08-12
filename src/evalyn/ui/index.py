@@ -59,6 +59,7 @@ from evalyn.ui.models import (
     HardMetrics,
     ProbeRow,
     ReplayStatus,
+    ReplayView,
     RunDetail,
     RunMode,
     RunStatus,
@@ -79,9 +80,10 @@ from evalyn.ui.paths import (
 )
 
 __all__ = [
-    "RunIndex", "RunNotFound", "LoadedArtifact", "SidecarState",
+    "RunIndex", "RunNotFound", "LoadedArtifact", "SidecarState", "StagedProbe",
     "derive_status", "cancelled_by", "mode_of", "created_at_from_run_id",
     "verdict_hint_of", "capabilities_of", "is_run_id",
+    "PROVENANCE_KEYS", "parse_provenance", "load_staged_probes",
 ]
 
 
@@ -459,6 +461,127 @@ def _probe_row(probe, raw_probe: object) -> ProbeRow:
     )
 
 
+# --------------------------------------------------------------------------
+# 4b. Staged discoveries — the read side of `<pack>/discoveries/*.yaml`
+# --------------------------------------------------------------------------
+
+#: The eight keys `discovery/run.py::_provenance` writes into every staged
+#: probe's comment header, in the order it writes them.
+#:
+#: An **allowlist**, not a hint. The caution block sitting above them opens
+#: `# CAUTION: this file may contain LIVE DATA ...`, which is exactly
+#: `# key: value`-shaped, so a parser that took every colon-bearing comment
+#: line would hand the SPA a paragraph of boilerplate as a provenance field.
+PROVENANCE_KEYS: tuple[str, ...] = (
+    "objective", "persona", "playbook", "agent_model",
+    "stop_reason", "usd_estimated", "confirmation", "turns",
+)
+
+#: `emit._comment_lines` re-prefixes the continuation lines of a multi-line
+#: provenance value with `#` and FIVE spaces; the caution block's own wrapped
+#: lines use three. The exact width is the only thing that tells them apart.
+_PROVENANCE_CONTINUATION = "#     "
+
+
+def parse_provenance(text: str) -> dict[str, str]:
+    """The eight provenance keys out of a staged probe's **comment** header.
+
+    Provenance is not in the YAML — `yaml.safe_load` discards comments, which
+    is why this reads the file as text. It is the read side of
+    `emit.probe_yaml`, and it mirrors that writer in two respects a naive
+    line-scan gets wrong.
+
+    First, it reads only the **contiguous run of comments at the top of the
+    file**. A `#` further down belongs to the body — a comment on a check, or a
+    character inside an agent-authored turn — and a whole-file scan would let
+    it overwrite the real value.
+
+    Second, it rejoins continuation lines. A confirmation reason containing a
+    newline is written as `# confirmation: <first line>` followed by
+    `#     <rest>`, and a parser that keeps only the first line silently
+    truncates the very field that records what was captured.
+
+    Returns `{}` rather than raising for a file with no header: an adopted
+    probe under `probes/` is a plain YAML list, and having no provenance is a
+    state, not a failure.
+    """
+    values: dict[str, str] = {}
+    current: str | None = None
+    for line in text.splitlines():
+        if not line.startswith("#"):
+            if not line.strip():
+                continue                     # a blank line is not the end of it
+            break                            # the YAML body: the header is over
+        if current is not None and line.startswith(_PROVENANCE_CONTINUATION):
+            values[current] += "\n" + line[len(_PROVENANCE_CONTINUATION):]
+            continue
+        key, separator, value = line[1:].strip().partition(":")
+        if separator and key in PROVENANCE_KEYS:
+            values[key] = value.strip()
+            current = key
+        else:
+            current = None
+    return values
+
+
+@dataclass(frozen=True)
+class StagedProbe:
+    """One `<pack>/discoveries/*.yaml` as the cockpit reads it back.
+
+    Carries the file's **bytes as committed** alongside the parsed probe: the
+    detail view shows an operator the thing they will `git mv`, and a
+    re-serialization of the parsed model is a different file.
+    """
+
+    probe_id: str
+    path: Path
+    probe: object
+    text: str
+    provenance: dict[str, str]
+
+
+def load_staged_probes(packs) -> dict[str, StagedProbe]:
+    """Every staged discovery in the allowlisted packs, keyed by probe id.
+
+    Keyed by id and **only ever looked up by id**. Both strings that reach this
+    dict from outside — the `probe_path` an artifact recorded, and the
+    `probe_id` in a URL — are untrusted, and neither is joined into a path
+    here: the dict is built by globbing the packs the operator named on the
+    command line, so a traversing id is simply a probe nobody staged.
+
+    The parse itself is `emit.load_prior_discoveries`, the read side of
+    `stage_probe`, so an unreadable file is warned about and skipped rather
+    than failing the page — one hand-edited staged file must not blank the
+    Discoveries list. `stage_probe` writes `<probe.id>.yaml`, so a file's stem
+    and its probe's id agree by construction; a file whose stem matches nothing
+    it parsed is skipped rather than paired by position.
+
+    First pack wins on a duplicate id, matching the allowlist's own order.
+    """
+    from evalyn.discovery.emit import STAGING_DIRNAME, load_prior_discoveries
+
+    staged: dict[str, StagedProbe] = {}
+    for pack in packs:
+        directory = Path(pack) / STAGING_DIRNAME
+        by_id = {probe.id: probe for probe in load_prior_discoveries(directory)}
+        if not by_id:
+            continue
+        for path in sorted({*directory.glob("*.yaml"), *directory.glob("*.yml")}):
+            probe = by_id.get(path.stem)
+            if probe is None:
+                continue
+            try:
+                text = path.read_text(encoding="utf-8")
+            except OSError:
+                # The file parsed a moment ago and is unreadable now: an
+                # adoption `git mv` mid-request. Drop the row, never 500.
+                continue
+            staged.setdefault(path.stem, StagedProbe(
+                probe_id=path.stem, path=path, probe=probe, text=text,
+                provenance=parse_provenance(text)))
+    return staged
+
+
 def _replay_status(replay: object) -> ReplayStatus:
     """`ReplayResult | ReplaySkipped` flattened onto the four wire states."""
     if getattr(replay, "budget", None) is not None:          # ReplaySkipped
@@ -468,14 +591,53 @@ def _replay_status(replay: object) -> ReplayStatus:
             else ReplayStatus.not_reproduced)
 
 
-def _finding_row(finding, run_id: str, created_at: str) -> FindingRow:
+def _replay_view(replay: object) -> ReplayView:
+    """`ReplayResult | ReplaySkipped` as the wire's `ReplayView`.
+
+    Read through `getattr` rather than by isinstance-branching, because the two
+    artifact types share no field beyond `reason`: a skip has no `trials` and a
+    result has no `budget`, and `None` is the wire's word for "this shape did
+    not record that". `status` is the one thing both can answer, and
+    `_replay_status` is the single place that decides it.
+    """
+    checks = getattr(replay, "checks", None)
+    return ReplayView(
+        status=_replay_status(replay),
+        reproduced=getattr(replay, "reproduced", None),
+        trials=getattr(replay, "trials", None),
+        pass_k=_number(getattr(replay, "pass_k", None)),
+        pass_at_k=_number(getattr(replay, "pass_at_k", None)),
+        expected_trials=getattr(replay, "expected_trials", None),
+        checks=[_check_view(c) for c in (checks or []) if isinstance(c, dict)],
+        reason=str(getattr(replay, "reason", "") or ""),
+    )
+
+
+def _finding_row(finding, run_id: str, created_at: str,
+                 staged: StagedProbe | None = None) -> FindingRow:
+    """One `DiscoveryArtifact.findings[]` entry joined onto its staged file.
+
+    The join is not a convenience — it is the only way either half is knowable.
+    `confirmed` and the replay verdict exist ONLY in the artifact (staging
+    happens before replay, so the YAML cannot carry them); `category` and
+    `safety_critical` exist ONLY in the YAML, because the artifact-side
+    `Finding` dataclass carries neither field.
+
+    A finding whose staged file is gone — adopted by a `git mv` into `probes/`,
+    or deleted after triage — reports `category: None`. `safety_critical` has
+    no such spelling: the wire type is `bool`, so an unjoined row falls back to
+    `False`. That is the one place this can understate a safety field, it is
+    forced by the frozen contract rather than chosen, and it is visible on the
+    same row as `category: null`.
+    """
     return FindingRow(
         probe_id=Path(finding.probe_path).stem,
         run_id=run_id,
         objective_id=finding.objective_id,
         confirmed=finding.confirmed,
         probe_path=finding.probe_path,
-        safety_critical=False,
+        category=staged.probe.category if staged is not None else None,
+        safety_critical=bool(staged.probe.safety_critical) if staged is not None else False,
         persona_id=finding.persona_id,
         playbook_id=finding.playbook_id,
         duplicate_of=finding.duplicate_of,
@@ -534,9 +696,24 @@ class RunIndex:
     least-recently-used first, which is what stops it from being a slow leak.
     """
 
-    def __init__(self, runs_dir: Path | str) -> None:
+    def __init__(self, runs_dir: Path | str, packs=None) -> None:
         self.runs_dir = Path(runs_dir)
+        #: The start-time pack allowlist, for the discover join only. Optional
+        #: because a `RunIndex` over `runs/` alone is still a complete index of
+        #: `runs/` — omitting it costs the two fields that live in the staged
+        #: YAML (`category`, `safety_critical`) and nothing else.
+        self.packs = [Path(p) for p in (packs or ())]
         self._cache: dict[str, tuple[tuple[str, int, int], LoadedArtifact]] = {}
+
+    def staged_probes(self) -> dict[str, StagedProbe]:
+        """The staged corpus, re-read on every call.
+
+        Deliberately uncached, unlike artifacts. The cache above is sound
+        because an artifact is immutable once written; a staged probe is the
+        opposite — adopting one is a `git mv` an operator performs *while* the
+        cockpit is open, and the page's whole job is to stop showing it.
+        """
+        return load_staged_probes(self.packs)
 
     # -- discovery ---------------------------------------------------------
 
@@ -881,7 +1058,9 @@ class RunIndex:
             if isinstance(typed, CompareArtifact):
                 return replace_detail(detail, compare=_scoreboard(run_id, typed))
             if isinstance(typed, DiscoveryArtifact):
-                return replace_detail(detail, discovery=_discovery(run_id, typed))
+                return replace_detail(
+                    detail,
+                    discovery=_discovery(run_id, typed, self.staged_probes()))
         except Exception as exc:
             return replace_detail(
                 detail, degraded=True, judge_usd=None,
@@ -913,7 +1092,17 @@ def _scoreboard(run_id: str, art: CompareArtifact) -> Scoreboard:
         rubric_scores_untrusted=art.rubric_scores_untrusted)
 
 
-def _discovery(run_id: str, art: DiscoveryArtifact) -> DiscoverySummary:
+def _discovery(run_id: str, art: DiscoveryArtifact,
+               staged: dict[str, StagedProbe] | None = None) -> DiscoverySummary:
+    """The discover half of a `RunDetail`.
+
+    `staged` is the join corpus from `RunIndex.staged_probes`. It is optional
+    so a `RunIndex` built without a pack allowlist still renders the run; the
+    cost of omitting it is that `category` and `safety_critical` — which live
+    only in the staged YAML — fall back to their contract defaults on every
+    row. See `_finding_row`.
+    """
+    staged = staged or {}
     return DiscoverySummary(
         agent_model=art.agent_model, rubric_judge_model=art.rubric_judge_model,
         eval_status=art.eval_status, error_count=art.error_count,
@@ -923,7 +1112,9 @@ def _discovery(run_id: str, art: DiscoveryArtifact) -> DiscoverySummary:
         effective_spend_usd=_number(art.effective_spend_usd),
         budget_exhausted=art.budget_exhausted, partial=art.partial,
         objectives=list(art.objectives),
-        findings=[_finding_row(f, run_id, art.created_at) for f in art.findings])
+        findings=[_finding_row(f, run_id, art.created_at,
+                               staged.get(Path(f.probe_path).stem))
+                  for f in art.findings])
 
 
 # --------------------------------------------------------------------------

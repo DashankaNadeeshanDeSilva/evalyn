@@ -57,6 +57,9 @@ from evalyn.ui.models import (
     CriterionCounts,
     ErrorCode,
     ErrorEnvelope,
+    DiscoveryListPage,
+    FindingDetail,
+    FindingRow,
     GateVerdict,
     HealthResponse,
     LaunchRequest,
@@ -65,6 +68,7 @@ from evalyn.ui.models import (
     PackAxes,
     PackListPage,
     RedactionMeta,
+    ReplayView,
     RunDetail,
     RunListPage,
     RunMode,
@@ -550,7 +554,7 @@ def create_app(runs_dir: Path, packs: list[Path], *,
     # `_check_view` is the ONE artifact-check mapper (it is what applies the
     # `Tier` validator that turns the artifact's `"tier": 1` into the wire's
     # `"1"`); a second one here would be the drift `models.py` exists to stop.
-    from evalyn.ui.index import RunIndex, _check_view, mode_of
+    from evalyn.ui.index import RunIndex, _check_view, _replay_view, mode_of
 
     runs_dir = Path(runs_dir).resolve()
     packs = [Path(p).resolve() for p in packs]
@@ -570,7 +574,12 @@ def create_app(runs_dir: Path, packs: list[Path], *,
     # 19 starts minting ids, note that an explicit `EVALYN_RUN_ID` removes the
     # collision-proofing `new_run_id` provides: two runs handed the same id
     # `os.replace`-clobber each other with no exists-check (C-T7).
-    app.state.index = RunIndex(runs_dir)
+    # `packs` is handed over for the discover join and nothing else: a staged
+    # finding's `category` and `safety_critical` live in
+    # `<pack>/discoveries/*.yaml`, not in the run artifact, and a row that
+    # cannot reach them ships `safety_critical: false` for a probe whose file
+    # says `true` — the opposite of the truth, on a safety field.
+    app.state.index = RunIndex(runs_dir, packs)
 
     # The allowlist, keyed by the id the browser addresses a pack with. Loaded
     # once at start: `build_redactor` above has already proved every one of
@@ -1178,6 +1187,162 @@ def create_app(runs_dir: Path, packs: list[Path], *,
                              "was started with, so its calibration record is "
                              "not one this server can read")
         return build_trust(found[0])
+
+    def _discovery_groups(objective: str | None, before: str | None):
+        """Every staged finding, newest run first, grouped by the run that made it.
+
+        Grouped rather than flat because the cursor is `(created_at, run_id)`
+        and **a run is the finest thing that key can address**: two findings
+        from the same hunt share both halves of it, so a page boundary drawn
+        between them hands back a cursor that excludes them BOTH on the next
+        request (`?before=` keeps rows strictly less than the key). Paging by
+        run makes the boundary representable, at the cost of a page that can
+        overshoot `limit` by the size of the last run. `RunListPage`'s own
+        rows do not have this problem because there each row IS a run.
+
+        Groups with no matching finding are dropped HERE, not at the page
+        boundary: a cursor pointing at a run the filter empties would fetch a
+        page with no rows, and TanStack Query renders that as a phantom page.
+        """
+        index = app.state.index
+        groups = []
+        for row in index.list(mode=RunMode.discover, limit=None, before=before):
+            # A launched-but-unwritten discover run is a real row in `list`
+            # and has no artifact to read. It contributes no findings, and
+            # `index.get` would raise `RunNotFound` for it.
+            if index.artifact_path(row.run_id) is None:
+                continue
+            summary = index.get(row.run_id).discovery
+            if summary is None:
+                continue                     # degraded, or not a discover body
+            findings = [finding for finding in summary.findings
+                        if objective is None or finding.objective_id == objective]
+            if findings:
+                groups.append((row, sorted(findings, key=lambda f: f.probe_id)))
+        return groups
+
+    @api.get("/discoveries", response_model=DiscoveryListPage)
+    async def list_discoveries(objective: str | None = None,
+                               limit: int = DEFAULT_PAGE_SIZE,
+                               before: str | None = None) -> DiscoveryListPage:
+        """The staged findings — the **envelope**, never a bare array.
+
+        Each row is the join `FindingRow` documents: the staged probe's
+        `category` and `safety_critical`, which exist only in
+        `<pack>/discoveries/*.yaml`, over the artifact's `confirmed` and replay
+        verdict, which exist only in the run record because staging happens
+        before replay.
+
+        **Only the allowlisted packs are ever read.** The join is keyed on the
+        probe id, and the corpus it looks that id up in is built by globbing
+        the packs the operator named on the command line — the `probe_path`
+        recorded in the artifact is reported, never opened.
+
+        A finding whose staged file is gone is still a row: it happened, the
+        run records it, and dropping it would make an adoption look like an
+        erasure. It reports `category: null` — see `_finding_row`.
+        """
+        if before is not None:
+            try:
+                parse_cursor(before)
+            except ValueError:
+                # Same ruling as `/api/runs`: a rejected cursor is `not_found`,
+                # because the page cannot exist and saying so leaks nothing.
+                raise HTTPException(
+                    status_code=404,
+                    detail="invalid cursor: ?before= must be the opaque "
+                           "'<created_at>|<run_id>' composite handed back as "
+                           "next_cursor — a bare timestamp is not tie-safe")
+        size = max(1, min(int(limit), MAX_PAGE_SIZE))
+        groups = _discovery_groups(objective, before)
+
+        items: list = []
+        cursor = None
+        for position, (row, findings) in enumerate(groups):
+            # `items and` is what stops a single run bigger than the page from
+            # yielding an empty page forever: the first group always goes in.
+            if items and len(items) + len(findings) > size:
+                previous = groups[position - 1][0]
+                cursor = make_cursor(previous.created_at, previous.run_id)
+                break
+            items.extend(findings)
+        return DiscoveryListPage(items=items, next_cursor=cursor)
+
+    @api.get("/discoveries/{probe_id}", response_model=FindingDetail)
+    async def finding_detail(probe_id: str) -> FindingDetail:
+        """One staged finding: its file, its provenance, and its replay.
+
+        **`probe_id` is never joined into a path.** It is a key into the dict
+        `load_staged_probes` builds by globbing the allowlisted packs, so a
+        traversing or absolute id is a probe nobody staged and gets the same
+        404 as a typo. That is what makes an arbitrary path parameter safe here
+        without a grammar check of its own.
+
+        Redacted like everything else: `RedactingRoute` scrubs the rendered
+        bytes, so `probe_yaml` and `provenance.confirmation` — the two places a
+        confirmed `pii-leak` finding embeds the captured address verbatim — are
+        covered by construction rather than by this handler remembering to.
+
+        404 when neither side of the join knows the id. A finding with no
+        staged file still answers (with an empty `probe_yaml`), and a staged
+        file with no finding answers too: the run artifact may simply have been
+        cleaned out of `runs/`, and the file on disk is the evidence.
+        """
+        staged = app.state.index.staged_probes().get(probe_id)
+        match = next((pair for _, findings in _discovery_groups(None, None)
+                      for pair in findings if pair.probe_id == probe_id), None)
+        if staged is None and match is None:
+            # The id is client input and is not echoed back.
+            raise HTTPException(status_code=404, detail="no such finding")
+
+        replay = None
+        if match is not None:
+            replay = _replay_view_for(match.run_id, probe_id)
+        row = match if match is not None else FindingRow(
+            probe_id=probe_id, objective_id=staged.provenance.get("objective", ""),
+            confirmed=False, probe_path=str(staged.path),
+            category=staged.probe.category,
+            safety_critical=bool(staged.probe.safety_critical),
+            persona_id=staged.provenance.get("persona", ""),
+            playbook_id=staged.provenance.get("playbook", ""))
+        return FindingDetail(
+            **row.model_dump(),
+            probe_yaml=staged.text if staged is not None else "",
+            provenance=staged.provenance if staged is not None else {},
+            # The probe's turns are the user side of the hunt that confirmed
+            # it — `_answered_turns` keeps exactly the messages the target
+            # answered — so every one of them is a `user` turn. The target's
+            # replies are not in the staged file at all.
+            turns=[TranscriptTurn(role=TurnRole.user, text=turn)
+                   for turn in (staged.probe.turns if staged is not None else [])],
+            # The scored checks, flattened off the replay so a detail page can
+            # render them without unwrapping a nullable. The probe's own check
+            # *definitions* are not these: `CheckView` is a result, and the
+            # definitions are already in `probe_yaml` verbatim.
+            checks=list(replay.checks) if replay is not None else [],
+            replay=replay,
+        )
+
+    def _replay_view_for(run_id: str | None, probe_id: str) -> ReplayView | None:
+        """The replay verdict off the artifact, by probe id.
+
+        Read from the typed artifact rather than carried down from the listing:
+        `FindingRow` records only the flattened `replay_status`, and the detail
+        view promises the trials, the two pass rates and the checks behind it.
+        """
+        if run_id is None:
+            return None
+        path = app.state.index.artifact_path(run_id)
+        if path is None:
+            return None
+        try:
+            artifact = _typed_or_refuse(run_id, path, RunMode.discover)
+        except HTTPException:
+            return None
+        for finding in artifact.findings:
+            if Path(finding.probe_path).stem == probe_id:
+                return _replay_view(finding.replay)
+        return None
 
     @api.get("/packs/{pack_id}/axes", response_model=PackAxes)
     async def pack_axes_view(pack_id: str) -> PackAxes:
