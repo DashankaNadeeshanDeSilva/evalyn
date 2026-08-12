@@ -171,8 +171,12 @@ def gate(
     # Fail closed on a broken pack before any evaluation (including --dry-run):
     # malformed checks silently no-op or crash at scoring time.
     report = validate_pack(pack)
+    # `err=True` because the cockpit launches this command with
+    # `stdout=subprocess.DEVNULL` (`spawn_child`): stderr.log is the operator's
+    # only channel, so a warning on stdout is a warning nobody receives. The
+    # `errors` loop below has always said so; this is its sibling (R4-76).
     for w in report.warnings:
-        typer.echo(f"warning: {w}")
+        typer.echo(f"warning: {w}", err=True)
     for err in report.errors:
         typer.echo(f"error: {err}", err=True)
     if not report.ok:
@@ -384,8 +388,12 @@ def compare(
         raise typer.Exit(2)
 
     report = validate_pack(pack)
+    # `err=True` because the cockpit launches this command with
+    # `stdout=subprocess.DEVNULL` (`spawn_child`): stderr.log is the operator's
+    # only channel, so a warning on stdout is a warning nobody receives. The
+    # `errors` loop below has always said so; this is its sibling (R4-76).
     for w in report.warnings:
-        typer.echo(f"warning: {w}")
+        typer.echo(f"warning: {w}", err=True)
     for err in report.errors:
         typer.echo(f"error: {err}", err=True)
     if not report.ok:
@@ -666,8 +674,12 @@ def discover(
         raise typer.Exit(2)
 
     report = validate_pack(pack)
+    # `err=True` because the cockpit launches this command with
+    # `stdout=subprocess.DEVNULL` (`spawn_child`): stderr.log is the operator's
+    # only channel, so a warning on stdout is a warning nobody receives. The
+    # `errors` loop below has always said so; this is its sibling (R4-76).
     for w in report.warnings:
-        typer.echo(f"warning: {w}")
+        typer.echo(f"warning: {w}", err=True)
     for err in report.errors:
         typer.echo(f"error: {err}", err=True)
     if not report.ok:
@@ -951,6 +963,10 @@ def validate_pack_cmd(pack: str = typer.Argument(..., help="Path to a target pac
         raise typer.Exit(1)
 
     report = validate_pack(loaded)
+    # DELIBERATELY on stdout, unlike the identical loops in `gate`, `compare`
+    # and `discover` (R4-76). This command is terminal-only — the cockpit never
+    # launches it — and its output IS its product, so stdout is the correct
+    # channel. Excluded on purpose, not missed.
     for w in report.warnings:
         typer.echo(f"warning: {w}")
     for e in report.errors:
