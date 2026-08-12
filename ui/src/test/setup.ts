@@ -15,6 +15,20 @@ import { server } from "../mocks/server";
  */
 beforeAll(() => server.listen({ onUnhandledRequest: "error" }));
 
+/**
+ * `scrollIntoView`, which jsdom does not ship.
+ *
+ * jsdom implements no layout, so every scrolling API is absent —
+ * `HTMLElement.prototype.scrollIntoView` is `undefined` under the pinned
+ * version (probed, not assumed). A real browser always has it, so the
+ * production code calls it unguarded and the *environment* supplies it here,
+ * exactly as `FakeEventSource` supplies the `EventSource` jsdom also lacks.
+ *
+ * A no-op is the honest stand-in: there is nothing to scroll. Tests that care
+ * spy on it to read back the element and the behaviour it was asked for.
+ */
+Element.prototype.scrollIntoView = function scrollIntoView() {};
+
 afterEach(() => {
   cleanup();
   server.resetHandlers();

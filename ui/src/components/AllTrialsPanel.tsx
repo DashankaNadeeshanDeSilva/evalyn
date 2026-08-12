@@ -3,6 +3,7 @@ import { useQueries } from "@tanstack/react-query";
 
 import { ApiFailure, apiGet } from "../api/client";
 import type { CheckView, ProbeRow, TrialView } from "../api/types";
+import { useRevealOnOpen } from "../hooks/useRevealOnOpen";
 import { Flatline } from "./Flatline";
 import { IconAlert, IconCheck, IconCross } from "./InstrumentIcon";
 import { RedactedChip } from "./RedactedChip";
@@ -499,8 +500,14 @@ export function AllTrialsPanel({
     }))
     .find((candidate) => candidate.turn !== null);
 
+  /* Same reveal as the single-trial panel, and for the same reason: this opens
+     below the whole probe table, well past the fold on an ordinary viewport. */
+  const panel = useRevealOnOpen(probe.id);
+
   return (
     <section
+      ref={panel}
+      tabIndex={-1}
       data-testid="all-trials-panel"
       data-probe={probe.id}
       aria-label="All trials of this probe"

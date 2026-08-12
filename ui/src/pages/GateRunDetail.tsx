@@ -20,6 +20,7 @@ import {
   TranscriptViewer,
   type TranscriptAnnotation,
 } from "../components/TranscriptViewer";
+import { useRevealOnOpen } from "../hooks/useRevealOnOpen";
 
 /**
  * The gate payload: the verdict, the probe rows behind it, and the conversation
@@ -199,8 +200,15 @@ function TrialPanel({
       ),
   });
 
+  /* The panel renders below the whole probe table, so opening it has to bring
+     it to the operator. Keyed on the selection, not on mounting: moving from
+     trial 1 to trial 4 changes a prop and remounts nothing. */
+  const panel = useRevealOnOpen(`${selection.probeId}/${selection.epoch}`);
+
   return (
     <section
+      ref={panel}
+      tabIndex={-1}
       data-testid="trial-panel"
       data-probe={selection.probeId}
       data-epoch={String(selection.epoch)}
