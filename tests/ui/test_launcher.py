@@ -2130,9 +2130,10 @@ def test_a_cockpit_gate_never_diffs_against_another_packs_baseline(
     assert named != foreign.resolve()
     assert not named.exists(), "so the gate diffs against no baseline at all"
     assert named.parent == sidecar_dir(runs, run_id), \
-        ("in this run's own sidecar directory, which is made fresh for it and "
-         "only ever holds meta.json and stderr.log — nothing can put a "
-         "baseline there")
+        ("in this run's own sidecar directory, which only ever holds meta.json "
+         "and stderr.log and is keyed by a microsecond-plus-uuid run id no "
+         "earlier run can have named — that id, not the exist_ok mkdir, is why "
+         "nothing can have put a baseline there")
 
 
 def test_a_cockpit_gate_still_uses_the_baseline_that_belongs_to_its_own_pack(

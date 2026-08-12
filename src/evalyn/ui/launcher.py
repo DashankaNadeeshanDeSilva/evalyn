@@ -85,12 +85,22 @@ STDERR_FILENAME = "stderr.log"
 
 #: The `--baseline` a cockpit gate is given when there is no baseline it may
 #: honestly use. It is written into the run's **own** sidecar directory, which
-#: this launcher creates fresh for each run and which only ever holds
-#: `meta.json` and `stderr.log` — so the file provably does not exist, and
-#: `load_baseline` returns `None` for it rather than diffing against something
-#: nobody chose. Naming an absent path is deliberate where omitting the flag
-#: would not do: omission hands the child back to its own
-#: `runs/baseline.json` default, which is the whole problem.
+#: only ever holds `meta.json` and `stderr.log` — so `load_baseline` returns
+#: `None` for it rather than diffing against something nobody chose. Naming an
+#: absent path is deliberate where omitting the flag would not do: omission
+#: hands the child back to its own `runs/baseline.json` default, which is the
+#: whole problem.
+#:
+#: **What actually guarantees the file is absent** (F6): not `mkdir`, which is
+#: `exist_ok=True` and asserts nothing about freshness, but `new_run_id` — the
+#: directory is keyed by a microsecond stamp plus a uuid, so no run has ever
+#: named this directory before and nothing exists to have written into it. The
+#: guarantee is a naming argument, not a check, and it is worth knowing which:
+#: it would stop holding the moment a run id were reused, and it is *not*
+#: strengthened by a `unlink(missing_ok=True)` here, because this path is
+#: computed before `launch` has even created the directory. That the child is
+#: handed a genuinely nonexistent path is pinned from the outside instead —
+#: point it at a file that does exist and three tests go red by name.
 ABSENT_BASELINE_FILENAME = "no-baseline.json"
 
 
