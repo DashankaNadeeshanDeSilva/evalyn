@@ -662,7 +662,10 @@ function code(file: string): string {
     .replace(/(^|[^:])\/\/[^\n]*/g, "$1 ");
 }
 
-function tokensAfter(file: string, prefix: "text" | "bg"): Set<string> {
+function tokensAfter(
+  file: string,
+  prefix: "text" | "bg" | "decoration",
+): Set<string> {
   const found = new Set<string>();
   // A background may carry an opacity modifier — `bg-degraded/[0.08]` or
   // `bg-chassis-50/60` — and the modifier changes the ground materially, so it
@@ -767,7 +770,9 @@ describe("every ink on the surface is declared and compliant", () => {
   it("has an inventory entry for every source file that names a palette token", () => {
     const undeclared = sourceFiles().filter(
       (file) =>
-        (tokensAfter(file, "text").size > 0 || tokensAfter(file, "bg").size > 0) &&
+        (tokensAfter(file, "text").size > 0 ||
+          tokensAfter(file, "bg").size > 0 ||
+          tokensAfter(file, "decoration").size > 0) &&
         SURFACES[file] === undefined,
     );
     expect(
@@ -804,6 +809,34 @@ describe("every ink on the surface is declared and compliant", () => {
         arbitraryColours(file),
         `${file} sets a colour the palette does not define, so nothing can measure it`,
       ).toEqual([]);
+    }
+  });
+
+  /**
+   * The underline, which this guard could not see at all.
+   *
+   * Ink and ground were the whole of its vocabulary, so an underline could be
+   * any weight of nothing and the suite stayed green — proven: dropping the
+   * channel bank's underline from `chassis-300` (1.55:1) to `chassis-100`
+   * (1.15:1) reddened nothing. That underline is the only mark saying a probe id
+   * is a button, which is precisely WCAG 1.4.11's "graphical object needed to
+   * identify a control", and on a projector it is the difference between a table
+   * and a table you can click.
+   *
+   * There is no role vocabulary here on purpose: an underline is never
+   * decoration in this codebase — every one of them marks a control — so there
+   * is nothing to exempt and no note to write.
+   */
+  it("keeps every underline that identifies a control at the graphical threshold", () => {
+    for (const [file, surface] of Object.entries(SURFACES)) {
+      for (const ink of tokensAfter(file, "decoration")) {
+        for (const ground of [surface.inherits, ...surface.sets]) {
+          expect(
+            contrast(hexFor(ink), groundHex(ground, surface.inherits)),
+            `${file}: decoration-${ink} on ${ground} cannot be seen as an affordance`,
+          ).toBeGreaterThanOrEqual(AA_NON_TEXT);
+        }
+      }
     }
   });
 

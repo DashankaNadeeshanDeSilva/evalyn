@@ -26,7 +26,7 @@ function NoSuchPage() {
         The cockpit has no view at this address.{" "}
         <Link
           to="/runs"
-          className="text-chassis-900 underline decoration-chassis-400 underline-offset-4"
+          className="text-chassis-900 underline decoration-chassis-500 underline-offset-4"
         >
           Back to runs
         </Link>

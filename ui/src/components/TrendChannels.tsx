@@ -17,6 +17,13 @@ import { Flatline } from "./Flatline";
  * figure, `data-flatlined` (via `Flatline`) marks a cell that carries none, and
  * a cell is never both.
  *
+ * The probe id is the selector, and its **underline is the only thing that says
+ * so** — there is no button chrome, by design. So the underline is a graphical
+ * object identifying a control under WCAG 1.4.11 and is held to 3:1 rather than
+ * treated as trim: it measures 4.03:1 on the face unselected, and goes to the
+ * text's own ink when selected or hovered. It shipped at 1.55:1, which reads
+ * from a projector as a table nobody can click.
+ *
  * ## Two things it deliberately refuses
  *
  * - **A change of `+0.00` for a single reading.** A channel with one reading
@@ -142,7 +149,7 @@ export function TrendChannels({
                     className={`break-all text-left text-readout transition-colors duration-state ${
                       isSelected
                         ? "text-chassis-900 underline decoration-chassis-900 decoration-2 underline-offset-4"
-                        : "text-chassis-700 underline decoration-chassis-300 underline-offset-4 hover:text-chassis-900 hover:decoration-chassis-900"
+                        : "text-chassis-700 underline decoration-chassis-500 underline-offset-4 hover:text-chassis-900 hover:decoration-chassis-900"
                     }`}
                   >
                     {channel.probeId}
