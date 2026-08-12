@@ -594,6 +594,42 @@ const SURFACES: Record<string, Surface> = {
     ],
   },
   /**
+   * The compare board. **No status ink and no ground of its own**, the same
+   * ruling trends, judge trust and discoveries carry: `status-*` is keyed to
+   * `RunStatus` members, and a category tally is not a run state — nor is a
+   * latency, nor an empty verdict half.
+   *
+   * That last one is why the constraint helps here rather than merely binding.
+   * The board this page most often draws has a legitimately empty verdict half,
+   * and the temptation is to tint the emptiness. With no hue available it is
+   * carried by a sentence instead, which is the only rendition that survives a
+   * projector, a greyscale print and every colourblind reading — and the only
+   * one that can say *why* it is empty.
+   *
+   * `chassis-700` is the derived column — flip rate and the arithmetic
+   * difference — a step back from the measured figures beside it at 8.70:1,
+   * comfortably clear of AA.
+   *
+   * Inherited ink, checked by hand because this guard cannot see across files
+   * (R4-24): the page sets no ground at all, so `Detent`, `Flatline` and
+   * `IconAlert` each render on the `chassis-25` face they already declare as
+   * `inherits`. There is no dark field on this page and nothing to invert.
+   */
+  "pages/Compare.tsx": {
+    inherits: "chassis-25",
+    sets: [],
+    inks: [
+      { ink: "chassis-900", role: "text" },
+      { ink: "chassis-700", role: "text" },
+      { ink: "chassis-600", role: "text" },
+      {
+        ink: "chassis-400",
+        role: "redundant",
+        note: "aria-hidden '·' separators in the readout and the side legends",
+      },
+    ],
+  },
+  /**
    * `chassis-50/60` is the loading skeleton's slab, standing in for the chart
    * while the two reads land; it carries no text, exactly as the runs list's
    * skeleton bars do not.
