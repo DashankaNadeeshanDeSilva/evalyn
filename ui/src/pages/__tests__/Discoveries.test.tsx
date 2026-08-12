@@ -34,9 +34,10 @@ import { Discoveries } from "../Discoveries";
  * the same shape as the judge-trust page's never-calibrated state, and it has
  * to read as a deliberate statement rather than as a page that failed to load.
  *
- * **Nothing here may reveal.** Revealing is per-object and gated on a token
- * minted at server start and written to stderr; the browser has no way to know
- * it. On 2026-08-14 this page is projected, and the value behind the redaction
+ * **Nothing here may reveal.** Ruling R4-89: the per-object reveal token the
+ * wire model once described was never built, and the route serving a finding
+ * takes no header and honours no token, so redaction on it is unconditional.
+ * On 2026-08-14 this page is projected, and the value behind the redaction
  * marker on the safety-critical finding is a real person's email address. So
  * the absence of a reveal control is a property under test, not an omission.
  */
@@ -878,9 +879,11 @@ describe("redaction is reported, never interpreted", () => {
   /**
    * The reveal path does not exist. `GET /api/discoveries/{probe_id}` takes
    * `probe_id` and nothing else — no `Request`, no `Header` — and redaction is
-   * applied unconditionally by `RedactingRoute`. The MSW handler *does* honour
-   * an `X-Evalyn-Reveal` header, so a reveal control would pass every test here
-   * and do nothing at all against the real server, on a projector.
+   * applied unconditionally by `RedactingRoute`. The MSW handler used to honour
+   * an `X-Evalyn-Reveal` header, which meant a reveal control would have passed
+   * every test here and done nothing at all against the real server, on a
+   * projector; R4-89 deleted that branch, so the mock now refuses what the
+   * route refuses.
    *
    * So the state is stated, and the recovery points off-screen at the file.
    */

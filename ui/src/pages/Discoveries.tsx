@@ -62,12 +62,13 @@ import { useRevealOnOpen } from "../hooks/useRevealOnOpen";
  *
  * `RedactionBanner` defers the `reveal_required` clause to "the finding detail
  * view", which is this page — and the answer it gives is **no control**.
- * Revealing is per-object and gated on a token minted at server start and
- * written to stderr; a browser has no way to know it, so any control here would
- * be a text field asking an operator to paste a secret into a page that is
- * about to be projected. The redacted rendition is the only one this page has,
- * and `Discoveries.test.tsx` holds that as a property rather than trusting it
- * to stay true.
+ * Ruling R4-89: the per-object reveal token the wire model once described was
+ * never built. `GET /api/discoveries/{probe_id}` takes a `probe_id` and nothing
+ * else — no `Request`, no `Header` — and redaction is applied unconditionally,
+ * so a control here would be an affordance for an act the server has no way to
+ * perform. The redacted rendition is the only one this page has, and
+ * `Discoveries.test.tsx` holds that as a property rather than trusting it to
+ * stay true.
  *
  * ## The marker's kind is server vocabulary, and the client does not model it
  *
