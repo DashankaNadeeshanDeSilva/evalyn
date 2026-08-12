@@ -78,7 +78,7 @@ function Failure({ what, error }: { what: string; error: unknown }) {
   return (
     <p
       data-testid="compare-error"
-      className="engrave-b flex items-start gap-2 px-4 py-8 text-readout text-chassis-900 sm:px-6"
+      className="engrave-b flex max-w-[74ch] items-start gap-2 px-4 py-8 text-readout text-chassis-900 sm:px-6"
     >
       <IconAlert className="mt-0.5 h-4 w-4 shrink-0" />
       {error instanceof ApiFailure
@@ -151,7 +151,7 @@ export function Compare() {
       ) : selected === null ? (
         <div
           data-testid="compare-none"
-          className="px-4 py-8 text-readout text-chassis-600 sm:px-6"
+          className="max-w-[74ch] px-4 py-8 text-readout text-chassis-600 sm:px-6"
         >
           <p className="text-chassis-900">
             This runs directory holds no compare runs.
@@ -192,7 +192,7 @@ function Board({ runId }: { runId: string }) {
     return (
       <p
         data-testid="compare-unreadable"
-        className="px-4 py-8 text-readout text-chassis-600 sm:px-6"
+        className="max-w-[74ch] px-4 py-8 text-readout text-chassis-600 sm:px-6"
       >
         This run is a comparison but carries no scoreboard.{" "}
         {detail.data.degraded_reason ??
@@ -267,7 +267,7 @@ function BoardFace({ runId, board }: { runId: string; board: Scoreboard }) {
           className="engrave-b flex items-start gap-2 px-4 py-3 text-readout text-chassis-900 sm:px-6"
         >
           <IconAlert className="mt-0.5 h-4 w-4 shrink-0" />
-          <span>
+          <span className="max-w-[74ch]">
             Rubric scores are untrusted: this comparison was judged against a
             stale calibration, so the verdicts below rest on agreement nobody
             re-measured. Judge Trust reports what the judge was last measured at.
@@ -280,7 +280,7 @@ function BoardFace({ runId, board }: { runId: string; board: Scoreboard }) {
 
       <p
         data-testid="compare-advisory"
-        className="px-4 py-4 text-legend text-chassis-600 sm:px-6"
+        className="max-w-[74ch] px-4 py-4 text-legend text-chassis-600 sm:px-6"
       >
         {ADVISORY}
       </p>
@@ -333,7 +333,7 @@ function Verdicts({ model }: { model: ReturnType<typeof buildCompareModel> }) {
     <section data-testid="compare-verdicts" className="engrave-b rule-major">
       <div className="px-4 pt-4 sm:px-6">
         <Legend>Pairwise verdicts</Legend>
-        <p className="mt-1 text-legend text-chassis-600">
+        <p className="mt-1 max-w-[74ch] text-legend text-chassis-600">
           each rubric criterion judged twice, in both orders — a flip is the
           judge disagreeing with itself when the sides were swapped
         </p>
@@ -371,14 +371,14 @@ function Verdicts({ model }: { model: ReturnType<typeof buildCompareModel> }) {
       ) : (
         <p
           data-testid="compare-verdicts-empty"
-          className="mt-3 px-4 pb-4 text-readout text-chassis-700 sm:px-6"
+          className="mt-3 max-w-[74ch] px-4 pb-4 text-readout text-chassis-700 sm:px-6"
         >
           {model.verdictAbsence}
         </p>
       )}
 
       {model.exclusion === null ? null : (
-        <p className="px-4 py-3 text-legend text-chassis-600 sm:px-6">
+        <p className="max-w-[74ch] px-4 py-3 text-legend text-chassis-600 sm:px-6">
           {model.exclusion} An excluded pair is one the judge was never asked
           about, so it is in no tally above.
         </p>
@@ -427,7 +427,7 @@ function Metrics({ model }: { model: ReturnType<typeof buildCompareModel> }) {
     <section data-testid="compare-metrics">
       <div className="px-4 pt-4 sm:px-6">
         <Legend>Hard metrics</Legend>
-        <p className="mt-1 text-legend text-chassis-600">
+        <p className="mt-1 max-w-[74ch] text-legend text-chassis-600">
           from the trial records only, never blended with the verdicts above.{" "}
           {DELTA_LEGEND}
         </p>
@@ -438,7 +438,7 @@ function Metrics({ model }: { model: ReturnType<typeof buildCompareModel> }) {
       ) : (
         <p
           data-testid="compare-metrics-empty"
-          className="mt-3 px-4 pb-4 text-readout text-chassis-700 sm:px-6"
+          className="mt-3 max-w-[74ch] px-4 pb-4 text-readout text-chassis-700 sm:px-6"
         >
           {model.metricAbsence}
         </p>
@@ -459,7 +459,7 @@ function MetricTable({ block }: { block: MetricBlock }) {
         {block.category}
       </h3>
       <div className="mt-1 overflow-x-auto">
-        <table className="w-full min-w-[28rem] border-collapse text-left">
+        <table className="w-full min-w-[28rem] max-w-[46rem] border-collapse text-left">
           <caption className="sr-only">
             Hard metrics for the {block.category} category, A beside B.
           </caption>
