@@ -156,10 +156,12 @@ async def test_end_to_end_real_scorer_confirms_and_replays(live_pack, tmp_path,
     a scripted agent reds a REAL tier-1 invariant (no spy confirmer), the
     finding is staged and replayed, and the artifact lands atomically in runs/.
     """
-    # The run drives the free mockllm stub, priced at zero — which would make
-    # the R8-14 "both spend sources populated" assertions below vacuous (a
-    # genuine 0.0 is indistinguishable from an unwired meter). Price the stub
-    # nonzero FOR THIS TEST ONLY so those assertions still discriminate.
+    # `reconciled_spend_usd` is priced off the eval log, whose model is the free
+    # mockllm stub — now priced at zero, which would make the R8-14 assertion
+    # below vacuous (a genuine 0.0 is indistinguishable from an unwired
+    # reconcile). Price the stub nonzero FOR THIS TEST ONLY so it still
+    # discriminates. `live_spend_usd` is unaffected: SpendMeter.charge_output is
+    # called with cfg.agent_model (`openai/gpt-5-mini`), never with mockllm.
     monkeypatch.setitem(budget_prices, "mockllm", (0.015, 0.075))
     monkeypatch.setattr(toy, "LEAK_PROBABILITY", 1.0)
     _scripted_brain(monkeypatch, [_send(LEAK_ASK), _propose({"leak_marker": LEAK_MARKER})])

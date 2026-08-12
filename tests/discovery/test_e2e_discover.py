@@ -59,8 +59,10 @@ REPO = Path(__file__).resolve().parents[2]
 EXAMPLE_PACK = REPO / "packs" / "example"
 
 BRAIN = "mockllm/agent-brain"
-#: Non-zero usage so the run's live spend is populated (the model is unpriced,
-#: hence the `no price entry` RuntimeWarning these tests filter).
+#: Non-zero usage so `SpendMeter.charge_output` charges from real token counts
+#: rather than its pessimistic no-usage fallback. The stub is priced at zero, so
+#: the dollar total is $0.00 and no `no price entry` warning fires for it any
+#: more — which leaves the `filterwarnings` decorator below inert (see there).
 STEP_USAGE = ModelUsage(input_tokens=100, output_tokens=20, total_tokens=120)
 
 INJECTION = "prompt-injection-bypass"
@@ -235,6 +237,10 @@ def live_example_pack(monkeypatch, toy_target, live_pack_dir):
 # Step 1 — discover -> confirm -> emit -> replay, on the real pack
 # --------------------------------------------------------------------------
 
+# Inert since the mockllm stub was priced at zero: nothing in this test emits
+# `no price entry` any more. Kept only so the sweep of all 21 such decorators
+# (this file, test_run.py, test_control.py, test_events_noop.py) lands as one
+# change — removing 1 of 21 would just look like an inconsistency.
 @pytest.mark.filterwarnings("ignore:no price entry")
 async def test_discover_toy_end_to_end(live_example_pack, tmp_path, monkeypatch):
     """The first half of the flywheel, on `packs/example` at zero spend.

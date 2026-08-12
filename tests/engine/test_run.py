@@ -389,7 +389,8 @@ def test_run_gate_out_dir_writes_artifact_there_not_cwd(toy_target, monkeypatch,
     monkeypatch.setenv("EVALYN_TARGET_URL", toy_target)
     pack = load_pack(live_pack_dir(REPO_EXAMPLE))
     monkeypatch.chdir(tmp_path)  # a CWD runs/ write would be visible here
-    # metering is not this test's concern (and unpriced mockllm would warn)
+    # metering is not this test's concern — stubbed out so it cannot influence
+    # the artifact-write assertions (mockllm meters to $0.00 anyway)
     monkeypatch.setattr("evalyn.engine.run._judge_usd", lambda log: 0.0)
     out = tmp_path / "artifacts"
     art = run_gate(pack, judge_model="mockllm/model",
