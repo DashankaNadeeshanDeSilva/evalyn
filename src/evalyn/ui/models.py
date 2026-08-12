@@ -839,8 +839,8 @@ class TrustReport(_Model):
     The field is `agreement` — **±1-point agreement as shipped** — and never
     `kappa`: nothing here computes Cohen's κ and the name must not imply a
     certification that was not performed. A pack with no `calibration.json` is
-    a legitimate 200 with `agreement: null` and a "never calibrated" reason,
-    not a 404.
+    a legitimate 200 with `agreement: null` and a "no calibration record"
+    reason — the engine's own locked staleness string — not a 404.
     """
 
     pack_name: str
