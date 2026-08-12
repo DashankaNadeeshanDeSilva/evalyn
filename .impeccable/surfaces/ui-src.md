@@ -105,7 +105,9 @@ Real ranges the layout must hold without breaking:
 - Transcript turns: up to ~12 per session; text can be long and must wrap, not truncate.
 - `pass^k`: 0.0–1.0. **Tabular figures required** for all numerics (pass^k, cost, duration) so columns
   don't jitter between renders.
-- Cost: sub-dollar, shown to cents.
+- Cost: sub-dollar, rendered to **four decimals** — `formatUsd` in `ui/src/format.ts` returns
+  `` `$${value.toFixed(4)}` `` and a named test pins it. The precision is load-bearing: a judge run
+  costing a fraction of a cent must not round to `$0.00` and read as free.
 
 Material states: first-run with an empty `runs/`; **degraded rows (common, ~26 of 80 today)**; a run
 in progress; a paused run (which is still billing — the label must say so); a cancelled run; an
