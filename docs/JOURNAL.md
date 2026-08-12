@@ -1990,3 +1990,59 @@ the **plan spec that originated it** (`"never calibrated"`, where the engine's l
 
 **Deferred, not blocking:** pause/cancel have still never been driven by a mouse (free to test on
 `packs/example`); the Discoveries redaction gap is unchanged and the prescribed fix still buys nothing.
+
+## Plan #4 session 12 (2026-08-12) — both twincore runs; tier-3 through the cockpit; Discoveries built
+
+**Trunk `feat/plan4-ui` at `6051153`; lane `feat/plan4-ui-frontend` at `8b129b4`, unmerged.**
+1602 Python tests (both colour modes, cold, 1583 + 19), 560 UI / 27 files, ruff and `tsc` clean.
+Rulings R4-86 … R4-88.
+
+**The milestone: tier-3 rubric checks ran through the cockpit for the first time.** `packs/twincore`
+twice, back to back, 150 trials each (50 probes × k=3): 804 tier-1 / 63 tier-2 / 42 tier-3 results
+both times. Nothing broke. The second run turned all 63 UNSURE classifier results into real scores
+(`total_unsure_trials` 29 → 0).
+
+**"Step 1 is free" was false, and had been for three handoffs.** `packs/twincore/target.yaml` sets
+`judge.rubric_model: anthropic/claude-sonnet-5`, `engine/run.py:398` falls back to it, and
+`launcher.py:build_argv` never passes `--rubric-judge-model` — so rubric spend is unreachable from the
+cockpit. Omitting `--judge-model` frees only the classifier tier. **A cost premise is a claim to
+verify, exactly like a test result.**
+
+**A metering bug was found because two of our own numbers disagreed.** The "free" run recorded more
+than the billed one ($1.0436 vs $0.7610). `price_for("mockllm/model")` matches no key in
+`budget.PRICES` and falls through to the opus-tier unknown-model bound, so the free local stub is
+metered at $0.015/$0.075 per 1k — **$0.419310 of pure fiction**. Real spend was $0.624333 and
+$0.761004; the billed run was dearer, as expected. **The phantom cost counts against
+`budget.max_usd_per_run`**, so a long mock run can falsely trip the cap and abort a run that spent
+nothing — on the free path every unpaid rehearsal uses. Queued as next session's second job. The
+controller had proposed "prompt caching or similar" and moved on; the agent that actually measured it
+found the truth.
+
+**The product finding: `groundedness` scored 1/5 on both criteria in all 15 judgements, zero spread**,
+while the other six criteria spread across the scale — which is the evidence that distinguishes a
+working judge from a broken one. groundedness is the only rubric carrying a fact sheet, so the judge
+was checking claims against verified facts and consistently found them unsupported. It independently
+reproduces the August `discover` run's confirmation line.
+
+**Discoveries was not greenfield** — four frozen wire models, the TS types, working MSW handlers,
+fixtures and the nav entry already existed; the mock was *ahead* of the server. Recon caught that
+before the brief was written. Both halves shipped: the route pair (with `parse_provenance`, which was
+promised by two docstrings and had never been written) and the page. **The email is masked in all five
+places it appears, proven from live response bytes on the real route.**
+
+**Six controller falsehoods have now been caught downstream, two of them this session** — "neither
+failing probe is in the demo pack" (both are, and R4-85 already said so), and the over-corrected
+"both probes converge" (only `injection-exfil-boundaries` does; the other passes under a real judge).
+**A correction is itself a claim to verify.**
+
+**Five more vacuous guards caught, plus two instruments that were lying.** A mutation harness reported
+a perfect score while measuring nothing until CONTROL mutations that must stay green were added;
+browser window-resize drifted so badly that widths were measured in an exact-width iframe instead; a
+contrast figure was self-corrected from 2.42 to 2.30. **An instrument must be calibrated before its
+readings count.** Three real layout defects were then found in a browser that a green suite could not
+see — sixth session running.
+
+**R4-88: the ledger stays out of the public repo.** It is content-clean (zero emails, zero secrets),
+but it is 6050 lines of candid process notes and the repo is public — a disclosure judgement, made
+deliberately. A same-laptop copy exists; the maintainer was told it does not survive laptop loss and
+accepted local-only.

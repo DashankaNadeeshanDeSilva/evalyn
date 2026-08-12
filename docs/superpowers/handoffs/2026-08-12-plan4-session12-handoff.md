@@ -27,7 +27,11 @@ inflating every mock-judge run's recorded cost.** Discoveries was in flight at s
 > 4. `PRODUCT.md` before any scope question.
 >
 > Your job, in this order:
-> 1. **Finish and merge Discoveries** — see §3 for exactly where it was left.
+> 1. **Finish and merge Discoveries** — see §3 for exactly where it was left. Two decisions are
+>    waiting inside it: (a) the `X-Evalyn-Reveal` reveal token is PROMISED by the wire model and the
+>    plan but was never built, and the MSW mock honours it while the real route does not — build it or
+>    delete the promise; (b) the plan wants `src/evalyn/ui/discoveries.py`, the code went into
+>    `index.py` — rule on whether the plan's module layout binds. **Ask me; don't decide either alone.**
 > 2. **Fix the `mockllm` price fall-through** (§2.1) — MAINTAINER-QUEUED 2026-08-12. Small: give
 >    `mockllm` an explicit $0 entry in `budget.PRICES` so `price_for` stops charging opus-tier rates
 >    for a free local stub. Do it BEFORE the pause/cancel work, because that work runs on the free
@@ -62,12 +66,12 @@ inflating every mock-judge run's recorded cost.** Discoveries was in flight at s
 
 | | |
 |---|---|
-| `feat/plan4-ui` (trunk) | `d3aa15b` at session start; **+ Discoveries backend commits, see §3** |
-| `feat/plan4-ui-frontend` (lane) | `d12d346` at session start; **+ Discoveries page commits, see §3** |
+| `feat/plan4-ui` (trunk) | **`6051153`** — Discoveries BACKEND landed. Handoff commits `1b2e10c`, `42eee75` pushed. |
+| `feat/plan4-ui-frontend` (lane) | **`8b129b4`** — Discoveries PAGE landed. Tree clean. **UNMERGED.** |
 | `feat/plan4-ui-engine` | stale — only usable after merging trunk into it |
-| Python suite | 1583 passed, 0 skipped, both colour modes, cold, ruff clean *(pre-Discoveries)* |
-| UI suite | 510 passed / 25 files, `tsc` exit 0 *(pre-Discoveries)* |
-| Served bundle | proven at `e3dd8d7` — **STALE once Discoveries lands; must be rebuilt** |
+| Python suite | **1602 passed, 0 skipped** (1583 baseline + 19 new), both colour modes, cold, ruff clean |
+| UI suite | **560 passed / 27 files** (510/25 baseline), `tsc` exit 0 — independently re-verified |
+| Served bundle | proven at `e3dd8d7` — **STALE. Discoveries is NOT in it. Rebuild after the merge.** |
 | `runs/` corpus | **105 `.json` files** (`ls runs/*.json \| wc -l`); **3** match `*twincore.json` — 1 pre-existing + **2 from this session**. The *indexable* count is lower and is a DERIVED invariant, never a literal (R4-6): `baseline.json` and anything failing the run-id grammar are excluded — see PRODUCT.md. |
 | Spend | **~$1.72 total. $1.385 REAL this session** (see §2 — the meter lies) |
 
@@ -118,21 +122,137 @@ plus `ReplayView`:658), the TS types, **working MSW handlers** (`handlers.ts:393
 fixtures (`FINDING_ROWS` fixtures.ts:339, `FINDING_DETAIL_REVEALED`:658, `FINDING_DETAIL`:712), and the
 nav entry (`nav.ts:31`, `shipped: false`). **The mock was AHEAD of the server.**
 
-Two implementers were dispatched at session end and their outcomes are NOT yet folded into this
-handoff — **read `git log` on both branches first; it outranks this file.**
+### BACKEND: DONE — `6051153`, wiring-checked against the real route
 
-- **Backend (trunk):** `GET /api/discoveries` + `GET /api/discoveries/{probe_id}`, reusing
-  `load_prior_discoveries` (emit.py:357). Two known gaps it was told to close:
-  - **`parse_provenance` DOES NOT EXIST** — `models.py:708` and `types.ts:476` both document
-    `FindingDetail.provenance` as "the eight keys `parse_provenance` lifts out of the YAML comment
-    header", and it was never written. The eight keys come from `_provenance()`, `discovery/run.py:292-306`.
-  - **`_finding_row()` (index.py:471-485) hardcodes `safety_critical=False` and never sets
-    `category`** — the artifact-side `Finding` dataclass (`discovery/run.py:134-145`) carries neither;
-    both live only in the staged YAML body. One of the two real findings IS `safety_critical: true`,
-    so shipping the hardcode makes the page assert the opposite of the truth on a safety field.
-- **Frontend (lane):** `ui/src/pages/Discoveries.tsx` + `routes.tsx` + the `nav.ts` flag flip.
-  **The flag flip and the route entry MUST land in the same commit** — `AppShell.test.tsx` asserts
-  `shipped` is true iff the router resolves a real page, so splitting them reds in both directions.
+`GET /api/discoveries` (envelope, `?objective=`, opaque cursor) and `GET /api/discoveries/{probe_id}`.
+**Neither is `@no_redact`.** In `index.py` (NOT the plan's `discoveries.py` — see the open question
+below): `PROVENANCE_KEYS` + `parse_provenance()` (reads the *comment* header, since `yaml.safe_load`
+discards comments; the eight keys are an **allowlist** because the `# CAUTION:` block is also
+`# key: value`-shaped; stops at the YAML body; rejoins `#     ` continuation lines, which is exactly
+where a multi-line `confirmation` sits), `StagedProbe` + `load_staged_probes(packs)` (reuses
+`emit.load_prior_discoveries` for the validated parse, globs alongside it for the bytes),
+`_replay_view()`, and `RunIndex(runs_dir, packs=None)` threading the corpus through so
+`/api/runs/{id}` and `/api/discoveries` cannot disagree. **`staged_probes()` is deliberately
+UNCACHED** — adoption is a `git mv` performed while the cockpit is open.
+**Both former gaps are closed:** `parse_provenance` now exists, and `_finding_row()` populates
+`category` and `safety_critical` from the YAML instead of hardcoding `False`.
+
+**⭐ THE REDACTION PROOF, TAKEN FROM LIVE BYTES ON PORT 8766 AGAINST THE REAL CORPUS:**
+`dashankadesilva@gmail.com` → `«redacted:email»` in **all five** places it appears: the
+`# confirmation:` line inside `probe_yaml`, `checks[1].value` inside `probe_yaml`,
+`provenance.confirmation`, the check evidence, and `replay.checks[]`. `grep -c` for the literal
+address returns **0** on `/api/discoveries`, `/api/discoveries/{id}`, `?objective=pii-leak`, and
+`/api/runs/{discover-run}`. Both real findings render; `discovered-pii-leak-0bf80f3b` reports
+`"category":"pii","safety_critical":true`, matching its YAML.
+
+**The implementer caught ITSELF twice** — wrote two guards, mutation-proved them unfailable, removed
+both, and recorded why in the module docstring: (a) "the address is absent from the list body" held
+with redaction OFF, because no `FindingRow` field can carry it and `response_model` blocks widening;
+(b) "a traversing `probe_id` is refused" — `{probe_id}` is `[^/]+` in the router, so a path-joining
+implementation 404s anyway. Replaced (b) with a reachable form that does redden. **Ninth and tenth
+vacuous guards caught in this plan.**
+
+### FRONTEND: DONE — `8b129b4` on the lane, UNMERGED, bundle NOT rebuilt
+
+1,946 insertions: `pages/Discoveries.tsx` (804), `pages/__tests__/Discoveries.test.tsx` (671),
+`discoveries.ts` (154, model split out per the Trust pattern), `__tests__/discoveries.test.ts` (285),
+`__tests__/contrast.test.ts` (+29), plus `nav.ts` and `routes.tsx` **in the same commit** — the
+`AppShell` iff-guard is satisfied. **560 / 27 files, `tsc` exit 0, tree clean — re-verified
+independently by the controller, not taken on report.**
+
+**IT BUILT NO REVEAL CONTROL, AND REACHED THAT INDEPENDENTLY** before the controller's mid-build
+warning arrived — it had already written `never sends the reveal token` and `offers no control that
+would reveal a redacted value`. **It then VERIFIED the controller's claim rather than trusting it:**
+`async def finding_detail(probe_id: str)` at `server.py:1271` takes no `Request` and no `Header`.
+It added the honest statement `finding-no-reveal`: *"Redacted values cannot be revealed from the
+cockpit. The verbatim value is in this file on the machine that ran `discover`."* — shown only when
+`redacted` is true.
+
+**⭐ THREE REAL DEFECTS FOUND IN A BROWSER THAT A GREEN SUITE DID NOT CATCH** (sixth session running,
+same lesson): the FILE path broke mid-hash (2-col span gives ~620px, the path needs ~691px — now
+`col-span-full`); the `git mv` destination sat behind a horizontal scrollbar (759 client / 1380
+scroll) — **the half falling off screen was the destination**; and provenance rendered in 4 columns,
+which would have shredded the >200-char `confirmation` value into a ~180px gutter (now 2 columns with
+`break-words`).
+
+**⭐ IT CAUGHT ITS OWN INSTRUMENT, TWICE.** (a) Its mutation harness first reported "RED, 0 not caught"
+for all 38 mutations — the harness was swallowing the JSON reporter and **measuring nothing**. It
+added two CONTROL mutations that must stay GREEN, proving the harness discriminates before trusting a
+single result. (b) It corrected its own contrast table: `chassis-400` is **2.30**, not the 2.42 it had
+written. **A measurement taken through an uncalibrated instrument is not a measurement.**
+
+**Browser calibration:** window resize was unreliable (requested 1440 → `innerWidth` 1710; requested
+1170 → 2280, dpr drifting 2→1.5), so it measured inside an iframe of exact CSS width, with
+`innerWidth` verified at exactly 820 and 1440.
+
+**HONESTLY REPORTED AS UNVERIFIED — do not record it as passing:** `useRevealOnOpen`'s *smooth* scroll
+was never observed. The automation tab is permanently `visibilityState: "hidden"` and Chrome
+suppresses smooth-scroll animation there. `behavior:'auto'` scrolls to exactly 863 (the correct
+target) and focus lands, so the mechanism and target computation are right — **but the animated path
+is unobserved.**
+
+**Contrast, computed from hex:** 16.37 / 8.70 / 5.98 text on chassis-25 (all AA ✓), 4.03 control
+underline (1.4.11 ✓), 2.30 aria-hidden separator, 1.55 engraved panel rule. **Zero status ink on the
+page** — safety-critical is carried by glyph + word + size step + weight step + heavier rule, so it
+survives greyscale and every colourblind reading.
+
+**FIVE VACUOUS TESTS OF ITS OWN, CAUGHT AND FIXED** — including `states the bench's size…`, which
+passed over a *false emptiness claim* because "nothing is staged" prints no digit. **Eleventh through
+fifteenth vacuous guards caught in this plan.**
+
+**DEVIATION IT FLAGGED:** `ui/src/__tests__/contrast.test.ts` was outside its authorised globs, but
+that test fails for any source file naming a palette token `SURFACES` doesn't declare — mechanically
+forced by adding *any* page. It added the one entry and flagged it rather than silently widening scope.
+
+### ⚠️ THE ONE SUBSTANTIVE GAP — `X-Evalyn-Reveal` DOES NOT EXIST
+
+`models.py:701`, `types.ts:472` and `RedactionMeta.reveal_required` all **promise** a reveal path, and
+the plan's Task 12 Step 4 specifies one. **It was never written, and the real route honours no reveal
+header at all.** Redaction is unconditional.
+**BUT THE MSW MOCK HONOURS IT** — `handlers.ts:422-431` returns `FINDING_DETAIL_REVEALED` when
+`X-Evalyn-Reveal` is present. So a reveal control would pass every test against the mock and **do
+nothing against the real server**. The frontend implementer was warned mid-build and told not to build
+one; **verify from its report and from the page that no reveal affordance ships.** The no-reveal state
+is the safer one. **Task 12 is not complete without the reveal token — decide next session whether to
+build it or to delete the promise from the wire model and the plan.**
+
+### Other backend findings worth carrying
+
+- **The cursor is RUN-granular, not finding-granular.** `(created_at, run_id)` is a total order over
+  *runs*; two findings from one hunt share both halves, so a boundary drawn between them would drop
+  both. It pages at run granularity and **may overshoot `limit` by the last run's size**. Documented
+  in code. *(Session 12's brief wrongly presented the cursor as finding-granular.)*
+- **`packs/*/discoveries/*.yaml` is gitignored** (`.gitignore:38`, `**/discoveries/*.yaml`) — the two
+  real findings do NOT exist in CI or a fresh clone. Every test builds its own pack under `tmp_path`;
+  only the wiring check uses the real files.
+- `load_prior_discoveries` returns `list[Probe]` with **no paths and no raw text**, so it cannot alone
+  supply `probe_yaml` or `provenance`. Stems match `probe.id` because `stage_probe` writes
+  `f"{probe.id}.yaml"`.
+- **`is_no_redact` scanned over `app.routes` finds NOTHING** — this FastAPI version inserts a lazy
+  `_IncludedRouter` rather than copying child routes, so a flat scan silently proves nothing. The test
+  walks `original_router` and asserts it found the discoveries routes first. **A future redaction-exempt
+  test written the obvious way would be vacuous.**
+- **OPEN QUESTION FOR A RULING:** the plan (line 447) says Task 12 creates `src/evalyn/ui/discoveries.py`;
+  the code went into `index.py` beside the existing `_discovery()` consumer instead. Decide whether the
+  plan's module layout binds.
+
+### Wire facts the frontend found by READING THE REAL ROUTE — correct any doc that says otherwise
+
+- **`turns` is the USER SIDE ONLY.** The target's replies are absent. A region labelled "Session" or
+  "Transcript" would read as a *failed* transcript to an operator. Do not present it as a dialogue.
+- **`checks` is flattened off the REPLAY, not off the probe.** An empty list therefore means **the
+  replay never ran** — NOT that the probe declares no checks. The frontend's first wording said the
+  latter and was false about real data; it was fixed and pinned by a test.
+- **The redactor emits SEVEN marker kinds, not five.** `_classify` returns
+  `email | phone | path | token | check_value`, but the walker also emits **`too_deep`** and
+  **`error`**. *(Session 12's brief said five — wrong.)* The page deliberately encodes **none** of
+  them: markers pass through as bytes and affordances run off the boolean `redacted` flag, because
+  modelling kinds client-side is the bug.
+- **`client.ts` also exports `ApiFailure` and `RunsFilter`**, not only the seven previously listed.
+- **The mock's objective is `pii`; the real one is `pii-leak`.** Nothing hardcodes either.
+- **`packs/*/discoveries/` does not exist in the lane worktree** (gitignored), so **the empty bench is
+  the ordinary rendition against a clean checkout** and is built as a first-class state — not an edge
+  case. The two real findings render only where the files exist, i.e. the main worktree.
 
 **⚠️ THE MSW FIXTURE LIES ABOUT REDACTION.** `fixtures.ts:712-736` renders a `«redacted:org»` marker.
 **There is no `org` kind in the real redactor** — `redact.py:_classify` (:315-331) can only return
@@ -268,6 +388,12 @@ scoring draw is ever cached.
   `injection-exfil-boundaries` genuinely converges; `injection-multiturn-trust-pivot` passed cleanly
   under a real judge and its step-1 failure was the documented mock-judge fail-closed artifact.
   **A correction is itself a claim to verify.**
+- **⭐ A MUTATION HARNESS IS AN INSTRUMENT, AND AN INSTRUMENT MUST BE CALIBRATED BEFORE ITS READINGS
+  COUNT.** The frontend implementer's harness first reported "RED, 0 not caught" for all 38 mutations
+  — a perfect score that actually meant it was swallowing the JSON reporter and **measuring nothing**.
+  The fix generalises: **add CONTROL mutations that MUST STAY GREEN.** A harness that cannot show you
+  a green cannot be trusted when it shows you a red. Same shape as the browser-scale calibration and
+  the corrected contrast figure — three instrument failures caught in one task, none by the controller.
 - **RECON BEFORE BRIEFING PAID FOR ITSELF.** The controller was about to commission Discoveries as
   greenfield work. Four wire models, the TS types, working MSW handlers, fixtures and the nav entry
   already existed. The brief would have been wrong in its first sentence.
@@ -280,7 +406,15 @@ scoring draw is ever cached.
 
 **None blocks the demo.**
 
-**New this session:** the `mockllm` price fall-through inflating `judge_usd` and counting against
+**New this session (Discoveries):** the **`X-Evalyn-Reveal` reveal token is promised by `models.py:701`,
+`types.ts:472` and `RedactionMeta.reveal_required` but does not exist** — and the MSW mock honours it
+while the real route does not (§3) · the discoveries cursor is **run-granular and may overshoot
+`limit`** · **`is_no_redact` scanned over `app.routes` silently proves nothing** on this FastAPI
+version (lazy `_IncludedRouter`) — a redaction-exempt test written the obvious way is vacuous ·
+`useRevealOnOpen`'s smooth-scroll path is **unobserved**, not verified (§3) · `contrast.test.ts`
+mechanically forces an edit for any new page, so it cannot be excluded from a page task's globs.
+
+**New this session (metering / artifacts):** the `mockllm` price fall-through inflating `judge_usd` and counting against
 `max_usd_per_run` (§2.1) · the summary artifact records `judge_model` but **drops
 `rubric_judge_model`**, which the events stream's `run.started` DOES carry — so the summary is the
 lossy surface · a check record has **no `id` and no `kind` key at all** (serialized keys are exactly
