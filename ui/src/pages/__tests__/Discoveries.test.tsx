@@ -76,6 +76,56 @@ function rowFor(probeId: string): HTMLElement {
 const HALLUCINATION = FINDING_ROWS[0]!.probe_id;
 const PII_LEAK = FINDING_ROWS[1]!.probe_id;
 
+/**
+ * A bench whose four figures are four different numbers.
+ *
+ * The real corpus is two rows — one confirmed, one safety-critical, one
+ * flagged duplicate — so every figure the readout prints is `1` or `2`, and an
+ * assertion over that corpus cannot tell which reading carried the digit it
+ * found: swapping `safetyCritical` for `confirmed`, or either for `total`,
+ * leaves a string that still contains a `2` and still contains the word
+ * "safety-critical". The sibling model test broke the same tie with a third row
+ * and said so in terms; the readout, which renders the same two counts, was
+ * left on the tied pair.
+ *
+ * So: 4 staged, 1 confirmed, 2 safety-critical, 3 flagged duplicate. Four
+ * distinct numbers means each figure can only be satisfied by its own count.
+ */
+const UNTIED_BENCH: FindingRow[] = [
+  {
+    ...FINDING_ROWS[0]!,
+    probe_id: "discovered-untied-00000001",
+    confirmed: true,
+    safety_critical: false,
+    duplicate_of: null,
+    duplicate_reason: null,
+  },
+  {
+    ...FINDING_ROWS[0]!,
+    probe_id: "discovered-untied-00000002",
+    confirmed: false,
+    safety_critical: true,
+    duplicate_of: "discovered-untied-00000001",
+    duplicate_reason: "same objective and near-identical final turn",
+  },
+  {
+    ...FINDING_ROWS[0]!,
+    probe_id: "discovered-untied-00000003",
+    confirmed: false,
+    safety_critical: true,
+    duplicate_of: "discovered-untied-00000001",
+    duplicate_reason: "same objective and near-identical final turn",
+  },
+  {
+    ...FINDING_ROWS[0]!,
+    probe_id: "discovered-untied-00000004",
+    confirmed: false,
+    safety_critical: false,
+    duplicate_of: "discovered-untied-00000001",
+    duplicate_reason: null,
+  },
+];
+
 describe("the bench lists what discover staged", () => {
   it("renders a row per staged finding, identified by its probe id", async () => {
     renderDiscoveries();
@@ -89,6 +139,7 @@ describe("the bench lists what discover staged", () => {
   });
 
   it("states the bench's size, and claims nothing while still reading", async () => {
+    withFindings(UNTIED_BENCH);
     renderDiscoveries();
 
     /*
@@ -110,8 +161,26 @@ describe("the bench lists what discover staged", () => {
 
     await settled();
     const readout = screen.getByTestId("discoveries-readout").textContent ?? "";
-    expect(readout).toContain("2");
-    expect(readout.toLowerCase()).toContain("safety-critical");
+    /*
+     * Each digit is asserted beside its own label, over a bench where no two
+     * figures share a value. "Contains a 2 somewhere" was satisfied by the
+     * total alone and left the other three readings pinned by nothing.
+     */
+    expect(readout, "the staged count is not the number of rows").toMatch(
+      /4\s*staged/,
+    );
+    expect(
+      readout,
+      "the confirmed count was taken from another reading",
+    ).toMatch(/1\s*confirmed/);
+    expect(
+      readout,
+      "the safety-critical count was taken from another reading",
+    ).toMatch(/2\s*safety-critical/);
+    expect(
+      readout,
+      "the duplicate count was taken from another reading",
+    ).toMatch(/3\s*flagged duplicate/);
   });
 });
 
@@ -413,6 +482,24 @@ describe("opening a finding brings the answer to the operator", () => {
       said,
       "a column of prompts with no replies was presented as the session",
     ).toContain("not the target");
+
+    /*
+     * Scoped to the headings, because the whole panel's text is satisfied by
+     * the explanatory paragraph alone — which leaves the region *label*, the
+     * largest type in the region and the only part read from the back of a
+     * room, free to become the exact word the wire fact forbids.
+     */
+    const headings = within(panel)
+      .getAllByRole("heading")
+      .map((h) => h.textContent?.toLowerCase() ?? "");
+    expect(
+      headings.some((h) => h.includes("prompt")),
+      "no heading says these are prompts",
+    ).toBe(true);
+    expect(
+      headings.filter((h) => /\bsessions?\b|\btranscripts?\b/.test(h)),
+      "a prompts-only column was headed as a session or a transcript",
+    ).toEqual([]);
   });
 
   /**
