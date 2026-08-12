@@ -1,4 +1,4 @@
-import { useMemo } from "react";
+import { useMemo, type ReactNode } from "react";
 import {
   CartesianGrid,
   Line,
@@ -106,7 +106,7 @@ function KeyMark() {
   );
 }
 
-function Note({ children }: { children: React.ReactNode }) {
+function Note({ children }: { children: ReactNode }) {
   return (
     <p className="px-4 py-10 text-readout text-chassis-600 sm:px-6">{children}</p>
   );
