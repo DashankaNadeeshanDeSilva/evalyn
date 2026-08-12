@@ -28,12 +28,13 @@ const RUNS = [
   "2026-08-03T09:00:00+00:00",
 ];
 
+const point = (i: number, value: number) => ({
+  run_id: `2026080${i + 1}T090000-0000000${i + 1}-twincore-injection`,
+  created_at: RUNS[i]!,
+  value,
+});
+
 function corpus(): TrendSeries[] {
-  const point = (i: number, value: number) => ({
-    run_id: `2026080${i + 1}T090000-0000000${i + 1}-twincore-injection`,
-    created_at: RUNS[i]!,
-    value,
-  });
   return [
     {
       pack_name: "example",
@@ -58,15 +59,43 @@ function corpus(): TrendSeries[] {
   ];
 }
 
+/**
+ * The corpus, plus the shape the route answers for `judge_usd`: **one**
+ * run-level series, never one per probe. Spend is metered once per run and no
+ * per-probe figure exists in the artifact, so the route emits a single series
+ * whose `probe_id` says what it is. Served off the metric the page actually
+ * asked for, because that is the branch the server takes.
+ */
 function serveCorpus(series: TrendSeries[] = corpus()) {
   const asked: string[] = [];
   server.use(
     http.get("/api/trends", ({ request }) => {
-      asked.push(new URL(request.url).search);
+      const url = new URL(request.url);
+      asked.push(url.search);
+      if (url.searchParams.get("metric") === "judge_usd") {
+        return HttpResponse.json([
+          {
+            pack_name: "example",
+            probe_id: "(whole run)",
+            metric: "judge_usd",
+            points: [point(0, 0.0041), point(1, 0.0052), point(2, 0.0048)],
+          },
+        ] satisfies TrendSeries[]);
+      }
       return HttpResponse.json(series);
     }),
   );
   return asked;
+}
+
+/** Moves the metric detent to spend and waits for the answer to land. */
+async function selectSpend(user: ReturnType<typeof userEvent.setup>) {
+  await user.click(await screen.findByRole("button", { name: /judge spend/i }));
+  await waitFor(() =>
+    expect(screen.getByTestId("trends-readout").textContent).toMatch(
+      /judge spend/,
+    ),
+  );
 }
 
 function renderPage() {
@@ -181,6 +210,64 @@ describe("Trends", () => {
     await waitFor(() =>
       expect(asked[asked.length - 1]).toContain("metric=pass_at_k"),
     );
+  });
+
+  /**
+   * The projector case. `judge_usd` is metered once per **run**, so the route
+   * answers with exactly one run-level series however many probes the pack
+   * holds — 31 of them on the demo pack. The readout counted that as
+   * "1 probes", which is the one finding in this wave an audience can read off
+   * a screen. `readings` and `runs` are the same number here for the same
+   * reason, so they need the same treatment.
+   */
+  it("counts the one run-level spend channel in the singular", async () => {
+    const user = userEvent.setup();
+    serveCorpus();
+    renderPage();
+    await selectSpend(user);
+
+    const readout = screen.getByTestId("trends-readout").textContent ?? "";
+    expect(readout).toMatch(/1 probe/);
+    expect(readout).not.toMatch(/1 probes/);
+    expect(readout).toMatch(/3 readings/);
+    expect(readout).toMatch(/3 runs/);
+
+    // And the chart's own description, which is the only rendition of those
+    // counts a screen reader reaches.
+    await waitFor(() =>
+      expect(document.querySelector("svg desc")?.textContent).toMatch(
+        /^1 probe, 3 readings\./,
+      ),
+    );
+  });
+
+  /**
+   * Against the **shipped** MSW handler rather than an override, because the
+   * defect was in the handler: it returned the same per-probe series for every
+   * metric, so no spend test the page ever ran had met the body the server
+   * actually sends. The real route emits one series for `judge_usd`, with a
+   * `probe_id` of `(whole run)` — parenthesised so it cannot collide with a
+   * probe id, whose grammar is a slug.
+   */
+  it("renders the shipped mock's spend response as one run-level channel", async () => {
+    const user = userEvent.setup();
+    renderPage();
+    await selectSpend(user);
+
+    const readout = screen.getByTestId("trends-readout").textContent ?? "";
+    expect(readout).toMatch(/1 probe/);
+    expect(readout).not.toMatch(/1 probes/);
+
+    // The channel bank names the series for what it is, and names no probe:
+    // there is no per-probe spend anywhere in the artifact to name.
+    const bank = screen.getByRole("table");
+    expect(
+      within(bank).getByRole("button", { name: /\(whole run\)/ }),
+    ).toBeInTheDocument();
+    expect(
+      within(bank).queryByRole("button", { name: /grounding-work-history/ }),
+      "the spend response still carries per-probe series",
+    ).toBeNull();
   });
 
   it("says the history could not be read, with a glyph rather than colour alone", async () => {
