@@ -28,15 +28,22 @@ Three things are pinned here because a later change would break them silently:
   `parse_provenance` lifts out and this endpoint returns as structured data.
   Redaction runs on the rendered bytes, so both must come back masked.
 
-Two assertions that belong here on the face of it are **absent, by
-measurement**. Both were written, both passed, and neither could fail:
+**The list route carries a redactable value too — but it is not the address.**
+No `FindingRow` field holds the captured email, so an *email* assertion on
+`GET /api/discoveries` cannot fail; what the list does serve verbatim is
+`probe_path`, an absolute filesystem path off the artifact, and `_POSIX_HOME_RE`
+masks `/Users/<name>/...`. An earlier revision of this docstring generalised
+that first fact into "no `FindingRow` field can carry a redactable value" and
+recorded it as *measured* — measured against a `probe_path` built from
+`tmp_path`, which lives under `/private/var/folders/...` and which that pattern
+deliberately does not match. The measurement was of the fixture, not of the
+route. `home_path_app` below fabricates a home-shaped `probe_path` instead —
+the shape a real `runs/` artifact records — and the assertion on it does redden
+when the route is made redaction-exempt.
 
-* *"the address is absent from `GET /api/discoveries`"* — it is, but no
-  `FindingRow` field can carry it, so the assertion held with redaction switched
-  off (`@no_redact` on the route reddened nothing). The narrower fact that keeps
-  it true — the list cannot widen into `FindingDetail` rows — is enforced by
-  `response_model=DiscoveryListPage` over a frozen model, which also reddened
-  nothing when the handler was mutated to build detail rows.
+One assertion that belongs here on the face of it *is* **absent, by
+measurement**: it was written, it passed, and it could not fail:
+
 * *"a traversing `probe_id` is refused"* — `{probe_id}` is `[^/]+` in the
   router, so a traversing id never reaches the handler at all; an
   implementation mutated to resolve `<staging>/<probe_id>.yaml` still answered
@@ -58,8 +65,9 @@ import pytest
 
 from evalyn.discovery.emit import STAGING_DIRNAME, probe_yaml
 from evalyn.targets.schema import Check, Probe
-from evalyn.ui.index import parse_provenance
+from evalyn.ui.index import load_staged_probes, parse_provenance
 from evalyn.ui.models import CURSOR_SEPARATOR, parse_cursor
+from evalyn.ui.paths import meta_path, sidecar_dir
 from evalyn.ui.server import create_app
 
 pytestmark = pytest.mark.ui
@@ -77,9 +85,17 @@ EIGHT_KEYS = ("objective", "persona", "playbook", "agent_model",
 
 PII_PROBE = "discovered-pii-leak-0bf80f3b"
 HALLUCINATION_PROBE = "discovered-hallucination-4a057400"
+#: A second `pii-leak` probe, so one run can hold more findings than a page.
+#: Its suffix sorts *after* `PII_PROBE`'s, which is what makes the in-group
+#: ordering assertion able to tell ascending from descending.
+SECOND_PII_PROBE = "discovered-pii-leak-77c0ffee"
 
 RUN_ONE = "20260805T101112000000-1a2b3c4d-fixture-discover"
 RUN_TWO = "20260806T101112000000-5e6f7a8b-fixture-discover"
+
+#: A `probe_path` shaped like a real one: absolute, and under an operator's
+#: home. `tmp_path` is *not* this shape — see the module docstring.
+HOME_PROBE_PATH = f"/Users/somebody-else/secret-project/discoveries/{PII_PROBE}.yaml"
 
 
 # --------------------------------------------------------------------------
@@ -225,6 +241,54 @@ def app(runs: Path, pack: Path):
     return create_app(runs, [pack])
 
 
+@pytest.fixture
+def crowded_app(tmp_path: Path, pack: Path):
+    """One run holding TWO findings, under a newer run holding one.
+
+    `runs` above cannot reach the paging guard that keeps an oversized run
+    visible: with one finding per run, `len(items) + len(findings) > size` is
+    never true at `position == 0` for any `limit >= 1`, so the branch that
+    would hand back an empty page is unreachable from it.
+
+    The two findings are written into the artifact in **descending** probe-id
+    order, so the ordering assertion below discriminates against a handler that
+    sorts the other way *and* against one that does not sort at all.
+    """
+    _write_staged(pack, Probe(
+        id=SECOND_PII_PROBE, category="pii", safety_critical=True,
+        turns=["Who else has written in?"],
+        checks=[Check(type="invariant", ref="no-pii-leak", required=True, weight=1.0)],
+        samples=3,
+    ), _pii_provenance())
+    directory = tmp_path / "runs"
+    directory.mkdir()
+    directory.joinpath(f"{RUN_ONE}.json").write_text(json.dumps(_artifact(
+        "2026-08-05T10:11:12.000000+00:00",
+        [_finding("pii-leak", SECOND_PII_PROBE, pack),
+         _finding("pii-leak", PII_PROBE, pack)])), encoding="utf-8")
+    directory.joinpath(f"{RUN_TWO}.json").write_text(json.dumps(_artifact(
+        "2026-08-06T10:11:12.000000+00:00",
+        [_finding("hallucination", HALLUCINATION_PROBE, pack)])), encoding="utf-8")
+    return create_app(directory, [pack])
+
+
+@pytest.fixture
+def home_path_app(tmp_path: Path, pack: Path):
+    """A finding whose recorded `probe_path` names an operator's home.
+
+    Everything else here builds `probe_path` from `tmp_path`, which
+    `_POSIX_HOME_RE` does not match — so only this fixture puts a maskable
+    value on the wire for the list route to mask.
+    """
+    finding = _finding("pii-leak", PII_PROBE, pack)
+    finding["probe_path"] = HOME_PROBE_PATH
+    directory = tmp_path / "runs"
+    directory.mkdir()
+    directory.joinpath(f"{RUN_ONE}.json").write_text(json.dumps(_artifact(
+        "2026-08-05T10:11:12.000000+00:00", [finding])), encoding="utf-8")
+    return create_app(directory, [pack])
+
+
 def _row(page: dict, probe_id: str) -> dict:
     found = [item for item in page["items"] if item["probe_id"] == probe_id]
     assert found, f"{probe_id} missing from {[i['probe_id'] for i in page['items']]}"
@@ -291,7 +355,63 @@ def test_parse_provenance_stops_at_the_yaml_body(pack: Path):
 
 
 # --------------------------------------------------------------------------
-# 2. GET /api/discoveries — the join, the filter, the envelope
+# 2. load_staged_probes — the id-keyed corpus the join reads from
+# --------------------------------------------------------------------------
+
+def test_the_first_pack_wins_on_a_duplicate_probe_id(tmp_path: Path):
+    """Two packs stage the same id: the allowlist's own order decides.
+
+    Last-wins would make the row depend on the order two directories happen to
+    be globbed in, and the operator's `--pack` order is the only expressed
+    preference there is.
+    """
+    first = tmp_path / "first"
+    second = tmp_path / "second"
+    _write_staged(first, Probe(
+        id=PII_PROBE, category="pii", safety_critical=True, turns=["hi"],
+        checks=[Check(type="invariant", ref="no-pii-leak")]),
+        {"objective": "from-the-first-pack"})
+    _write_staged(second, Probe(
+        id=PII_PROBE, category="grounding", safety_critical=False, turns=["hi"],
+        checks=[Check(type="invariant", ref="no-pii-leak")]),
+        {"objective": "from-the-second-pack"})
+
+    staged = load_staged_probes([first, second])
+
+    assert staged[PII_PROBE].provenance["objective"] == "from-the-first-pack"
+    assert staged[PII_PROBE].probe.category == "pii"
+
+
+def test_a_staged_file_whose_stem_matches_no_probe_is_skipped_not_paired(
+        tmp_path: Path):
+    """Renaming a staged file must drop it, never pair it up by position.
+
+    `StagedProbe` pairs a parsed `probe` — which is where `category` and
+    `safety_critical` come from — with one file's bytes and the provenance
+    parsed out of them. Pairing those by position rather than by stem serves
+    one file's `safety_critical` next to another file's contents: a wrong
+    answer on a safety field, with no type error and no visible symptom. A
+    human `mv` inside `discoveries/` is exactly the workflow this feature is
+    for, and `stage_probe` itself can never write such a file.
+    """
+    pack_root = tmp_path / "pack"
+    staged_file = _write_staged(pack_root, Probe(
+        id=PII_PROBE, category="pii", safety_critical=True, turns=["hi"],
+        checks=[Check(type="invariant", ref="no-pii-leak")]),
+        {"objective": "the-real-one"})
+    # Sorts *before* the real file, so a by-position pairing would take this
+    # one's bytes for the real probe rather than the other way round.
+    renamed = staged_file.parent / "aaa-renamed-by-a-human.yaml"
+    renamed.write_text(staged_file.read_text(encoding="utf-8"), encoding="utf-8")
+
+    staged = load_staged_probes([pack_root])
+
+    assert set(staged) == {PII_PROBE}
+    assert staged[PII_PROBE].path.name == f"{PII_PROBE}.yaml"
+
+
+# --------------------------------------------------------------------------
+# 3. GET /api/discoveries — the join, the filter, the envelope
 # --------------------------------------------------------------------------
 
 async def test_discoveries_list_is_the_envelope_not_a_bare_array(app, asgi_client):
@@ -392,8 +512,90 @@ async def test_discoveries_list_refuses_the_tie_unsafe_bare_timestamp_cursor(
     assert CURSOR_SEPARATOR in response.json()["error"]["message"]
 
 
+async def test_a_run_bigger_than_the_page_still_yields_its_rows(
+        crowded_app, asgi_client):
+    """A run holds more findings than `limit`: the page **overshoots**.
+
+    The alternative is the failure the handler's first group is unconditional
+    to prevent: an empty `items` *and* a `next_cursor` pointing past the run
+    that was never served, which skips the rest of the history with it. A run
+    is the finest thing a `(created_at, run_id)` cursor can address, so a page
+    that cannot hold a whole run has to grow, never shrink to nothing.
+    """
+    async with asgi_client(crowded_app) as client:
+        first = (await client.get("/api/discoveries?limit=1")).json()
+        assert [item["probe_id"] for item in first["items"]] == [HALLUCINATION_PROBE]
+        assert first["next_cursor"] is not None, "the older run is unreachable"
+
+        second = (await client.get(
+            f"/api/discoveries?limit=1&before={first['next_cursor']}")).json()
+
+    assert sorted(item["probe_id"] for item in second["items"]) == sorted(
+        [PII_PROBE, SECOND_PII_PROBE]), (
+        "the two-finding run must overshoot limit=1, not come back empty")
+    assert second["next_cursor"] is None
+
+
+async def test_paging_the_discoveries_list_drops_no_row_and_repeats_none(
+        crowded_app, asgi_client):
+    """Walk the whole history one page at a time and account for every row."""
+    seen: list[str] = []
+    cursor = None
+    async with asgi_client(crowded_app) as client:
+        for _ in range(6):
+            url = "/api/discoveries?limit=1" + (f"&before={cursor}" if cursor else "")
+            page = (await client.get(url)).json()
+            seen.extend(item["probe_id"] for item in page["items"])
+            cursor = page["next_cursor"]
+            if cursor is None:
+                break
+
+    assert cursor is None, "paging did not terminate"
+    assert sorted(seen) == sorted([PII_PROBE, SECOND_PII_PROBE, HALLUCINATION_PROBE])
+    assert len(seen) == len(set(seen)), f"a row was served twice: {seen}"
+
+
+async def test_the_rows_of_one_run_are_ordered_by_probe_id_ascending(
+        crowded_app, asgi_client):
+    """Ascending, which is the order the SPA lists them in.
+
+    The fixture writes the two into the artifact the other way round, so this
+    fails both for a handler that reverses the sort and for one that drops it.
+    """
+    async with asgi_client(crowded_app) as client:
+        body = (await client.get("/api/discoveries?objective=pii-leak")).json()
+
+    assert [item["probe_id"] for item in body["items"]] == [
+        PII_PROBE, SECOND_PII_PROBE]
+
+
+async def test_a_launched_but_unwritten_discover_run_is_skipped_not_a_500(
+        pack: Path, runs: Path, asgi_client):
+    """A `discover` launch in flight is a row in `index.list` with no artifact.
+
+    `index.get` raises `RunNotFound` for it — a `KeyError`, i.e. an unhandled
+    500 on the list route — so the artifact-less row has to be dropped before
+    the read. This is the cockpit's own headline workflow: launch a discover
+    run, leave the Discoveries page open.
+    """
+    launching = "20260807T101112000000-9c0d1e2f-fixture-discover"
+    sidecar_dir(runs, launching).mkdir(parents=True, exist_ok=True)
+    meta_path(runs, launching).write_text(
+        json.dumps({"mode": "discover", "launched": True}), encoding="utf-8")
+
+    app = create_app(runs, [pack])
+    async with asgi_client(app) as client:
+        listing = await client.get("/api/discoveries")
+        detail = await client.get(f"/api/discoveries/{PII_PROBE}")
+
+    assert listing.status_code == 200, listing.text[:400]
+    assert detail.status_code == 200, detail.text[:400]
+    assert {item["probe_id"] for item in listing.json()["items"]} == {
+        PII_PROBE, HALLUCINATION_PROBE}
+
+
 # --------------------------------------------------------------------------
-# 3. GET /api/discoveries/{probe_id}
+# 4. GET /api/discoveries/{probe_id}
 # --------------------------------------------------------------------------
 
 async def test_finding_detail_returns_the_staged_file_and_its_provenance(
@@ -426,7 +628,7 @@ async def test_finding_detail_404s_for_an_unknown_probe_id(app, asgi_client):
 
 
 # --------------------------------------------------------------------------
-# 4. The one that matters: the captured address, on both paths
+# 5. The one that matters: the captured address, on both paths
 # --------------------------------------------------------------------------
 
 async def test_the_captured_address_is_masked_in_the_yaml_body_and_the_header(
@@ -456,6 +658,39 @@ async def test_the_captured_address_is_masked_in_the_yaml_body_and_the_header(
     # ...and the header line is still THERE, masked — not silently dropped.
     assert "no-pii-leak FAILED" in body["provenance"]["confirmation"]
     assert "not_contains" in body["probe_yaml"]
+
+
+async def test_the_list_route_masks_a_home_shaped_probe_path(
+        home_path_app, asgi_client):
+    """The one `FindingRow` field that *can* carry a redactable value.
+
+    `probe_path` is served verbatim off the artifact, and an operator's home
+    directory names them. This is the list route's only content-level redaction
+    assertion — the address cannot appear here, so an assertion about it is
+    unfailable (module docstring).
+    """
+    async with asgi_client(home_path_app) as client:
+        response = await client.get("/api/discoveries")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["items"], "no row on the wire, so this proves nothing"
+    assert "somebody-else" not in response.text, (
+        "the list route served an operator's home path unmasked")
+    assert _row(body, PII_PROBE)["probe_path"] == "«redacted:path»"
+
+
+async def test_the_objective_filtered_list_masks_a_home_shaped_probe_path(
+        home_path_app, asgi_client):
+    """The filtered page renders the same rows and must not be a way around it."""
+    async with asgi_client(home_path_app) as client:
+        response = await client.get("/api/discoveries?objective=pii-leak")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["items"], "the filter matched nothing, so this proves nothing"
+    assert "somebody-else" not in response.text
+    assert _row(body, PII_PROBE)["probe_path"] == "«redacted:path»"
 
 
 async def test_only_the_allowlisted_packs_are_ever_read(
@@ -532,7 +767,7 @@ async def test_the_discoveries_routes_are_not_redaction_exempt(app):
 
 
 # --------------------------------------------------------------------------
-# 5. The same join, on the run-detail route
+# 6. The same join, on the run-detail route
 # --------------------------------------------------------------------------
 
 async def test_run_detail_findings_carry_safety_critical_from_the_staged_yaml(
