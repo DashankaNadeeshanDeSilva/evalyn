@@ -189,7 +189,7 @@ export function TrendChannels({
                       reason={
                         channel.readings === 1
                           ? "one reading: a change needs two, so none was measured"
-                          : "no readable run for this probe"
+                          : "no readable run for this channel"
                       }
                     />
                   ) : (

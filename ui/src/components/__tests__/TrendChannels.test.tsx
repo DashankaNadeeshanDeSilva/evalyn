@@ -154,12 +154,15 @@ describe("TrendChannels", () => {
     // The full reason travels as `title` and as screen-reader text — it is the
     // only place an empty cell names its own subject, and the noun is
     // `channel`, for the same reason the column head is. Asserted as whole
-    // strings because un-renaming either one must redden this.
+    // strings because un-renaming any one of them must redden this — and all
+    // three are in this one row, which is what makes a half-applied rename
+    // read as a contradiction rather than as an oversight.
     const reasons = [...row.querySelectorAll("[data-flatlined]")].map((cell) =>
       cell.getAttribute("title"),
     );
     expect(reasons).toContain("no readable first for this channel");
     expect(reasons).toContain("no readable latest for this channel");
+    expect(reasons).toContain("no readable run for this channel");
   });
 
   it("says the pack has no channels at all rather than rendering an empty table", () => {
