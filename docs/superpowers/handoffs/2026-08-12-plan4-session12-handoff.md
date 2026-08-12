@@ -358,11 +358,30 @@ commit …`, **no Claude trailer**, staged explicitly by path.
 **Snapshot every worktree before dispatching a reviewer and diff it after** — HEAD, tree, stash count
 and porcelain.
 
-**⚠️ THE LEDGER IS NOT IN VERSION CONTROL.** `.gitignore:19` ignores `.superpowers/` wholesale and
+**⚠️ THE LEDGER IS NOT IN VERSION CONTROL, AND THAT IS NOW A RULING — NOT AN OVERSIGHT.**
+`.gitignore:19` ignores `.superpowers/` wholesale and
 `.superpowers/sdd/2026-08-07-evalyn-plan4-ui/progress.md` is untracked — R4-0 through R4-87 have never
-been committed and exist only on this laptop. Raised with the maintainer 2026-08-12; **decision
-pending.** Do not `git add -f` it without an explicit ruling: force-adding an ignored path is a
-project-policy change, not a commit.
+been committed.
+
+**R4-88 — MAINTAINER DECISION 2026-08-12: THE LEDGER STAYS OUT OF THE REPO.** Rationale: the repo is
+**public** (`github.com/DashankaNadeeshanDeSilva/evalyn`) and the ledger is 6050 lines of candid
+internal process notes — six controller falsehoods, defect post-mortems, cost figures, blunt
+assessments. It is content-**safe** (verified: **0** occurrences of the maintainer's email; the 6
+secret-shaped grep hits are prose mentions of the variable NAME `ANTHROPIC_API_KEY`, no key values) —
+so this is a disclosure judgement, not a security one, and it was made deliberately.
+**DO NOT `git add -f` IT. DO NOT "helpfully" un-ignore `.superpowers/`.** Reversing this needs an
+explicit new ruling from the maintainer.
+
+**Backup status — READ THIS, IT IS WEAKER THAN IT SOUNDS.** A copy was taken to
+`~/Desktop/evalyn-ledger-backup-2026-08-12.md` (6050 lines, `cmp`-verified identical). **That is on
+the SAME LAPTOP.** It protects against accidental deletion or corruption of the working file; it does
+**NOT** protect against laptop loss, theft, or disk failure. `~/Drive` was checked and is a plain
+local directory, **not** a synced cloud folder — there is no automatic off-machine copy of this file
+anywhere.
+
+**THE MAINTAINER WAS TOLD THE COPY IS SAME-LAPTOP AND EXPLICITLY ACCEPTED LOCAL-ONLY (2026-08-12).**
+This is a settled, informed risk acceptance. **Do not re-raise it, and do not propose backup schemes
+unprompted.**
 
 ---
 
