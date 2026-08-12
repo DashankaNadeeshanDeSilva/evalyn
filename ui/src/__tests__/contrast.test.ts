@@ -459,6 +459,45 @@ const SURFACES: Record<string, Surface> = {
       },
     ],
   },
+  /**
+   * The chart's HTML furniture only. **The chart's own marks are invisible to
+   * this guard**: an SVG paints with `stroke`/`fill` attributes and this file
+   * reads `text-*` and `bg-*` out of the source text, so not one line, dot,
+   * gridline or axis rule below is measured here. Those are derived from the
+   * palette in `chartInk.ts` and measured by hand in that file's docstring —
+   * the same arrangement, and the same obligation, as the `inset` window.
+   *
+   * `chassis-25` appears as a ground because the tooltip paints the face's own
+   * colour beneath itself rather than floating the user agent's white over the
+   * plot area.
+   */
+  "components/TrendChart.tsx": {
+    inherits: "chassis-25",
+    sets: ["chassis-25"],
+    inks: [
+      { ink: "chassis-900", role: "text" },
+      { ink: "chassis-600", role: "text" },
+    ],
+  },
+  /**
+   * The chart's record in text. No tinted grounds, for the same reason
+   * `RunsTable` has none — one ground means every ink here is measured against
+   * the one surface it can sit on.
+   *
+   * **No status ink enters this file, deliberately.** The change column reports
+   * a direction, and a direction is not a verdict: a rise is good on `pass^k`
+   * and bad on `judge_usd`, so hueing it would state a judgement the data does
+   * not carry. The sign does the work, and the sign is text.
+   */
+  "components/TrendChannels.tsx": {
+    inherits: "chassis-25",
+    sets: [],
+    inks: [
+      { ink: "chassis-900", role: "text" },
+      { ink: "chassis-700", role: "text" },
+      { ink: "chassis-600", role: "text" },
+    ],
+  },
   "pages/Launch.tsx": {
     inherits: "chassis-25",
     // The two form fields, which carry the face's own colour rather than the
@@ -468,10 +507,29 @@ const SURFACES: Record<string, Surface> = {
       { ink: "chassis-900", role: "text" },
       { ink: "chassis-700", role: "text" },
       { ink: "chassis-600", role: "text" },
+    ],
+  },
+  /**
+   * The surface's signature control, extracted from the launch console so the
+   * trends page's metric and pack selectors are the same key rather than a
+   * second one that looks like it.
+   *
+   * `chassis-500` is the resting label of a position this server cannot select
+   * — the launch console's `compare` and `discover` modes. WCAG 1.4.3 exempts
+   * an inactive control by name and the whole point of the treatment is to read
+   * as unavailable, but the reason travels as `sr-only` text beside it so the
+   * refusal is never carried by the greying alone.
+   */
+  "components/Detent.tsx": {
+    inherits: "chassis-25",
+    sets: [],
+    inks: [
+      { ink: "chassis-900", role: "text" },
+      { ink: "chassis-700", role: "text" },
       {
         ink: "chassis-500",
         role: "disabled",
-        note: "a mode this console cannot launch, with its reason stated beside it",
+        note: "a position this console cannot select, with its reason stated beside it",
       },
     ],
   },
@@ -503,6 +561,29 @@ const SURFACES: Record<string, Surface> = {
         ink: "chassis-400",
         role: "redundant",
         note: "aria-hidden '·' separator",
+      },
+    ],
+  },
+  /**
+   * `chassis-50/60` is the loading skeleton's slab, standing in for the chart
+   * while the two reads land; it carries no text, exactly as the runs list's
+   * skeleton bars do not.
+   *
+   * **No status ink enters this page either.** A history that cannot be read is
+   * not a `RunStatus`, so the failed-read branch is `chassis-900` beside the
+   * alert glyph — the same correction `AppShell` already carries, applied
+   * before it could be made a second time.
+   */
+  "pages/Trends.tsx": {
+    inherits: "chassis-25",
+    sets: ["chassis-50/0.6"],
+    inks: [
+      { ink: "chassis-900", role: "text" },
+      { ink: "chassis-600", role: "text" },
+      {
+        ink: "chassis-400",
+        role: "redundant",
+        note: "aria-hidden '·' separators in the readout",
       },
     ],
   },
@@ -581,7 +662,10 @@ function code(file: string): string {
     .replace(/(^|[^:])\/\/[^\n]*/g, "$1 ");
 }
 
-function tokensAfter(file: string, prefix: "text" | "bg"): Set<string> {
+function tokensAfter(
+  file: string,
+  prefix: "text" | "bg" | "decoration",
+): Set<string> {
   const found = new Set<string>();
   // A background may carry an opacity modifier — `bg-degraded/[0.08]` or
   // `bg-chassis-50/60` — and the modifier changes the ground materially, so it
@@ -686,7 +770,9 @@ describe("every ink on the surface is declared and compliant", () => {
   it("has an inventory entry for every source file that names a palette token", () => {
     const undeclared = sourceFiles().filter(
       (file) =>
-        (tokensAfter(file, "text").size > 0 || tokensAfter(file, "bg").size > 0) &&
+        (tokensAfter(file, "text").size > 0 ||
+          tokensAfter(file, "bg").size > 0 ||
+          tokensAfter(file, "decoration").size > 0) &&
         SURFACES[file] === undefined,
     );
     expect(
@@ -723,6 +809,34 @@ describe("every ink on the surface is declared and compliant", () => {
         arbitraryColours(file),
         `${file} sets a colour the palette does not define, so nothing can measure it`,
       ).toEqual([]);
+    }
+  });
+
+  /**
+   * The underline, which this guard could not see at all.
+   *
+   * Ink and ground were the whole of its vocabulary, so an underline could be
+   * any weight of nothing and the suite stayed green — proven: dropping the
+   * channel bank's underline from `chassis-300` (1.55:1) to `chassis-100`
+   * (1.15:1) reddened nothing. That underline is the only mark saying a probe id
+   * is a button, which is precisely WCAG 1.4.11's "graphical object needed to
+   * identify a control", and on a projector it is the difference between a table
+   * and a table you can click.
+   *
+   * There is no role vocabulary here on purpose: an underline is never
+   * decoration in this codebase — every one of them marks a control — so there
+   * is nothing to exempt and no note to write.
+   */
+  it("keeps every underline that identifies a control at the graphical threshold", () => {
+    for (const [file, surface] of Object.entries(SURFACES)) {
+      for (const ink of tokensAfter(file, "decoration")) {
+        for (const ground of [surface.inherits, ...surface.sets]) {
+          expect(
+            contrast(hexFor(ink), groundHex(ground, surface.inherits)),
+            `${file}: decoration-${ink} on ${ground} cannot be seen as an affordance`,
+          ).toBeGreaterThanOrEqual(AA_NON_TEXT);
+        }
+      }
     }
   });
 

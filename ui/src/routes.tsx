@@ -4,6 +4,7 @@ import { AppShell } from "./components/AppShell";
 import { Launch } from "./pages/Launch";
 import { RunDetailPage } from "./pages/RunDetailPage";
 import { RunsPage } from "./pages/RunsPage";
+import { Trends } from "./pages/Trends";
 
 /**
  * The router's table — and the other half of the legend strip's gate.
@@ -25,7 +26,7 @@ function NoSuchPage() {
         The cockpit has no view at this address.{" "}
         <Link
           to="/runs"
-          className="text-chassis-900 underline decoration-chassis-400 underline-offset-4"
+          className="text-chassis-900 underline decoration-chassis-500 underline-offset-4"
         >
           Back to runs
         </Link>
@@ -44,6 +45,7 @@ export const appRoutes: RouteObject[] = [
       { path: "/runs", element: <RunsPage /> },
       { path: "/runs/:runId", element: <RunDetailPage /> },
       { path: "/launch", element: <Launch /> },
+      { path: "/trends", element: <Trends /> },
       { path: "*", element: <NoSuchPage /> },
     ],
   },
