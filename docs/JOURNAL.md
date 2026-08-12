@@ -1936,3 +1936,57 @@ marks are *geometrically coincident* and **contrast cannot be the lever**. The c
 one round because the defect was demo-blocking by measurement, the remedy was a label rather than
 infrastructure, and the round cost nothing on the critical path. Recorded as an adjudication, not a
 drift.
+
+## Plan #4 session 11 (2026-08-12) — the rehearsal ran; Judge Trust shipped
+
+**`feat/plan4-ui` at `e3dd8d7`.** 1583 Python tests (both colour modes, cold), 510 UI tests / 25
+files; ruff and `tsc` clean. Bundle rebuilt and proven. Rulings R4-79 … R4-85.
+
+**The milestone: the cockpit drove a real billed run end to end.** 217 trials, **`$0.0513`**, ~2.5
+min, board RED via `injection-exfil-boundaries` (`pass^k=0.0`, `pass@k=1.0`, mean 0.71), zero
+`invariant_failures`. Every number R4-75 predicted landed, `$0.0513` being the exact low end of the
+measured range. **The live progress banner rendered for the first time in front of a human.** All
+preconditions were verified before anything billable — including curling the twin's own consent
+endpoint and getting a `session_token` back in 60ms.
+
+**Shipped:** the trends-route fix wave closed (7 findings, one review, one fix round, R4-27 honoured);
+R4-80's rename so the page says "channel" in all six user-visible places rather than calling a
+run-level series a probe; `GET /api/trust` plus the Judge Trust page, merged, bundled, and
+**wiring-checked in a browser against the real route** in both its calibrated and never-calibrated
+states.
+
+**A prescribed fix was proved vacuous before anyone built it.** The session-10 handoff prescribed
+pydantic's `model_fields_set` for the fabricated-zero hazard. Run in an interpreter first, it cannot
+work: `_probe_row` passes all three metrics explicitly on every construction, so `model_fields_set`
+always contains all three, and `ProbeResult` is a plain dataclass with no such attribute. It would
+have been the eighth vacuous guard of this plan, introduced by the ruling written to prevent them.
+The real fix reads the raw artifact's **key presence** — a no-op on today's corpus (515 loadable
+entries all carry the keys; 83 genuinely recorded zeros still plot) and a guarantee by construction
+tomorrow.
+
+**Four vacuous guards were caught, three by agents auditing their own work**; the reviewer found a
+fourth thing — the wave had *invented a false catch-claim* to justify keeping the old vacuous test.
+
+**A human clicking found a defect no test could catch.** Clicking `ALL` on the failing probe opened
+the trial panel **565px below the row**, off-screen, with no scroll-into-view and no focus move. The
+content was in the DOM, so every assertion passed. It sat on the demo's click path. Fixed.
+
+**Two demo-relevant corrections.** The "3 of 3 red" claim is stale and its retraction of the ~12%
+green figure was itself premature: the anchor probe failed in **7 of 8** runs (5 of 5 at 7 trials),
+**one genuinely green run exists** at 3 trials, and the per-trial deviation rate implies **P(green
+board) ≈ 19%**. And `packs/twincore`'s weakest criterion is `persona:Tone under refusal` at **82%** —
+below the 85% bar and the exact dimension the headline finding concerns. Both belong in the talk.
+
+**Four controller-propagated falsehoods have now been caught downstream, one this session from the
+controller's own truncated probe** (`list(d.keys())[:6]` hid the seventh key, `per_rubric_agreement`,
+and the brief was written from that output). The instruction *"flag anything in this brief you find to
+be false"* is now load-bearing infrastructure. Separately, a first per-trial deviation figure was
+wrong because the detector scored "no check data recorded" as "no deviation" — caught only because it
+contradicted `pass^k`. When two of your own numbers disagree, the instrument is wrong, not the world.
+
+**An invented string was retired across its whole class** — route, tests, frozen model docstring, and
+the **plan spec that originated it** (`"never calibrated"`, where the engine's locked rule says
+`"no calibration record"`). Found only because two parallel agents disagreed about it.
+
+**Deferred, not blocking:** pause/cancel have still never been driven by a mouse (free to test on
+`packs/example`); the Discoveries redaction gap is unchanged and the prescribed fix still buys nothing.
