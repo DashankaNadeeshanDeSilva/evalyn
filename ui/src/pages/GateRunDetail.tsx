@@ -226,7 +226,11 @@ function GateStopped() {
   return (
     <section
       data-testid="gate-banner-cancelled"
-      aria-label="Gate verdict"
+      /* Not "Gate verdict". The label is this region's accessible name, and
+         naming it after a verdict hands a screen reader the precise claim the
+         visible block was rewritten to stop making — the sighted fix and the
+         announced one have to say the same thing. */
+      aria-label="No gate verdict"
       className="engrave-b rule-major px-4 py-4 sm:px-6"
     >
       <p className="flex items-center gap-2.5 text-display uppercase tracking-display text-chassis-900">

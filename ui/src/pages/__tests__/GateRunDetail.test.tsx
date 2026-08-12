@@ -259,6 +259,14 @@ describe("a run an operator stopped claims no verdict it did not earn", () => {
     expect(said).toContain("no verdict");
     expect(said).toContain("partial");
 
+    /* And it must not restore the claim through the other channel. The
+       region's accessible name is announced ahead of any of that text, so
+       "Gate verdict" there hands a non-sighted operator the exact assertion the
+       visible block was rewritten to drop. */
+    expect(notice.getAttribute("aria-label")?.toLowerCase()).toContain(
+      "no gate verdict",
+    );
+
     // The header and the evidence below are correct and must keep rendering.
     expect(screen.getByTestId("scenario-table")).toBeInTheDocument();
     expect(page.toLowerCase()).toContain("cancelled");
