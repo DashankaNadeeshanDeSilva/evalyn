@@ -584,6 +584,32 @@ describe("opening a finding brings the answer to the operator", () => {
   });
 
   /**
+   * And the same claim held against the **default** mock, which is what every
+   * other panel test renders. The previous test overrides the handler with a
+   * user-only payload, so it could never see the divergence that mattered: the
+   * fixture served an `assistant` turn directly beneath copy stating the staged
+   * file holds no replies. A mock the route cannot produce is how a page ships
+   * a rendition nobody ever saw.
+   */
+  it("serves no target reply in the default staged file", async () => {
+    renderDiscoveries();
+    await settled();
+    await userEvent.click(
+      within(rowFor(HALLUCINATION)).getByRole("button", { name: HALLUCINATION }),
+    );
+
+    const panel = within(await screen.findByTestId("finding-panel"));
+    const roles = panel
+      .getAllByTestId("transcript-turn")
+      .map((turn) => turn.dataset["role"]);
+    expect(roles.length).toBeGreaterThan(0);
+    expect(
+      [...new Set(roles)],
+      "the mock served a target reply the staged file cannot contain",
+    ).toEqual(["user"]);
+  });
+
+  /**
    * `checks` is flattened off the **replay**, so a finding whose replay was
    * skipped carries none — the ordinary case for the real safety-critical
    * finding. The probe still declares its checks; they are in the staged file.
@@ -591,9 +617,19 @@ describe("opening a finding brings the answer to the operator", () => {
    * would send the operator looking for a bug instead of a budget.
    */
   it("blames the missing replay for missing checks, not the probe", async () => {
+    // The row's own `replay_status` is the fallback the Replay region reads, so
+    // it is set to `null` here too: a detail carrying no replay under a row
+    // claiming one is a payload the server does not emit, and asserting over it
+    // would prove the copy against a contradiction rather than against a state.
+    withFindings([{ ...FINDING_ROWS[0]!, replay_status: null }]);
     server.use(
       http.get("/api/discoveries/:probeId", () =>
-        HttpResponse.json({ ...FINDING_DETAIL, checks: [], replay: null }),
+        HttpResponse.json({
+          ...FINDING_DETAIL,
+          replay_status: null,
+          checks: [],
+          replay: null,
+        }),
       ),
     );
     renderDiscoveries();
@@ -609,6 +645,49 @@ describe("opening a finding brings the answer to the operator", () => {
       said,
       "the probe was blamed for declaring no checks when it declares them in the staged file",
     ).not.toContain("declares no checks");
+  });
+
+  /**
+   * `ReplayView.checks` defaults to an empty list, so "no checks" and "no
+   * replay" are different facts and the page has both in hand. Keyed off the
+   * emptiness alone, the Checks region asserted the replay never ran directly
+   * beneath a Replay region reading a status off the same payload — the page
+   * contradicting itself in two panels, on a page that will be projected.
+   */
+  it("does not blame a replay that ran for scoring nothing", async () => {
+    server.use(
+      http.get("/api/discoveries/:probeId", () =>
+        HttpResponse.json({
+          ...FINDING_DETAIL,
+          checks: [],
+          replay: {
+            status: "not_reproduced",
+            reproduced: false,
+            trials: 2,
+            pass_k: 0.0,
+            pass_at_k: 0.0,
+            expected_trials: 2,
+            checks: [],
+            reason: "",
+          },
+        }),
+      ),
+    );
+    renderDiscoveries();
+    await settled();
+    await userEvent.click(
+      within(rowFor(HALLUCINATION)).getByRole("button", { name: HALLUCINATION }),
+    );
+
+    const panel = await screen.findByTestId("finding-panel");
+    const said = panel.textContent?.toLowerCase() ?? "";
+    expect(said, "the replay's own status went unreported").toContain(
+      "did not reproduce",
+    );
+    expect(
+      said,
+      "the page said the replay never ran, one region below saying it ran",
+    ).not.toContain("replay did not run");
   });
 
   /**

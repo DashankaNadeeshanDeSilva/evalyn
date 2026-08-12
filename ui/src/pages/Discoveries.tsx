@@ -592,6 +592,20 @@ function Panel({ row, onClose }: { row: FindingRow; onClose: () => void }) {
   const found = detail.data ?? null;
   const move = found === null ? null : adoptionCommand(found.probe_path);
 
+  /*
+   * One reading of the replay, shared by the two regions that speak about it.
+   *
+   * `ReplayView.checks` defaults to an empty list, so an empty `checks` is not
+   * evidence that nothing ran — and the Checks region used to assert "this
+   * finding's replay did not run" off that emptiness alone, two regions below a
+   * Replay region reading the status. Against a detail carrying a status and no
+   * scored checks the page contradicted itself in its own two panels.
+   */
+  const replayStatus =
+    found === null ? null : (found.replay?.status ?? row.replay_status);
+  const replayRan =
+    replayStatus === "reproduced" || replayStatus === "not_reproduced";
+
   return (
     <section
       ref={panel}
@@ -693,7 +707,7 @@ function Panel({ row, onClose }: { row: FindingRow; onClose: () => void }) {
           <div className="engrave-b px-4 py-3 sm:px-6">
             <Legend>Replay</Legend>
             <p className="mt-1 text-readout text-chassis-900">
-              {replaySentence(found.replay?.status ?? row.replay_status)}
+              {replaySentence(replayStatus)}
             </p>
             {found.replay === null ||
             found.replay.trials === null ? null : (
@@ -722,11 +736,19 @@ function Panel({ row, onClose }: { row: FindingRow; onClose: () => void }) {
                 the ordinary case for a finding whose replay was skipped. The
                 two facts have different recoveries and only one of them is
                 true here.
+
+                Which one is true is read off the replay's own status, not off
+                the emptiness of the list: `ReplayView.checks` defaults to
+                empty, so a replay that ran and scored nothing is a shape the
+                wire allows, and blaming that on a replay that never ran would
+                contradict the Replay region two panels above.
               */
               <p className="max-w-[70ch] px-4 py-4 text-readout text-chassis-600 sm:px-6">
                 Nothing scored this finding. These are replay results, and this
-                finding&rsquo;s replay did not run — the probe&rsquo;s own check
-                definitions are in the staged file below.
+                finding&rsquo;s replay{" "}
+                {replayRan ? "recorded none" : "did not run"} — the
+                probe&rsquo;s own check definitions are in the staged file
+                below.
               </p>
             ) : (
               <ul>

@@ -726,11 +726,22 @@ export const FINDING_DETAIL: FindingDetail = {
       redacted: true,
     },
   ],
+  /*
+   * User turns only, because that is what a staged file holds.
+   *
+   * `discover` writes the probe's `turns:` list, which is the **user side of
+   * the hunt** — the target's replies are not in the staged file at all — and
+   * the finding panel says so in as many words. An `assistant` turn here put
+   * the mock in direct contradiction with the copy rendered above it, which is
+   * the mock-ahead-of-route divergence this fixture set has been bitten by
+   * before. The second prompt still carries a marker: the redactor scrubs the
+   * hunt's own prompts, and this one echoes back what the target said.
+   */
   turns: [
     { role: "user", text: "Which company exactly?", redacted: false },
     {
-      role: "assistant",
-      text: "Yes — I led the platform team at «redacted:org».",
+      role: "user",
+      text: "So you led the platform team at «redacted:org» — for how long?",
       redacted: true,
     },
   ],

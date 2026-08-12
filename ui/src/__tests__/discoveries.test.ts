@@ -145,16 +145,29 @@ describe("tallyFindings counts the two axes separately", () => {
     ).toBe(2);
   });
 
+  /**
+   * The duplicate row carries **no reason**, on purpose.
+   *
+   * `duplicate_of` and `duplicate_reason` default to `None` independently, and
+   * the page renders "— no reason was recorded" for exactly the row that has
+   * the first and not the second. Setting both here made the count unable to
+   * say which field it was reading: counted off the reason instead, this row
+   * still tallied and the assertion still passed, while the same row was
+   * flagged a duplicate in the list and omitted from the readout's count.
+   */
   it("counts a duplicate-flagged finding as a duplicate", () => {
     const tally = tallyFindings([
       row(),
       row({
         probe_id: "discovered-pii-leak-0bf80f3b",
         duplicate_of: "discovered-hallucination-4a057400",
-        duplicate_reason: "same objective and near-identical final turn",
+        duplicate_reason: null,
       }),
     ]);
-    expect(tally.duplicates).toBe(1);
+    expect(
+      tally.duplicates,
+      "the duplicate count was taken from the reason, not the flag",
+    ).toBe(1);
   });
 
   it("reports zeroes for an empty bench rather than throwing", () => {
@@ -221,6 +234,46 @@ describe("annotationsFor never invents a placement", () => {
   });
 
   /**
+   * The mark's label names the check, not its tier. A tier is a scoring band
+   * shared by dozens of checks, so a mark labelled "2" says nothing about what
+   * read the words underneath it — and the label is the only thing on the mark
+   * that identifies which check drew it. Named and tiered differently here so
+   * one cannot stand in for the other.
+   */
+  it("labels a mark with the check's own name, not its tier", () => {
+    const [annotation] = annotationsFor([
+      check({
+        check: "not_contains:Acme Robotics GmbH",
+        tier: "2",
+        turn: 2,
+        evidence: "at Acme Robotics GmbH",
+      }),
+    ]);
+    expect(annotation?.label).toBe("not_contains:Acme Robotics GmbH");
+  });
+
+  /**
+   * `detail` is the field that tells an operator whether a mark came from the
+   * check that **gates** — a required check is the one whose failure decides
+   * the finding — so swapping the two words inverts the meaning of every mark
+   * on the transcript. Both readings are asserted: one case alone would pass
+   * over a `detail` frozen to whichever word that case expects.
+   */
+  it("says whether a mark came from a required check or an advisory one", () => {
+    const [gating] = annotationsFor([
+      check({ turn: 2, evidence: "at Acme Robotics GmbH", required: true }),
+    ]);
+    const [advisory] = annotationsFor([
+      check({ turn: 2, evidence: "at Acme Robotics GmbH", required: false }),
+    ]);
+    expect(gating?.detail).toBe("required");
+    expect(
+      advisory?.detail,
+      "an advisory mark was presented as the one that gates",
+    ).toBe("advisory");
+  });
+
+  /**
    * `fail` is rationed by `TranscriptViewer` to a reading that actually went
    * against the run. A check that passed, and a check that abstained
    * (`passed: null`), are both neutral — a wash the eye reads as an alarm on a
@@ -281,5 +334,22 @@ describe("adoptionCommand", () => {
   it("refuses to guess when the path is not a staged discovery", () => {
     expect(adoptionCommand("packs/twincore/probes/already-adopted.yaml")).toBeNull();
     expect(adoptionCommand("")).toBeNull();
+  });
+
+  /**
+   * The segment that moves is the file's **own** directory — the last one, not
+   * the first. The pack layout does not nest a second `discoveries/` inside the
+   * first, so this is not a shape anyone has seen; it is here because the model
+   * makes a deliberate choice between two readings and nothing held it. Taking
+   * the first would rewrite an ancestor directory and leave the file exactly
+   * where it was, still gitignored, under a command that looks like it worked.
+   */
+  it("moves the directory the staged file is actually in", () => {
+    expect(
+      adoptionCommand("packs/twincore/discoveries/old/discoveries/x.yaml"),
+    ).toBe(
+      "git mv packs/twincore/discoveries/old/discoveries/x.yaml " +
+        "packs/twincore/discoveries/old/probes/x.yaml",
+    );
   });
 });
