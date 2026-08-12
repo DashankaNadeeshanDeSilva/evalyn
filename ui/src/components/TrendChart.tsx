@@ -28,7 +28,14 @@ import {
  *
  * ## Why one focal line over faint context, and not thirty-one legible ones
  *
- * The real corpus is 31 probes across 7 runs, 21 of whose lines actually move.
+ * The `twincore-injection` pack is 31 probes across 7 runs, 21 of whose lines
+ * actually move — and it is a DIFFERENT pack from the `example` one the gap
+ * invariant is argued from in `trends.ts`, which is 88 runs and 4 probes with
+ * 26 of the runs degraded (both measured over the runs index during the Trends
+ * review rather than estimated). The two shapes matter together: the wide pack
+ * has no gaps at all, the gapped pack has four probes, and the page has to hold
+ * for an operator who meets either.
+ *
  * Thirty-one distinguishable colours is not a palette, it is a failure — and it
  * would be exactly the "meaning by colour alone" the surface brief forbids,
  * because no legend of thirty-one swatches is readable from a projector. So
@@ -36,9 +43,11 @@ import {
  * rest are context at 1px. The distinction is **weight**, which survives
  * greyscale, and the selected probe is named in words above the chart.
  *
- * The context lines are excluded from the tooltip (`tooltipType="none"`) rather
- * than dropped, so hovering a run reports the one reading the operator asked
- * about instead of thirty-one they did not.
+ * The context lines are drawn but never *reported*: the tooltip reads the entry
+ * whose name is the selected probe's, so inspecting a run answers about the one
+ * reading the operator asked about instead of thirty-one they did not. It is
+ * done there rather than with `tooltipType="none"` on each line for the reason
+ * given at the tooltip itself — that flag does not do it.
  *
  * ## What it refuses to draw
  *
@@ -318,15 +327,34 @@ export function TrendChart({ series, metric, selectedProbeId }: TrendChartProps)
    * and narrow the one value that is read.
    */
   const tooltip = (props: TooltipContentProps) => {
-    const entry = props.payload?.[0];
-    if (!props.active || entry === undefined) return null;
-    const row = entry.payload as ChartRow;
-    const value = entry.value;
+    if (!props.active || selected === undefined) return null;
+    /*
+     * The entry is found by NAME, not by position.
+     *
+     * `tooltipType="none"` used to sit on every context line with a comment
+     * saying it kept them out of the tooltip. It does not: the installed
+     * runtime honours that flag in `DefaultTooltipContent` only
+     * (`entry.type === 'none'` is read while it renders its own list), and a
+     * custom `content` renderer is handed every line regardless. So
+     * `payload[0]` was the first line DECLARED — a context probe — and the
+     * tooltip reported its reading under the run's stamp as if it belonged to
+     * the channel on screen. Caught by the first test ever written for it.
+     */
+    const entry = props.payload?.find((p) => p.name === selected.probeId);
+    const row = (entry?.payload ?? props.payload?.[0]?.payload) as
+      | ChartRow
+      | undefined;
+    if (row === undefined) return null;
+    const value = entry?.value;
     return (
-      <div className="border border-chassis-400 bg-chassis-25 px-3 py-2 text-legend text-chassis-900">
+      <div className="border border-chassis-500 bg-chassis-25 px-3 py-2 text-legend text-chassis-900">
         <p className="tabular-nums">
-          {facts.label}{" "}
-          {typeof value === "number" ? facts.format(value) : "unreadable"}
+          {/* A gap is a run with no readable artifact for this probe, and it
+              says so rather than falling silent — silence is what a broken
+              tooltip also looks like. */}
+          {typeof value === "number"
+            ? `${facts.label} ${facts.format(value)}`
+            : `no ${facts.label} reading in this run`}
         </p>
         <p className="mt-1 text-chassis-600">{formatUtc(row.iso)}</p>
         <p className="break-all text-chassis-600">{row.runId}</p>
@@ -398,9 +426,6 @@ export function TrendChart({ series, metric, selectedProbeId }: TrendChartProps)
               activeDot={false}
               isAnimationActive={false}
               legendType="none"
-              // Kept out of the tooltip so hovering a run answers about the
-              // probe the operator selected, not about thirty-one at once.
-              tooltipType="none"
             />
           ))}
 

@@ -222,8 +222,13 @@ export function Trends() {
       ) : reading ? (
         // A skeleton, not a spinner: the chart's height is already known, so
         // the page does not jump when the series land.
-        <div className="px-4 py-4 sm:px-6" aria-hidden="true">
-          <div className="h-[340px] bg-chassis-50/60" />
+        //
+        // The bar is hidden from the accessibility tree and the sentence is
+        // NOT: they were both inside the hidden wrapper, which removes the
+        // announcement along with the subtree it sits in — coverage that
+        // announced nothing to anybody.
+        <div className="px-4 py-4 sm:px-6">
+          <div className="h-[340px] bg-chassis-50/60" aria-hidden="true" />
           <span className="sr-only">Reading the trend history…</span>
         </div>
       ) : (

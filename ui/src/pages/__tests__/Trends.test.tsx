@@ -125,6 +125,23 @@ describe("Trends", () => {
     expect(readout.textContent).not.toMatch(/0 probes/);
   });
 
+  /**
+   * The announcement was inside the skeleton's own `aria-hidden` wrapper, so
+   * the accessibility tree removed the whole subtree and the sentence with it.
+   * Deleting the sentence outright reddened nothing — a guard that reads as
+   * coverage and provides none.
+   */
+  it("announces the wait somewhere a screen reader can actually reach", () => {
+    serveCorpus();
+    renderPage();
+
+    const note = screen.getByText(/reading the trend history/i);
+    expect(
+      note.closest('[aria-hidden="true"]'),
+      "the announcement sits inside a subtree hidden from the accessibility tree",
+    ).toBeNull();
+  });
+
   it("opens on the most notable channel without a click", async () => {
     serveCorpus();
     renderPage();

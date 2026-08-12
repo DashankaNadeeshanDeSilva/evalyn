@@ -11,7 +11,9 @@ import { formatUsd } from "./format";
  * `TrendSeries` states it on the wire: degraded runs are **skipped entirely**
  * rather than emitted as null points, so a gap in a line means "no readable
  * run", never "zero". On the real corpus that is not a hypothetical — 26 of the
- * `example` pack's runs are degraded, and a model that widened every series
+ * `example` pack's 88 runs are degraded (it carries 4 probes; the 31-probe pack
+ * named in `TrendChart.tsx` is `twincore-injection`, a different one with no
+ * degraded runs at all), and a model that widened every series
  * onto a shared run axis and filled the holes would draw twenty-six fabricated
  * failures and present them as history.
  *

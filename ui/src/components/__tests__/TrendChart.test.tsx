@@ -1,4 +1,5 @@
 import { render, screen } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { describe, expect, it } from "vitest";
 
 import type { TrendMetric, TrendSeries } from "../../api/types";
@@ -365,6 +366,62 @@ describe("TrendChart", () => {
 
     expect(container.querySelector(".recharts-reference-line-line")).toBeNull();
     expect(screen.queryByText(/pass line/i)).toBeNull();
+  });
+
+  /**
+   * The tooltip, which had no test of any kind: removing `tooltipType="none"`
+   * from every context line — the prop the docstring calls load-bearing — left
+   * the whole suite green.
+   *
+   * Reached by keyboard rather than by mouse, which is both the honest way to
+   * ask (jsdom has no layout, so a hover has no coordinates to land on) and a
+   * second assertion for free: `accessibilityLayer` is what makes the reading
+   * walkable with an arrow key, and this is the only test that exercises it.
+   */
+  it("reports the probe the operator selected when a run is inspected, not the first line drawn", async () => {
+    const { container } = render(
+      <TrendChart
+        series={[
+          series("anchor", [[1, 0], [2, 0]]),
+          series("noise", [[1, 1], [2, 1]]),
+        ]}
+        metric="pass_k"
+        selectedProbeId="anchor"
+      />,
+    );
+
+    const surface = container.querySelector<HTMLElement>('[role="application"]')!;
+    surface.focus();
+    await userEvent.keyboard("{ArrowRight}");
+
+    // `anchor` reads 0.00 and the context probe reads 1.00, so the two answers
+    // are distinguishable: without tooltipType="none" the payload's first entry
+    // is a line the operator never asked about.
+    const tip = container.querySelector(".recharts-tooltip-wrapper")!;
+    expect(tip.textContent).toMatch(/^pass\^k 0\.00/);
+  });
+
+  it("says a run the selected probe never read has no reading, rather than borrowing another probe's", async () => {
+    const { container } = render(
+      <TrendChart
+        series={[
+          series("gappy", [[1, 0], [3, 0]]),
+          series("dense", [[1, 1], [2, 1], [3, 1]]),
+        ]}
+        metric="pass_k"
+        selectedProbeId="gappy"
+      />,
+    );
+
+    const surface = container.querySelector<HTMLElement>('[role="application"]')!;
+    surface.focus();
+    await userEvent.keyboard("{ArrowRight}");
+
+    // Run 2 is a gap for `gappy` and a real 1.00 for `dense`. Reporting 1.00
+    // here would attribute another probe's reading to the one on screen.
+    const tip = container.querySelector(".recharts-tooltip-wrapper")!;
+    expect(tip.textContent).toMatch(/no pass\^k reading in this run/i);
+    expect(tip.textContent).not.toMatch(/1\.00/);
   });
 
   it("counts the context lines in the legend rather than leaving them unexplained", () => {

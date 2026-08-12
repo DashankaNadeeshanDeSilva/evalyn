@@ -13,9 +13,12 @@ import { Flatline } from "./Flatline";
  * chart is the *view* rather than the record. It is also the selector — one
  * click, or one Enter, promotes a channel to the focal line.
  *
- * Same conventions as `RunsTable`: `data-numeric` marks a cell whose value is a
- * figure, `data-flatlined` (via `Flatline`) marks a cell that carries none, and
- * a cell is never both.
+ * Same conventions as `RunsTable`, both of them: `data-metric` marks a value
+ * this pack actually measured, `data-numeric` marks one that reads as a figure
+ * in tabular figures, and `data-flatlined` (via `Flatline`) marks a cell that
+ * carries neither. A cell is never flatlined and a metric at once. First and
+ * Latest are figures as much as Change is, and were carrying only the first of
+ * the two markers.
  *
  * The probe id is the selector, and its **underline is the only thing that says
  * so** — there is no button chrome, by design. So the underline is a graphical
@@ -61,7 +64,11 @@ function Reading({
     return <Flatline word="no readings" reason={`no readable ${what} for this probe`} />;
   }
   return (
-    <span data-metric={what} className="text-readout tabular-nums text-chassis-900">
+    <span
+      data-metric={what}
+      data-numeric={what}
+      className="text-readout tabular-nums text-chassis-900"
+    >
       {format(value)}
     </span>
   );
