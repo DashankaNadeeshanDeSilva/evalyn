@@ -564,6 +564,29 @@ const SURFACES: Record<string, Surface> = {
       },
     ],
   },
+  /**
+   * `chassis-50/60` is the loading skeleton's slab, standing in for the chart
+   * while the two reads land; it carries no text, exactly as the runs list's
+   * skeleton bars do not.
+   *
+   * **No status ink enters this page either.** A history that cannot be read is
+   * not a `RunStatus`, so the failed-read branch is `chassis-900` beside the
+   * alert glyph — the same correction `AppShell` already carries, applied
+   * before it could be made a second time.
+   */
+  "pages/Trends.tsx": {
+    inherits: "chassis-25",
+    sets: ["chassis-50/0.6"],
+    inks: [
+      { ink: "chassis-900", role: "text" },
+      { ink: "chassis-600", role: "text" },
+      {
+        ink: "chassis-400",
+        role: "redundant",
+        note: "aria-hidden '·' separators in the readout",
+      },
+    ],
+  },
   "pages/RunDetailPage.tsx": {
     inherits: "chassis-25",
     sets: [],

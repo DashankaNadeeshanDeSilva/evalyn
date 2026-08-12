@@ -4,6 +4,7 @@ import { AppShell } from "./components/AppShell";
 import { Launch } from "./pages/Launch";
 import { RunDetailPage } from "./pages/RunDetailPage";
 import { RunsPage } from "./pages/RunsPage";
+import { Trends } from "./pages/Trends";
 
 /**
  * The router's table — and the other half of the legend strip's gate.
@@ -44,6 +45,7 @@ export const appRoutes: RouteObject[] = [
       { path: "/runs", element: <RunsPage /> },
       { path: "/runs/:runId", element: <RunDetailPage /> },
       { path: "/launch", element: <Launch /> },
+      { path: "/trends", element: <Trends /> },
       { path: "*", element: <NoSuchPage /> },
     ],
   },
