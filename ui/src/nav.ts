@@ -31,7 +31,7 @@ export const NAV_DESTINATIONS: readonly NavDestination[] = [
   { path: "/discoveries", label: "Discoveries", shipped: false },
   { path: "/compare", label: "Compare", shipped: false },
   { path: "/trends", label: "Trends", shipped: true },
-  { path: "/trust", label: "Judge Trust", shipped: false },
+  { path: "/trust", label: "Judge Trust", shipped: true },
 ];
 
 export function shippedDestinations(): NavDestination[] {

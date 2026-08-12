@@ -422,16 +422,41 @@ describe("packs and the write-side acknowledgements", () => {
 });
 
 describe("judge trust", () => {
+  /**
+   * `packs/example` is one of the packs with no `calibration.json`, so this is
+   * not a synthetic pack name — it is the body the route answers for the pack
+   * this mock's allowlist actually carries, and for the demo pack beside it.
+   *
+   * The reason string is `is_stale`'s own for a missing record. It read
+   * "never calibrated", which is a sentence nothing in the engine emits.
+   */
   it("answers 200 with a null agreement for a never-calibrated pack", async () => {
-    const res = await get("/api/trust?pack=uncalibrated");
+    const res = await get("/api/trust?pack=example");
     expect(res.status).toBe(200);
     const body = (await res.json()) as TrustReport;
     expect(body.agreement).toBeNull();
-    expect(body.stale_reason).toBe("never calibrated");
+    expect(body.stale_reason).toBe("no calibration record");
+    expect(body.pack_name).toBe("example");
+  });
+
+  /** `twincore` is the one pack in this repository carrying a record. */
+  it("answers the calibrated pack with the figures on disk", async () => {
+    const body = (await (await get("/api/trust?pack=twincore")).json()) as TrustReport;
+    expect(body.agreement).toBeCloseTo(0.9318181818181818, 12);
+    expect(body.judge_model).toBe("anthropic/claude-sonnet-5");
+    expect(Object.keys(body.per_criterion_agreement)).toHaveLength(8);
+    expect(Object.keys(body.per_rubric_agreement)).toHaveLength(4);
+    // Pooled counts reproduce the recorded overall figure exactly: 82 / 88.
+    const pooled = Object.values(body.per_criterion_counts).reduce(
+      (sum, c) => ({ hits: sum.hits + c.hits, total: sum.total + c.total }),
+      { hits: 0, total: 0 },
+    );
+    expect(pooled).toEqual({ hits: 82, total: 88 });
+    expect(pooled.hits / pooled.total).toBeCloseTo(body.agreement!, 12);
   });
 
   it("never labels agreement as kappa", async () => {
-    const body = await (await get("/api/trust?pack=example")).text();
+    const body = await (await get("/api/trust?pack=twincore")).text();
     expect(body.toLowerCase()).not.toContain("kappa");
   });
 });

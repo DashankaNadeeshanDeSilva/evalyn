@@ -5,6 +5,7 @@ import { Launch } from "./pages/Launch";
 import { RunDetailPage } from "./pages/RunDetailPage";
 import { RunsPage } from "./pages/RunsPage";
 import { Trends } from "./pages/Trends";
+import { Trust } from "./pages/Trust";
 
 /**
  * The router's table — and the other half of the legend strip's gate.
@@ -46,6 +47,7 @@ export const appRoutes: RouteObject[] = [
       { path: "/runs/:runId", element: <RunDetailPage /> },
       { path: "/launch", element: <Launch /> },
       { path: "/trends", element: <Trends /> },
+      { path: "/trust", element: <Trust /> },
       { path: "*", element: <NoSuchPage /> },
     ],
   },
