@@ -82,6 +82,85 @@ const REAL = BOARD({
   },
 });
 
+/**
+ * A board on which no two figures coincide.
+ *
+ * `wins_a: 1, ties: 1, flips: 1` and `217/217` trials make a full `toEqual`
+ * look strict while proving nothing: with the values equal, reading `ties`
+ * where `flips` was meant is invisible. Distinct figures are what turn the same
+ * assertion into a statement about **which field was read**.
+ */
+const DISTINCT = BOARD({
+  categories: {
+    boundary: TALLY({
+      wins_a: 2,
+      wins_b: 3,
+      ties: 5,
+      unsure: 7,
+      flips: 11,
+      criteria_judged: 13,
+      flip_rate: 0.5,
+    }),
+  },
+  hard_metrics: {
+    boundary: METRICS({
+      latency_mean_a: 1.11,
+      latency_mean_b: 2.75,
+      latency_p95_a: 3.3,
+      latency_p95_b: 4.95,
+      invariant_failures_a: 5,
+      invariant_failures_b: 6,
+      trials_a: 7,
+      trials_b: 10,
+    }),
+  },
+});
+
+describe("which side is which", () => {
+  it("reads every tally field into its own key", () => {
+    expect(buildCompareModel(DISTINCT).verdicts).toEqual([
+      {
+        category: "boundary",
+        winsA: 2,
+        winsB: 3,
+        ties: 5,
+        unsure: 7,
+        flips: 11,
+        criteriaJudged: 13,
+        flipRate: 0.5,
+      },
+    ]);
+  });
+
+  it("reads every hard-metric field into its own side", () => {
+    const rows = buildCompareModel(DISTINCT).metrics[0]!.rows;
+
+    expect(rows.map((row) => [row.key, row.a, row.b, row.delta])).toEqual([
+      ["latency_mean", 1.11, 2.75, 2.75 - 1.11],
+      ["latency_p95", 3.3, 4.95, 4.95 - 3.3],
+      ["invariant_failures", 5, 6, 1],
+      ["trials", 7, 10, 3],
+    ]);
+    // Signed the way the column is labelled — B − A — so B ahead of A is
+    // positive. A sign flip here would read as the wrong run being slower.
+    expect(rows[3]!.delta).toBeGreaterThan(0);
+  });
+
+  it("gives every measurement its own unit and its own spoken absence", () => {
+    const rows = buildCompareModel(DISTINCT).metrics[0]!.rows;
+
+    expect(rows.map((row) => row.unit)).toEqual([
+      "seconds",
+      "seconds",
+      "count",
+      "count",
+    ]);
+    expect(rows[0]!.absence).toContain("latency");
+    expect(rows[3]!.absence).toContain("trial");
+    for (const row of rows) expect(row.absence.length).toBeGreaterThan(0);
+  });
+});
+
 describe("the empty verdict half", () => {
   /**
    * The copy that must not lie. An earlier page in this codebase shipped a "no
