@@ -10,8 +10,10 @@
  *   exist, and saying so leaks nothing about the filesystem).
  * - `/api/runs` paginates with the opaque `(created_at, run_id)` cursor and
  *   compares the *parsed tuples*, never the joined strings.
- * - `/api/discoveries/{probe_id}` is redacted unless the request carries the
- *   `X-Evalyn-Reveal` token.
+ * - `/api/discoveries/{probe_id}` is redacted **unconditionally**, because the
+ *   real route reads no header and honours no token (R4-89). A mock that
+ *   revealed on request would let a reveal control pass every test here and do
+ *   nothing at all against the server.
  * - `/api/runs/{id}/trials/...` 404s on the legacy artifact, because it has no
  *   trial records — a page that offered the drill-down anyway read truthiness
  *   instead of `capabilities.trial_records`, and this is where it finds out.
@@ -41,7 +43,6 @@ import {
 import {
   EXFIL_TRIALS,
   FINDING_DETAIL,
-  FINDING_DETAIL_REVEALED,
   FINDING_ROWS,
   GATE_VERDICT,
   PROBE_ID_EXFIL,
@@ -419,16 +420,14 @@ export const handlers = [
     return HttpResponse.json(body);
   }),
 
-  http.get("/api/discoveries/:probeId", ({ params, request }) => {
+  http.get("/api/discoveries/:probeId", ({ params }) => {
     const probeId = String(params["probeId"]);
     if (!FINDING_ROWS.some((f) => f.probe_id === probeId)) {
       return fail("not_found", `no such finding: ${probeId}`);
     }
-    // Per-object reveal, gated on the token minted at server start. There is no
-    // global off switch and no env var — a missing token is the normal case.
-    const revealed = Boolean(request.headers.get("X-Evalyn-Reveal"));
-    const body = revealed ? FINDING_DETAIL_REVEALED : FINDING_DETAIL;
-    return HttpResponse.json({ ...body, probe_id: probeId });
+    // Redacted, always. `finding_detail(probe_id)` takes no `Request` and no
+    // `Header`, so there is no request this route answers differently (R4-89).
+    return HttpResponse.json({ ...FINDING_DETAIL, probe_id: probeId });
   }),
 
   // -------------------------------------------------------------------------

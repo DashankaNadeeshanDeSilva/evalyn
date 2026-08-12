@@ -1,6 +1,7 @@
 import { Link, Navigate, type RouteObject } from "react-router-dom";
 
 import { AppShell } from "./components/AppShell";
+import { Discoveries } from "./pages/Discoveries";
 import { Launch } from "./pages/Launch";
 import { RunDetailPage } from "./pages/RunDetailPage";
 import { RunsPage } from "./pages/RunsPage";
@@ -46,6 +47,7 @@ export const appRoutes: RouteObject[] = [
       { path: "/runs", element: <RunsPage /> },
       { path: "/runs/:runId", element: <RunDetailPage /> },
       { path: "/launch", element: <Launch /> },
+      { path: "/discoveries", element: <Discoveries /> },
       { path: "/trends", element: <Trends /> },
       { path: "/trust", element: <Trust /> },
       { path: "*", element: <NoSuchPage /> },

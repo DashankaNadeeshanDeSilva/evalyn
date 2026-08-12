@@ -28,7 +28,7 @@ export interface NavDestination {
 export const NAV_DESTINATIONS: readonly NavDestination[] = [
   { path: "/runs", label: "Runs", shipped: true },
   { path: "/launch", label: "Launch", shipped: true },
-  { path: "/discoveries", label: "Discoveries", shipped: false },
+  { path: "/discoveries", label: "Discoveries", shipped: true },
   { path: "/compare", label: "Compare", shipped: false },
   { path: "/trends", label: "Trends", shipped: true },
   { path: "/trust", label: "Judge Trust", shipped: true },

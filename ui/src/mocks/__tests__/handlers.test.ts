@@ -319,14 +319,24 @@ describe("discover findings are redacted by default", () => {
     expect(body.probe_yaml).toContain("«redacted:org»");
   });
 
-  it("reveals per-object when the token is present", async () => {
+  /**
+   * R4-89: the per-object reveal token was never built. `finding_detail` takes
+   * a `probe_id` and nothing else — no `Request`, no `Header` — so redaction on
+   * this route is unconditional. A mock that answered a token would let a
+   * reveal control pass every test in the suite and then do nothing at all
+   * against the real server, on a projector, over a real email address.
+   */
+  it("still redacts when a request carries a reveal token", async () => {
     const body = (await (
       await get(`/api/discoveries/${probeId}`, {
         headers: { "X-Evalyn-Reveal": "mock-token" },
       })
     ).json()) as FindingDetail;
-    expect(body.redacted).toBe(false);
-    expect(body.probe_yaml).toContain("Acme Robotics");
+    expect(
+      body.redacted,
+      "the mock honoured a token the route cannot read",
+    ).toBe(true);
+    expect(JSON.stringify(body)).not.toContain("Acme Robotics");
   });
 });
 

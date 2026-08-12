@@ -70,9 +70,6 @@ export function isRunId(value: string): boolean {
 /** The one and only way a redacted value is spelled: `«redacted:<kind>»`. */
 export const REDACTION_MARKER_RE = /«redacted:[a-z_]+»/;
 
-/** Header carrying the reveal token minted at server start. Per-object, logged. */
-export const REVEAL_HEADER = "X-Evalyn-Reveal";
-
 /**
  * The mirror of `MetaResponse.heartbeat_seconds` — a frozen wire field, and
  * **not** a cadence anything emits.
@@ -466,9 +463,13 @@ export interface FindingRow {
 }
 
 /**
- * `GET /api/discoveries/{probe_id}`. Redacted by default. Revealing is
- * per-object, gated on the `X-Evalyn-Reveal` token minted at server start and
- * logged to stderr with the probe id: no global off switch, no env var.
+ * `GET /api/discoveries/{probe_id}`. **Redacted unconditionally** — the route
+ * takes a `probe_id` and nothing else, no `Request` and no `Header`, so there
+ * is no reveal to ask for (ruling R4-89: the per-object reveal token this
+ * model once described was never built). `RedactionMeta.reveal_required` stays
+ * `true` and stays literally true: revealing IS required to see the verbatim
+ * value, and the only place it can be done is the file on the machine that ran
+ * `discover`.
  */
 export interface FindingDetail extends FindingRow {
   /** The staged file's bytes as committed — the thing a human will `git mv`. */

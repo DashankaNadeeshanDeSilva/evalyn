@@ -25,10 +25,15 @@ import { IconRedacted } from "./InstrumentIcon";
  * findings and paths** are what it touches, and this is what a removed value
  * looks like when you meet one.
  *
- * `reveal_required` is deliberately not rendered here. Revealing is per-object
- * and belongs beside the object being revealed (the finding detail view), not
- * as a fourth clause in a standing legend on six pages that have nothing to
- * reveal.
+ * `reveal_required` is deliberately not rendered here, and under ruling R4-89
+ * the reason is stronger than the layout one it was written for: there is no
+ * reveal anywhere in the cockpit. The route that serves a redacted finding
+ * takes no header and honours no token, so a standing legend on six pages
+ * cannot offer, defer, or even hint at an act that does not exist. The flag
+ * stays `true` because it is literally true — seeing a verbatim value requires
+ * a reveal, and none is available here — and the one page that meets a redacted
+ * value says exactly that, beside the value, and points at the file on the
+ * machine that ran `discover`.
  */
 export function RedactionBanner({ redaction }: { redaction: RedactionMeta }) {
   if (!redaction.enabled) return null;
