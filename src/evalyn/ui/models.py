@@ -698,9 +698,11 @@ class FindingRow(_Model):
 class FindingDetail(FindingRow):
     """`GET /api/discoveries/{probe_id}`.
 
-    Redacted by default. Revealing is per-object, gated on the token minted at
-    server start and logged to stderr with the probe id: there is no global off
-    switch and no env var.
+    **Redaction on this route is unconditional** (R4-89). There is no reveal —
+    no header, no token, no query parameter, no env var, and no global off
+    switch. The handler takes the probe id and nothing else, so no request can
+    ask for the unmasked form. A masked value is recoverable only from the
+    staged file itself, on the machine that ran `discover`.
     """
 
     #: The staged file's bytes as committed — the thing a human will `git mv`.
@@ -1049,7 +1051,11 @@ class RedactionMeta(_Model):
 
     enabled: bool = True
     marker: str = "«redacted:<kind>»"
-    #: Reveal requires the `X-Evalyn-Reveal` token minted at server start.
+    #: True because a masked value **cannot** be revealed over the API: no
+    #: reveal path was ever built, and R4-89 rules that none will be. The
+    #: field stays — it is the literal truth, and the banner it drives is the
+    #: only place the cockpit says so. Reading a masked value means opening
+    #: the file on the machine that ran the run.
     reveal_required: bool = True
 
 
