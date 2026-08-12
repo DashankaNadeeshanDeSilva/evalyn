@@ -225,3 +225,44 @@ export function buildTrendModel(
     unplaceable,
   };
 }
+
+/**
+ * Will a probe put a **segment** on the chart?
+ *
+ * `Channel.trendable` answers a different question — "does this probe have two
+ * readings" — and the two come apart on exactly the shape the gap invariant
+ * exists to protect. A probe that read in runs 1, 3 and 5 has three readings
+ * and not one pair of adjacent rows, so Recharts draws three zero-length
+ * subpaths and no line at all. Anything the legend says about a *line* has to
+ * be asked of this function, never of `trendable`: a key for a mark nobody drew
+ * is a claim about the picture the picture does not support.
+ */
+export function drawsLine(probeId: string, rows: ChartRow[]): boolean {
+  for (let i = 1; i < rows.length; i += 1) {
+    if (
+      rows[i - 1]!.values[probeId] !== undefined &&
+      rows[i]!.values[probeId] !== undefined
+    ) {
+      return true;
+    }
+  }
+  return false;
+}
+
+/**
+ * The `t` of every reading with no reading in either adjacent row.
+ *
+ * These are the readings a line cannot express. They are real measurements, so
+ * the chart draws each one as a mark — the alternative is a probe that the
+ * channel bank lists with readings and the picture renders as nothing.
+ */
+export function isolatedReadings(probeId: string, rows: ChartRow[]): Set<number> {
+  const alone = new Set<number>();
+  rows.forEach((row, i) => {
+    if (row.values[probeId] === undefined) return;
+    const before = rows[i - 1]?.values[probeId] !== undefined;
+    const after = rows[i + 1]?.values[probeId] !== undefined;
+    if (!before && !after) alone.add(row.t);
+  });
+  return alone;
+}

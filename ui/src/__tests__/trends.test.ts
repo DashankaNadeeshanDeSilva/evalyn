@@ -1,7 +1,12 @@
 import { describe, expect, it } from "vitest";
 
 import type { TrendSeries } from "../api/types";
-import { METRIC_FACTS, buildTrendModel } from "../trends";
+import {
+  METRIC_FACTS,
+  buildTrendModel,
+  drawsLine,
+  isolatedReadings,
+} from "../trends";
 
 /**
  * The trend model, which is where the page's honesty actually lives.
@@ -37,6 +42,7 @@ function series(
 const T1 = "2026-08-01T00:00:00+00:00";
 const T2 = "2026-08-02T00:00:00+00:00";
 const T3 = "2026-08-03T00:00:00+00:00";
+const T4 = "2026-08-04T00:00:00+00:00";
 
 describe("buildTrendModel", () => {
   it("sorts a probe's readings into time order whatever order they arrived in", () => {
@@ -162,6 +168,60 @@ describe("buildTrendModel", () => {
 
     expect(model.channels[0]!.delta).toBe(1);
     expect(model.channels[0]!.trendable).toBe(true);
+  });
+});
+
+/**
+ * What the row table implies the picture will contain.
+ *
+ * `trendable` answers "does this probe have two readings" and is the right
+ * answer to that question. It is the wrong answer to "will a line appear",
+ * because a segment needs two readings in *adjacent* rows — and the two
+ * questions come apart on exactly the shape the gap invariant exists for.
+ * Keying a legend to the first while the picture is drawn by the second is how
+ * a 2.5px swatch came to stand beside a channel drawn as three loose dots.
+ */
+describe("what the row table implies the chart will draw", () => {
+  it("separates having two readings from having two in consecutive runs", () => {
+    const model = buildTrendModel(
+      [
+        series("gapped", [[T1, 1], [T3, 1]]),
+        series("dense", [[T1, 1], [T2, 1], [T3, 1]]),
+      ],
+      "pass_k",
+    );
+    const gapped = model.channels.find((c) => c.probeId === "gapped")!;
+
+    // Two readings, so trendable — and still not one drawable segment.
+    expect(gapped.trendable).toBe(true);
+    expect(drawsLine("gapped", model.rows)).toBe(false);
+    expect(drawsLine("dense", model.rows)).toBe(true);
+  });
+
+  it("calls a probe with no readings at all undrawable rather than undefined", () => {
+    const model = buildTrendModel(
+      [series("silent", []), series("dense", [[T1, 1], [T2, 1]])],
+      "pass_k",
+    );
+
+    expect(drawsLine("silent", model.rows)).toBe(false);
+    expect(isolatedReadings("silent", model.rows).size).toBe(0);
+  });
+
+  it("finds the reading with no neighbouring run to draw a segment to", () => {
+    const model = buildTrendModel(
+      [
+        series("gapped", [[T1, 1], [T3, 1], [T4, 1]]),
+        series("dense", [[T1, 1], [T2, 1], [T3, 1], [T4, 1]]),
+      ],
+      "pass_k",
+    );
+    const t = (iso: string) => new Date(iso).getTime();
+
+    // T1 has nothing beside it, so it would be invisible ink without a mark.
+    // T3 and T4 are adjacent to each other and draw a real segment.
+    expect([...isolatedReadings("gapped", model.rows)]).toEqual([t(T1)]);
+    expect(isolatedReadings("dense", model.rows).size).toBe(0);
   });
 });
 

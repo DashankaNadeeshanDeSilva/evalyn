@@ -15,7 +15,13 @@ import {
 import type { TrendMetric, TrendSeries } from "../api/types";
 import { CHART_INK } from "../chartInk";
 import { formatUtc } from "../format";
-import { METRIC_FACTS, buildTrendModel, type ChartRow } from "../trends";
+import {
+  METRIC_FACTS,
+  buildTrendModel,
+  drawsLine,
+  isolatedReadings,
+  type ChartRow,
+} from "../trends";
 
 /**
  * The scope: one channel picked out of the whole bank.
@@ -106,6 +112,35 @@ function KeyMark() {
   );
 }
 
+/**
+ * The two keys for a reading a line cannot express, at the two weights the
+ * chart draws them: the selected channel's open mark, and a context channel's
+ * dot. Both reproduce the chart's own mark exactly, for the reason `KeyStroke`
+ * does — a key that is not the mark is a second thing to learn.
+ */
+function KeyReading() {
+  return (
+    <svg width="10" height="10" aria-hidden="true" focusable="false">
+      <circle
+        cx="5"
+        cy="5"
+        r="3"
+        fill={CHART_INK.face}
+        stroke={CHART_INK.focal}
+        strokeWidth={1.5}
+      />
+    </svg>
+  );
+}
+
+function KeyContextReading() {
+  return (
+    <svg width="10" height="10" aria-hidden="true" focusable="false">
+      <circle cx="5" cy="5" r="2" fill={CHART_INK.context} />
+    </svg>
+  );
+}
+
 function Note({ children }: { children: ReactNode }) {
   return (
     <p className="px-4 py-10 text-readout text-chassis-600 sm:px-6">{children}</p>
@@ -117,9 +152,6 @@ export function TrendChart({ series, metric, selectedProbeId }: TrendChartProps)
   const model = useMemo(() => buildTrendModel(series, metric), [series, metric]);
 
   const selected = model.channels.find((c) => c.probeId === selectedProbeId);
-  const contextCount = model.channels.filter(
-    (c) => c.readings > 0 && c.probeId !== selectedProbeId,
-  ).length;
 
   if (model.readings === 0) {
     return (
@@ -140,6 +172,24 @@ export function TrendChart({ series, metric, selectedProbeId }: TrendChartProps)
   }
 
   const ticks = model.rows.map((row) => row.t);
+
+  /*
+   * The legend is keyed to what the picture CONTAINS, which is not what the
+   * model says the channels have. Every count below is asked of `drawsLine`
+   * rather than of `Channel.trendable`, because a probe that read in runs 1, 3
+   * and 5 is trendable, draws no segment at all, and had a 2.5px line swatch
+   * standing beside its name until a browser showed the three loose dots.
+   *
+   * A channel that read nothing is in neither count: it is not a line, and it
+   * is not a mark either, because there is nothing to mark.
+   */
+  const context = model.channels.filter(
+    (c) => c.readings > 0 && c.probeId !== selectedProbeId,
+  );
+  const contextLines = context.filter((c) => drawsLine(c.probeId, model.rows));
+  const contextMarksOnly = context.length - contextLines.length;
+  const focalDrawsLine =
+    selected !== undefined && drawsLine(selected.probeId, model.rows);
 
   /*
    * How many of the SELECTED channel's readings carry the failure mark.
@@ -196,6 +246,34 @@ export function TrendChart({ series, metric, selectedProbeId }: TrendChartProps)
       />
     );
   };
+
+  /**
+   * A context channel's isolated reading.
+   *
+   * Context lines carry `dot={false}`, which is right for a reading inside a
+   * drawn segment — thirty channels of dots would be noise — and wrong for one
+   * with no neighbour to draw to, which without a mark is a measurement the
+   * channel bank lists and the picture omits entirely. So the dot appears for
+   * exactly the readings a line cannot express, at the context weight.
+   */
+  const contextDot =
+    (isolated: Set<number>) =>
+    (props: DotItemDotProps) => {
+      const { cx, cy, index, payload } = props;
+      const t = (payload as ChartRow | undefined)?.t;
+      if (typeof cx !== "number" || typeof cy !== "number") return null;
+      if (t === undefined || !isolated.has(t)) return null;
+      return (
+        <circle
+          key={`context-${index}`}
+          data-trend-mark="context"
+          cx={cx}
+          cy={cy}
+          r={2}
+          fill={CHART_INK.context}
+        />
+      );
+    };
 
   /*
    * `TooltipContentProps`' generics default to Recharts' own `ValueType` /
@@ -281,24 +359,22 @@ export function TrendChart({ series, metric, selectedProbeId }: TrendChartProps)
           )}
           <Tooltip content={tooltip} cursor={{ stroke: CHART_INK.axis }} />
 
-          {model.channels
-            .filter((c) => c.readings > 0 && c.probeId !== selectedProbeId)
-            .map((channel) => (
-              <Line
-                key={channel.probeId}
-                dataKey={(row: ChartRow) => row.values[channel.probeId]}
-                name={channel.probeId}
-                stroke={CHART_INK.context}
-                strokeWidth={1}
-                dot={false}
-                activeDot={false}
-                isAnimationActive={false}
-                legendType="none"
-                // Kept out of the tooltip so hovering a run answers about the
-                // probe the operator selected, not about thirty-one at once.
-                tooltipType="none"
-              />
-            ))}
+          {context.map((channel) => (
+            <Line
+              key={channel.probeId}
+              dataKey={(row: ChartRow) => row.values[channel.probeId]}
+              name={channel.probeId}
+              stroke={CHART_INK.context}
+              strokeWidth={1}
+              dot={contextDot(isolatedReadings(channel.probeId, model.rows))}
+              activeDot={false}
+              isAnimationActive={false}
+              legendType="none"
+              // Kept out of the tooltip so hovering a run answers about the
+              // probe the operator selected, not about thirty-one at once.
+              tooltipType="none"
+            />
+          ))}
 
           {/*
             Drawn whenever the channel read at all, NOT only when it is
@@ -323,21 +399,35 @@ export function TrendChart({ series, metric, selectedProbeId }: TrendChartProps)
       </ResponsiveContainer>
 
       <figcaption className="mt-3 flex flex-wrap items-center gap-x-6 gap-y-1 text-legend text-chassis-600">
-        {selected && selected.trendable ? (
+        {selected === undefined || selected.readings === 0 ? null : focalDrawsLine ? (
           <span className="flex items-center gap-2 text-chassis-900">
             <KeyStroke width={2.5} ink={CHART_INK.focal} />
             {selected.probeId}
           </span>
-        ) : selected && selected.readings === 1 ? (
-          <span className="text-chassis-900">
-            {selected.probeId} has one reading, so no line can be drawn for it.
+        ) : (
+          <span className="flex items-center gap-2 text-chassis-900">
+            {/* Keyed only when such a mark is on screen: a reading below the
+                pass line is drawn as the failure mark instead, and that mark
+                has its own entry below. */}
+            {selected.readings > markedReadings ? <KeyReading /> : null}
+            {selected.readings === 1
+              ? `${selected.probeId} has one reading, so no line can be drawn for it.`
+              : `${selected.probeId} has ${selected.readings} readings but never two in consecutive runs, so no line can be drawn for it.`}
+          </span>
+        )}
+
+        {contextLines.length > 0 ? (
+          <span className="flex items-center gap-2">
+            <KeyStroke width={1} ink={CHART_INK.context} />
+            {contextLines.length} other{" "}
+            {contextLines.length === 1 ? "probe" : "probes"}
           </span>
         ) : null}
 
-        {contextCount > 0 ? (
+        {contextMarksOnly > 0 ? (
           <span className="flex items-center gap-2">
-            <KeyStroke width={1} ink={CHART_INK.context} />
-            {contextCount} other {contextCount === 1 ? "probe" : "probes"}
+            <KeyContextReading />
+            {contextMarksOnly} more, drawn as marks alone
           </span>
         ) : null}
 

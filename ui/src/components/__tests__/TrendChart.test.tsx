@@ -231,6 +231,81 @@ describe("TrendChart", () => {
     expect(markCentre).toBeLessThan(Number(axis.getAttribute("y1")));
   });
 
+  /*
+   * The three below are the same defect at three ranges, found by rendering a
+   * gapped channel in a browser: `trendable` is not "draws", so the legend was
+   * keying a 2.5px line to a channel the picture drew as loose dots, counting
+   * probes that had put no ink on the page at all, and leaving a context
+   * reading with no neighbour invisible.
+   */
+
+  it("keys the selected channel to a line only when a line was actually drawn", () => {
+    const { container } = render(
+      <TrendChart
+        series={[
+          series("gapped", [[1, 1], [3, 1], [5, 1]]),
+          series("dense", [[1, 1], [2, 1], [3, 1], [4, 1], [5, 1]]),
+        ]}
+        metric="pass_k"
+        selectedProbeId="gapped"
+      />,
+    );
+
+    // Three readings, never two in a row: Recharts draws three zero-length
+    // subpaths and no segment, so a line swatch would key a mark nobody drew.
+    const caption = container.querySelector("figcaption")!;
+    const keyed = [...caption.querySelectorAll("line")].map((l) =>
+      Number(l.getAttribute("stroke-width")),
+    );
+    expect(keyed, "the legend keyed a line to a channel drawn as loose marks").not.toContain(
+      2.5,
+    );
+    expect(screen.getByText(/never two in consecutive runs/i)).toBeInTheDocument();
+    // ...and the channel is still ink on the page rather than nothing.
+    expect(container.querySelectorAll("[data-trend-mark]")).toHaveLength(3);
+  });
+
+  it("draws a context reading with no neighbouring run as a mark rather than nothing", () => {
+    const { container } = render(
+      <TrendChart
+        series={[
+          series("dense", [[1, 1], [2, 1], [3, 1]]),
+          series("sparse", [[1, 0], [3, 0]]),
+        ]}
+        metric="pass_k"
+        selectedProbeId="dense"
+      />,
+    );
+
+    // `dot={false}` on a context line whose every reading is isolated means the
+    // probe is on the chart's own count and absent from the picture.
+    expect(
+      container.querySelectorAll('[data-trend-mark="context"]'),
+      "a context channel that draws no segment put no ink on the page",
+    ).toHaveLength(2);
+  });
+
+  it("counts only the probes it drew a line for, and says how the rest were drawn", () => {
+    render(
+      <TrendChart
+        series={[
+          series("anchor", [[1, 0], [2, 0], [3, 0]]),
+          series("twin", [[1, 1], [2, 1], [3, 1]]),
+          series("sparse", [[1, 1], [3, 1]]),
+          series("silent", []),
+        ]}
+        metric="pass_k"
+        selectedProbeId="anchor"
+      />,
+    );
+
+    // Four channels, one selected. Of the other three, one draws a line, one
+    // draws marks alone, and one drew nothing whatever and is claimed by
+    // neither entry.
+    expect(screen.getByText(/1 other probe$/i)).toBeInTheDocument();
+    expect(screen.getByText(/^1 more, drawn as marks alone$/i)).toBeInTheDocument();
+  });
+
   it("counts the context lines in the legend rather than leaving them unexplained", () => {
     render(
       <TrendChart
