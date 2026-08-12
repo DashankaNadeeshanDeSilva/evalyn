@@ -1,6 +1,6 @@
 import { Link } from "react-router-dom";
 
-import type { RunSummary, VerdictHint } from "../api/types";
+import type { RunMode, RunSummary, VerdictHint } from "../api/types";
 import { formatUsd, formatUtc } from "../format";
 import { DegradedRow } from "./DegradedRow";
 import { Flatline } from "./Flatline";
@@ -158,24 +158,44 @@ const HINT_INK: Record<VerdictHint, string> = {
  *
  * Not the `n/a` mark and not "no gate": `compare` and `discover` genuinely have
  * no gate to report, whereas this run has one and nobody let it finish.
+ *
+ * ## The order of the three absences is the whole correctness argument
+ *
+ * `verdict_hint: null` is not one fact but two, and `stopped` cuts across both
+ * — so whichever question is asked first decides what the other two may claim.
+ *
+ * **`mode` answers first**, because it is true of the run whatever else
+ * happened to it. Asking `stopped` first told a cancelled `compare` row that
+ * "the gate earned no verdict", a claim about a gate that never existed. It
+ * also rested that claim on the weakest signal available: a `compare` or
+ * `discover` artifact carries no `cancelled` field, so `cancelled_by` falls
+ * through to the leftover `<stem>.control.json` — which its own docstring
+ * records as having been measured relabelling a run that had completed all
+ * twelve of its trials. Ordering `mode` first puts the stopped branch out of
+ * reach for exactly the modes whose cancelled signal cannot be trusted, rather
+ * than merely avoiding it there.
+ *
+ * **Then `stopped`**, which by then can only speak about a gate run.
+ *
+ * **Then `hint === null`, which by that point means one thing**: a gate run
+ * that has measured nothing yet. `_pending_summary` (`ui/index.py:906`) emits
+ * exactly that for a run living as a sidecar with no artifact written, and sets
+ * `degraded: false`, so it arrives here rather than at `DegradedRow`. This
+ * branch used to share "no gate" with the modes that genuinely have none; once
+ * `mode` answers first, that copy would be false in every case still reaching
+ * it.
  */
 function VerdictHintCell({
+  mode,
   hint,
   stopped,
 }: {
+  mode: RunMode;
   hint: VerdictHint | null;
   /** An operator cancelled this run, so no verdict was earned. */
   stopped: boolean;
 }) {
-  if (stopped) {
-    return (
-      <Flatline
-        word="stopped"
-        reason="an operator stopped this run before its probes finished, so the gate earned no verdict"
-      />
-    );
-  }
-  if (hint === null) {
+  if (mode !== "gate") {
     // Correctness, not damage: `compare` and `discover` have no gate verdict
     // to report. A dead-channel mark here would dilute the one that means the
     // artifact is broken.
@@ -184,6 +204,25 @@ function VerdictHintCell({
         variant="n/a"
         word="no gate"
         reason="this mode produces no gate verdict"
+      />
+    );
+  }
+  if (stopped) {
+    return (
+      <Flatline
+        word="stopped"
+        reason="an operator stopped this run before it could be gated, so no verdict was earned"
+      />
+    );
+  }
+  if (hint === null) {
+    // Not damage either: nothing has been measured yet. The STATUS column
+    // beside it is what says whether the run is still going.
+    return (
+      <Flatline
+        variant="n/a"
+        word="not yet"
+        reason="this run has not written an artifact, so no verdict has been computed yet"
       />
     );
   }
@@ -263,6 +302,7 @@ function RunRow({ run }: { run: RunSummary }) {
 
       <td className="py-2 pr-3">
         <VerdictHintCell
+          mode={run.mode}
           hint={run.verdict_hint}
           stopped={run.status === "cancelled"}
         />

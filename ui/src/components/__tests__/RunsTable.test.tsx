@@ -4,9 +4,8 @@ import { describe, expect, it } from "vitest";
 
 import { RUN_STATUSES, VERDICT_HINTS } from "../../api/types";
 import {
-  RUN_ID_GATE,
-  RUN_ID_LEGACY,
   RUN_SUMMARIES,
+  SUMMARY_COMPARE,
   SUMMARY_GATE,
 } from "../../mocks/fixtures";
 import { RunStatusChip } from "../RunStatusChip";
@@ -227,6 +226,70 @@ describe("RunsTable", () => {
   });
 
   /**
+   * The door the stopped check opens, and must not walk through.
+   *
+   * `compare` and `discover` have no gate at all, so "the gate earned no
+   * verdict" is a claim about a thing that never existed. Worse, they are
+   * exactly the modes where the cancelled signal is *weakest*: their artifacts
+   * carry no `cancelled` field, so `cancelled_by` falls back to the leftover
+   * `<stem>.control.json`, which that function's own docstring records as
+   * having been measured relabelling a run that had completed all twelve of its
+   * trials. So a stopped-claim here could be made about a run that finished.
+   *
+   * Both failures close on one ordering: a mode with no gate answers first,
+   * which also makes the stopped branch unreachable for precisely the modes
+   * whose cancelled signal cannot be trusted.
+   */
+  it("does not claim a gate on a stopped run in a mode that has none", () => {
+    renderTable([{ ...SUMMARY_COMPARE, status: "cancelled" }]);
+
+    const cell = rowFor(SUMMARY_COMPARE.run_id).querySelectorAll("td")[5]!;
+    const said = cell.textContent?.toLowerCase() ?? "";
+    expect(said).toContain("no gate");
+    expect(
+      said,
+      "a compare run was told a gate of its own earned no verdict",
+    ).not.toContain("stopped");
+    expect(cell.querySelector('[data-flatlined="n/a"]')).not.toBeNull();
+  });
+
+  /**
+   * And the mirror, which is what stops that ordering over-correcting.
+   *
+   * `verdict_hint` is `null` for a **gate** run too: `_pending_summary`
+   * (`ui/index.py:906`) sets it for a run that exists only as a sidecar, with
+   * `degraded: false`, so the row reaches this cell rather than `DegradedRow`.
+   * Cancelling before the engine writes its artifact is the *early* cancel and
+   * it lands exactly here. The answer must be that an operator stopped it, not
+   * that it has no gate.
+   */
+  it("still says stopped on a gate run cancelled before it wrote an artifact", () => {
+    renderTable([{ ...SUMMARY_GATE, status: "cancelled", verdict_hint: null }]);
+
+    const cell = rowFor(SUMMARY_GATE.run_id).querySelectorAll("td")[5]!;
+    const said = cell.textContent?.toLowerCase() ?? "";
+    expect(said).toContain("stopped");
+    expect(said, "a gate run was told it has no gate").not.toContain("no gate");
+  });
+
+  /**
+   * The third thing `verdict_hint: null` means, now that this branch is
+   * reachable only by a gate run: launched, nothing measured yet, nobody
+   * stopped it. Before the reordering it shared "no gate" with the modes that
+   * genuinely have none; afterwards that copy would have been false in every
+   * case that reaches it.
+   */
+  it("says a gate run has measured nothing yet rather than that it has no gate", () => {
+    renderTable([{ ...SUMMARY_GATE, status: "running", verdict_hint: null }]);
+
+    const cell = rowFor(SUMMARY_GATE.run_id).querySelectorAll("td")[5]!;
+    const said = cell.textContent?.toLowerCase() ?? "";
+    expect(said).not.toContain("no gate");
+    expect(said).not.toContain("stopped");
+    expect(cell.querySelector("[data-flatlined]")).not.toBeNull();
+  });
+
+  /**
    * THE CONTROL — must stay GREEN.
    *
    * A condition keyed on the wrong thing blanks this column for every row on
@@ -235,16 +298,20 @@ describe("RunsTable", () => {
    * is not just "never render anything".
    */
   it("still reads GATE FAILED and GATE PASSED on rows nobody stopped", () => {
-    renderTable([
-      { ...SUMMARY_GATE, run_id: RUN_ID_GATE, status: "gate_failed", verdict_hint: "failed" },
-      { ...SUMMARY_GATE, run_id: RUN_ID_LEGACY, status: "passed", verdict_hint: "passed" },
-    ]);
-
-    for (const [runId, word] of [
-      [RUN_ID_GATE, "gate failed"],
-      [RUN_ID_LEGACY, "gate passed"],
+    /* One row at a time, on the gate fixture's own id. An earlier revision put
+       the passing row on `RUN_ID_LEGACY` purely to have a second id to look up
+       — a legacy artifact is a pre-round-2 run that reports no per-probe
+       trials, so the row was a state that fixture cannot be in, asserting
+       something it has nothing to do with. */
+    for (const [status, hint, word] of [
+      ["gate_failed", "failed", "gate failed"],
+      ["passed", "passed", "gate passed"],
     ] as const) {
-      const row = rowFor(runId);
+      const { unmount } = renderTable([
+        { ...SUMMARY_GATE, status, verdict_hint: hint },
+      ]);
+
+      const row = rowFor(SUMMARY_GATE.run_id);
       const cell = row.querySelector<HTMLElement>('[data-metric="verdict_hint"]');
       expect(cell, `the verdict cell went missing on a ${word} row`).not.toBeNull();
       expect(cell!.textContent?.toLowerCase()).toContain(word);
@@ -253,6 +320,8 @@ describe("RunsTable", () => {
         row.querySelectorAll("td")[5]!.querySelector("[data-flatlined]"),
         `a ${word} row had its verdict flat-lined`,
       ).toBeNull();
+
+      unmount();
     }
   });
 
