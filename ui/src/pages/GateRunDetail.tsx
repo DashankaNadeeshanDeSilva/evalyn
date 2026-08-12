@@ -10,7 +10,12 @@ import type {
 } from "../api/types";
 import { AllTrialsPanel } from "../components/AllTrialsPanel";
 import { CheckEvidence } from "../components/CheckEvidence";
-import { IconAlert, IconCheck, IconCross } from "../components/InstrumentIcon";
+import {
+  IconAlert,
+  IconBarred,
+  IconCheck,
+  IconCross,
+} from "../components/InstrumentIcon";
 import { RedactedChip } from "../components/RedactedChip";
 import {
   ScenarioTable,
@@ -62,6 +67,28 @@ import { useRevealOnOpen } from "../hooks/useRevealOnOpen";
  * empty for a reason the table cannot infer: "the artifact records no rows" and
  * "there is no artifact yet" are different facts, and the browser read the
  * first one under a run that was still going.
+ *
+ * ## And the third situation in that class: a run an operator stopped
+ *
+ * `evaluate_gate` does not know a run was cancelled. Handed a cancelled
+ * artifact it evaluates the probes it finds, and a run stopped part-way through
+ * its suite has un-run probes — which the gate reds as MISSING. So the endpoint
+ * answers `exit_code: 1` with real failure lines for a run whose only fault is
+ * that somebody pressed Cancel, and the page used to print that beside its own
+ * header saying the outcome was never reported.
+ *
+ * "The gate failed" and "you stopped it before it finished" are different and
+ * differently actionable claims, and the first is much the stronger. So a
+ * cancelled run is treated exactly like a live one: the verdict query is
+ * suppressed at the source rather than merely hidden, and the slot states what
+ * happened instead. `RunDetail.cancelled` is the artifact's own field, written
+ * by the engine at the moment it honoured the cancel — not the control file,
+ * which is a leftover *request* and has been measured relabelling a run that
+ * completed all twelve of its trials.
+ *
+ * The probe table stays, and is not told the run was cancelled: its rows are
+ * real trials that really ran. What the operator must not conclude is that they
+ * are the whole suite, and that is said once, here, above them.
  */
 
 /**
@@ -180,6 +207,42 @@ function GateBanner({ verdict }: { verdict: GateVerdict }) {
           </ul>
         </div>
       ) : null}
+    </section>
+  );
+}
+
+/**
+ * The verdict slot on a run an operator stopped.
+ *
+ * It keeps the banner's box and the banner's display-size first line, because
+ * the slot's job is to be the sentence the room reads and a quieter treatment
+ * would let the eye skip to the probe rows and score them itself. What it does
+ * **not** keep is a status colour. Green and red are this surface's two verdict
+ * claims; spending either on a run that earned neither would be the same
+ * overclaim in a different medium. The mark is the one the status chip already
+ * uses for a cancelled run, so the two readings tie together by sight.
+ */
+function GateStopped() {
+  return (
+    <section
+      data-testid="gate-banner-cancelled"
+      /* Not "Gate verdict". The label is this region's accessible name, and
+         naming it after a verdict hands a screen reader the precise claim the
+         visible block was rewritten to stop making — the sighted fix and the
+         announced one have to say the same thing. */
+      aria-label="No gate verdict"
+      className="engrave-b rule-major px-4 py-4 sm:px-6"
+    >
+      <p className="flex items-center gap-2.5 text-display uppercase tracking-display text-chassis-900">
+        <IconBarred className="h-6 w-6 shrink-0" />
+        <span>no verdict</span>
+      </p>
+      <p className="mt-1.5 text-readout text-chassis-600">
+        An operator stopped this run. A gate verdict is only earned over a
+        complete artifact, and this one holds just the probes that finished
+        before the stop — so the rows below are partial evidence, and how this
+        build would have gated is unknown.
+      </p>
     </section>
   );
 }
@@ -316,7 +379,12 @@ export function GateRunDetail({
       : (run.probes.find((probe) => probe.id === allProbeId) ?? null);
   const gate = useQuery({
     queryKey: ["gate", run.run_id],
-    enabled: !live,
+    /* Suppressed at the source in both cases, not merely hidden. The server
+       answers this happily for a cancelled run — it evaluates whatever probes
+       the artifact holds — and a verdict nobody may show is a verdict nobody
+       should ask for: it warms a shared cache entry under this run's key that
+       any later reader would take for the run's real outcome. */
+    enabled: !live && !run.cancelled,
     queryFn: () =>
       apiGet<GateVerdict>(`/runs/${encodeURIComponent(run.run_id)}/gate`),
   });
@@ -333,6 +401,11 @@ export function GateRunDetail({
           No verdict yet — this run is still on the air. The gate is evaluated
           from the artifact, which is written when the run ends.
         </p>
+      ) : run.cancelled ? (
+        /* Ahead of every query state, for the same reason the live branch is:
+           with the query disabled it never leaves pending, and a stopped run
+           would otherwise sit under "Evaluating the gate…" forever. */
+        <GateStopped />
       ) : gate.isPending ? (
         <p className="engrave-t px-4 py-4 text-readout text-chassis-600 sm:px-6">
           Evaluating the gate…
