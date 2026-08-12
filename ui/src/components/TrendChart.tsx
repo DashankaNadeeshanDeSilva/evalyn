@@ -574,12 +574,16 @@ export function TrendChart({ series, metric, selectedProbeId }: TrendChartProps)
             the eye hunting for a lone dashed rule, and in the common case the
             rule has a healthy probe lying on top of it and looks like one solid
             line. So the entry now says where the rule names itself, and states
-            the overlap instead of leaving the operator to discover it. */}
+            the overlap instead of leaving the operator to discover it.
+
+            "Any", not "a": this clause renders whenever the rule does, and the
+            chart may hold no reading at the threshold at all. The conditional
+            reading is the only one that is true on every render. */}
         {facts.passLine === null ? null : (
           <span className="flex items-center gap-2">
             <KeyStroke width={1} ink={CHART_INK.pass} dash="6 4" />
             the pass line at {facts.format(facts.passLine)}, labelled on the
-            rule — a probe reading {facts.format(facts.passLine)} lies on it
+            rule — any probe reading {facts.format(facts.passLine)} lies on it
           </span>
         )}
 
