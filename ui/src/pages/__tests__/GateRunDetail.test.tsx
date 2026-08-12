@@ -10,6 +10,7 @@ import type { GateVerdict, RunDetail } from "../../api/types";
 import {
   DETAIL_GATE,
   GATE_VERDICT,
+  PROBE_ID_EXFIL,
   RUN_ID_DISCOVER,
   RUN_ID_GATE,
   RUN_ID_LEGACY,
@@ -175,6 +176,124 @@ describe("the gate banner", () => {
     await screen.findByText(/readable drill-downs/i);
     expect(screen.queryByTestId("gate-banner")).toBeNull();
     expect(screen.queryByTestId("scenario-table")).toBeNull();
+  });
+});
+
+/**
+ * A cancelled gate run, in the shape the engine actually writes one — checked
+ * against the artifact contract rather than against the TypeScript type.
+ *
+ * `cancelled: true` is the artifact's own field (`engine/run.py:431`,
+ * `cancelled=controller is not None and controller.cancelled`), and it is the
+ * same field `derive_status` reads to reach `status: "cancelled"`
+ * (`ui/index.py:358`), so on a gate run the two cannot disagree.
+ *
+ * The exfil probe is reduced to the shape `reduce_log_to_probes` produces for a
+ * probe whose epochs were never scored: `trials: 0`, `pass_at_k`/`pass_k` 0.0
+ * (`any([])`/`all([])` with `n == 0`), `mean_score` 0.0, and no trial records.
+ * The other two probes are untouched, and one of them is a safety-critical
+ * probe at `pass^k = 0.0` — so the gate genuinely fails over what did finish,
+ * which is exactly the trap: `GATE_VERDICT` is a real `exit_code: 1` with two
+ * named failures, and it is *not* the verdict this run earned.
+ *
+ * `verdict_hint` stays `failed` because `verdict_hint_of` reds any probe with
+ * `trials == 0` — the same overclaim, one layer down, that the runs list reads.
+ */
+const DETAIL_CANCELLED: RunDetail = {
+  ...DETAIL_GATE,
+  status: "cancelled",
+  cancelled: true,
+  probes: DETAIL_GATE.probes.map((probe) =>
+    probe.id === PROBE_ID_EXFIL
+      ? {
+          ...probe,
+          trials: 0,
+          pass_at_k: 0.0,
+          pass_k: 0.0,
+          mean_score: 0.0,
+          unsure_trials: 0,
+          trial_epochs: [],
+          checks: [],
+        }
+      : probe,
+  ),
+};
+
+describe("a run an operator stopped claims no verdict it did not earn", () => {
+  /**
+   * THE DISCRIMINATING GUARD.
+   *
+   * Asserting that "cancelled" renders somewhere would pass with the verdict
+   * block still on screen, which is the defect. So every assertion here is
+   * about the verdict's **absence**: no banner, no PASS/FAIL sentence, no exit
+   * code, and none of the failure lines the gate query really does return for
+   * this run.
+   */
+  it("shows no gate verdict and no exit code when an operator stopped the run", async () => {
+    withDetail(DETAIL_CANCELLED);
+    renderPage(RUN_ID_GATE);
+
+    const notice = await screen.findByTestId("gate-banner-cancelled");
+
+    /* Settle on a query that genuinely goes to the network before asserting an
+       absence. Otherwise "the banner is not there yet" reads as "the banner is
+       not there" — and a fix that suppressed the verdict only until its own
+       query resolved would score green. `/api/packs` is a separate round trip
+       on this page, so once the chip has its ceiling, a gate request issued at
+       mount has had its chance to land. */
+    const chip = await screen.findByTestId("cost-chip");
+    await waitFor(() => expect(chip.dataset["ceiling"]).toBe("known"));
+
+    expect(screen.queryByTestId("gate-banner")).toBeNull();
+    const page = document.body.textContent ?? "";
+    expect(page.toLowerCase()).not.toMatch(/gate (failed|passed)/);
+    expect(page.toLowerCase()).not.toContain("exit code");
+    for (const line of GATE_VERDICT.failures) {
+      expect(page, "a failure line from the gate query reached the screen")
+        .not.toContain(line);
+    }
+
+    // What stands in its place says who stopped it and that nothing was earned.
+    const said = notice.textContent?.toLowerCase() ?? "";
+    expect(said).toContain("stopped");
+    expect(said).toContain("no verdict");
+    expect(said).toContain("partial");
+
+    // The header and the evidence below are correct and must keep rendering.
+    expect(screen.getByTestId("scenario-table")).toBeInTheDocument();
+    expect(page.toLowerCase()).toContain("cancelled");
+  });
+
+  /**
+   * THE CONTROL — must stay GREEN.
+   *
+   * A run nobody stopped is completely unchanged: the verdict, its exit code,
+   * its failures and its quarantined list. A condition keyed on the wrong thing
+   * blanks the verdict for every run on the corpus, and this is what catches it.
+   *
+   * The exit code is `4`, which collides with nothing else on the page — not
+   * the probe counts (3, 7), not the scores (0.00, 0.50, 1.00), not the other
+   * exit codes this file uses (0, 1, 2). A number that appears twice cannot
+   * tell you which field was read.
+   */
+  it("still reports GATE FAILED and its exit code on a run nobody stopped", async () => {
+    withGate({
+      exit_code: 4,
+      failures: ["injection-exfil-boundaries: safety-critical probe failed pass^k (0.00 < 1.00)"],
+      quarantined: ["grounding-work-history: quarantined by the pack"],
+    });
+    renderPage(RUN_ID_GATE);
+
+    const banner = await screen.findByTestId("gate-banner");
+    expect(banner.dataset["verdict"]).toBe("fail");
+    expect(banner.textContent?.toLowerCase()).toContain("gate failed");
+    expect(banner.textContent?.toLowerCase()).toContain("exit code");
+    // The figure itself, read off the one tabular cell the banner prints it in
+    // — `toContain("4")` would also pass on a page that merely mentions a 4.
+    expect(banner.querySelector(".tabular-nums")?.textContent).toBe("4");
+    expect(banner.textContent).toContain("safety-critical probe failed pass^k");
+    expect(banner.textContent).toContain("quarantined by the pack");
+    expect(screen.queryByTestId("gate-banner-cancelled")).toBeNull();
   });
 });
 
