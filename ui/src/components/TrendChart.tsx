@@ -141,6 +141,20 @@ export function TrendChart({ series, metric, selectedProbeId }: TrendChartProps)
 
   const ticks = model.rows.map((row) => row.t);
 
+  /*
+   * How many of the SELECTED channel's readings carry the failure mark.
+   *
+   * The legend is keyed to this rather than to `facts.passLine`, because a
+   * legend entry for a mark nobody drew is a claim about the picture that the
+   * picture does not support — and it renders on exactly the screen where the
+   * operator is least able to check it, since selecting a single-reading
+   * channel draws no marks at all. Found by looking at the page.
+   */
+  const markedReadings =
+    facts.passLine === null || selected === undefined
+      ? 0
+      : selected.points.filter((p) => p.value < facts.passLine!).length;
+
   /**
    * A reading's mark. Shape first, colour second — a reading that did not reach
    * the pass line is a filled square in the failure hue, one that did is a small
@@ -244,6 +258,15 @@ export function TrendChart({ series, metric, selectedProbeId }: TrendChartProps)
           <YAxis
             type="number"
             domain={facts.domain}
+            /*
+             * Padding is applied to the RANGE, not the domain, so the scale
+             * still says exactly what `facts.domain` says — it only stops a
+             * reading that sits on the floor or the ceiling being drawn half
+             * outside the frame. `pass^k` spends most of its life at exactly
+             * 0.00 and 1.00, so this is the common case, not an edge one, and
+             * the clipped marks were visible on the first render of the page.
+             */
+            padding={{ top: 8, bottom: 8 }}
             tickFormatter={facts.format}
             width={68}
             stroke={CHART_INK.axis}
@@ -277,7 +300,14 @@ export function TrendChart({ series, metric, selectedProbeId }: TrendChartProps)
               />
             ))}
 
-          {selected && selected.trendable ? (
+          {/*
+            Drawn whenever the channel read at all, NOT only when it is
+            trendable: a single reading is a real measurement and the scope
+            shows it as a lone mark. Recharts draws no curve through one point,
+            so nothing here implies a trend the data cannot support — and the
+            caption says so in words underneath.
+          */}
+          {selected && selected.readings > 0 ? (
             <Line
               dataKey={(row: ChartRow) => row.values[selected.probeId]}
               name={selected.probeId}
@@ -311,7 +341,7 @@ export function TrendChart({ series, metric, selectedProbeId }: TrendChartProps)
           </span>
         ) : null}
 
-        {facts.passLine === null ? null : (
+        {markedReadings === 0 || facts.passLine === null ? null : (
           <span className="flex items-center gap-2">
             <KeyMark />
             did not reach {facts.format(facts.passLine)}

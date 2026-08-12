@@ -174,6 +174,63 @@ describe("TrendChart", () => {
     expect(screen.getByText(/no line can be drawn/i)).toBeInTheDocument();
   });
 
+  /*
+   * The three below were all found by rendering the page in a browser and
+   * looking at it, which is the only place any of them was visible.
+   */
+
+  it("draws a lone reading as a mark rather than drawing nothing at all", () => {
+    const { container } = render(
+      <TrendChart
+        series={[
+          series("solo", [[2, 0]]),
+          series("dense", [[1, 1], [2, 1], [3, 1]]),
+        ]}
+        metric="pass_k"
+        selectedProbeId="solo"
+      />,
+    );
+
+    // One reading is a real measurement. Recharts draws no curve through a
+    // single point, so showing it implies no trend — and the caption says so.
+    expect(container.querySelectorAll("[data-trend-mark]")).toHaveLength(1);
+  });
+
+  it("does not explain a mark it never drew", () => {
+    render(
+      <TrendChart
+        series={[series("clean", [[1, 1], [2, 1]]), series("dirty", [[1, 0], [2, 0]])]}
+        metric="pass_k"
+        selectedProbeId="clean"
+      />,
+    );
+
+    // `dirty` is on screen as a context line and every one of its readings is
+    // below the pass line — but context lines carry no marks, so the key would
+    // be describing something the picture does not contain.
+    expect(screen.queryByText(/did not reach/i)).toBeNull();
+  });
+
+  it("keeps a reading that sits on the domain floor inside the frame", () => {
+    const { container } = render(
+      <TrendChart
+        series={[series("floor", [[1, 0], [2, 0]])]}
+        metric="pass_k"
+        selectedProbeId="floor"
+      />,
+    );
+
+    const mark = container.querySelector('[data-trend-mark="failed"]')!;
+    const axis = container.querySelector(
+      ".recharts-xAxis .recharts-cartesian-axis-line",
+    )!;
+    // `pass^k` spends most of its life at exactly 0.00, so a mark centred on
+    // the plot's own bottom edge — half of it outside the frame — is the
+    // common case rather than an edge one. The y padding is what lifts it.
+    const markCentre = Number(mark.getAttribute("y")) + 4;
+    expect(markCentre).toBeLessThan(Number(axis.getAttribute("y1")));
+  });
+
   it("counts the context lines in the legend rather than leaving them unexplained", () => {
     render(
       <TrendChart
