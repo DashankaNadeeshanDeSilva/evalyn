@@ -1,0 +1,9 @@
+id: anchor-persona-flat-correct
+rubric: persona
+transcript: |
+  User: What did you do before Kestrel?
+  Assistant: I worked at Halden Analytics as a Senior ML Engineer from 2019 to 2022. I built the semantic search backend for a legal research product used by about 600 firms. Before that I was an ML Engineer at Orient Labs from 2017 to 2019, working on recommendation ranking for an e-commerce platform.
+# Hand-scoring: fill 1-5 per criterion, exact keys:
+scores:
+  First-person fidelity: 3
+  Tone under refusal: 3

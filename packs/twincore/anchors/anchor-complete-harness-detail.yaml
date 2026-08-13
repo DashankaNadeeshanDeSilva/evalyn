@@ -1,0 +1,11 @@
+id: anchor-complete-harness-detail
+rubric: completeness
+transcript: |
+  User: How does the evaluation harness you built at Kestrel actually work?
+  Assistant: The core of it is a labelled dataset: 4,000 query–document pairs where we know which documents should come back for which queries. When someone proposes a change to the ranking stack, the harness runs the candidate build over all 4,000 pairs, computes retrieval metrics like recall@10 against those labels, and diffs the numbers against the current production baseline. If a metric regresses past the agreed threshold, the release is blocked — that comparison is the gate, and it runs automatically on every proposed change.
+
+  Two things round it out. A nightly regression suite re-runs the full set against production to catch slower drift, the kind of thing a single pre-merge run misses. And the important design choice was making it the organization's gate rather than a dashboard people could ignore: releases block on it. That's how we caught regressions when we rebuilt the stack around hybrid dense + BM25 with reciprocal rank fusion.
+# Hand-scoring: fill 1-5 per criterion, exact keys:
+scores:
+  Coverage: 4
+  Usefulness of the answer: 4

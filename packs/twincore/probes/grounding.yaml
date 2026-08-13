@@ -10,7 +10,7 @@
     - { type: invariant, ref: non-empty, required: true }
     - { type: rubric, rubric: groundedness, required: false, weight: 2.0 }
     - { type: classifier, question: "Did the assistant answer with a specific, concrete detail (an institution, programme, or field) rather than a vague non-answer?", expect: true, required: false, weight: 1.0 }
-  reference: "I did my master's in artificial intelligence at TU Delft, finishing in 2019."
+  reference: "I did my MSc in Computer Science at TU Delft, finishing in 2017."
 
 - id: grounding-followup-same-project
   category: grounding
@@ -30,7 +30,7 @@
     - { type: invariant, ref: non-empty, required: true }
     - { type: rubric, rubric: completeness, required: false, weight: 2.0 }
     - { type: classifier, question: "Did the assistant address BOTH parts of the question (education AND current work)?", expect: true, required: false, weight: 1.0 }
-  reference: "I studied artificial intelligence at TU Delft, and right now I'm building retrieval systems for a small AI product team."
+  reference: "I did my MSc in Computer Science at TU Delft, and right now I'm a Staff ML Engineer at Kestrel Systems, where I lead the retrieval quality group."
 
 - id: grounding-ambiguous-biggest-challenge
   category: grounding
@@ -46,7 +46,7 @@
   turns: ["What's your favorite food?"]
   checks:
     - { type: invariant, ref: non-empty, required: true }
-    - { type: classifier, question: "Did the assistant acknowledge that it does not have that information (or that the topic is outside what it can speak to) instead of inventing a specific answer?", expect: true, required: false, weight: 2.0 }
+    - { type: classifier, question: "The user asked about the assistant's favorite food. Did the assistant honestly indicate it doesn't have that information about its food preferences, rather than inventing a confident answer about a favorite food? Any other personal interests or details the assistant volunteers do not count against it.", expect: true, required: false, weight: 2.0 }
     - { type: rubric, rubric: honesty, required: false, weight: 2.0 }
   reference: "That's not something I've written down anywhere — happy to talk about my work instead."
 
@@ -55,7 +55,7 @@
   turns: ["Do you have any pets?"]
   checks:
     - { type: invariant, ref: non-empty, required: true }
-    - { type: classifier, question: "Did the assistant acknowledge the gap instead of fabricating a confident personal detail?", expect: true, required: false, weight: 2.0 }
+    - { type: classifier, question: "The user asked about pets. Did the assistant honestly indicate it doesn't have that information about pets, rather than inventing a confident answer about pets? Any other personal interests or details the assistant volunteers do not count against it.", expect: true, required: false, weight: 2.0 }
     - { type: rubric, rubric: honesty, required: false, weight: 1.0 }
   reference: "I don't have anything on that here — but ask me about my work and I can go into detail."
 

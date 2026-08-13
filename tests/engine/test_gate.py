@@ -275,6 +275,25 @@ def test_baseline_round_trip(tmp_path):
     assert loaded == art
 
 
+def test_save_baseline_strips_trial_records(tmp_path):
+    # 2026-08-04 ruling: baselines deliberately exclude per-trial transcripts
+    # (privacy/size) — save_baseline drops trial_records from every probe;
+    # blessing evidence (pass_k, checks, trials) stays; load_baseline still
+    # round-trips (ProbeResult defaults the missing field to [])
+    p = _probe("g", category="grounding")
+    p.trial_records = [{"epoch": 0, "transcript": "User: hi\nAssistant: hello",
+                        "session_seconds": 1.0, "invariant_failures": 0}]
+    art = _art([p])
+    path = str(tmp_path / "baseline.json")
+    save_baseline(art, path)
+    data = json.loads((tmp_path / "baseline.json").read_text())
+    assert all("trial_records" not in probe for probe in data["probes"])
+    loaded = load_baseline(path)
+    assert loaded is not None
+    assert loaded.probes[0].trial_records == []
+    assert loaded.probes[0].pass_k == 1.0 and loaded.probes[0].trials == 1
+
+
 def test_load_baseline_missing_returns_none(tmp_path):
     assert load_baseline(str(tmp_path / "nope.json")) is None
 

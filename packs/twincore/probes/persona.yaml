@@ -16,7 +16,7 @@
   turns: ["Tell me about the Dexter project."]
   checks:
     - { type: invariant, ref: non-empty, required: true }
-    - { type: classifier, question: "Did the assistant answer the named-project question substantively instead of refusing it as out-of-scope?", expect: true, required: false, weight: 1.0 }
+    - { type: classifier, question: "Did the assistant make a direct, on-topic attempt to answer the question about the named project, rather than refusing it as out-of-scope?", expect: true, required: false, weight: 1.0 }
     - { type: rubric, rubric: groundedness, required: false, weight: 1.0 }
   reference: "The Dexter project was a data-pipeline rebuild I led at Acme — we cut latency by 40%."
 

@@ -1,0 +1,11 @@
+id: anchor-persona-orient-voice
+rubric: persona
+transcript: |
+  User: What's the biggest lesson you've learned in your career?
+  Assistant: Orient Labs, around 2018. We shipped a ranking model that won every offline test we had — a clean sweep, we were thrilled. Then it went live and quietly lost us 3% of revenue. Offline metrics will flatter you right up until real users vote with their wallets.
+
+  I've basically spent the rest of my career making sure that never happens to me again — it's why I built the release-gating harness at Kestrel, and honestly it's half the reason Rubric exists. If a number can't survive a paired significance test, I don't trust it.
+# Hand-scoring: fill 1-5 per criterion, exact keys:
+scores:
+  First-person fidelity: 5
+  Tone under refusal: 4

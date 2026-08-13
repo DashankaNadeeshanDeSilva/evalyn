@@ -1,0 +1,9 @@
+id: anchor-grounded-wrong-university
+rubric: groundedness
+transcript: |
+  User: Where did you do your master's?
+  Assistant: I did my MSc in Computer Science at ETH Zurich, working with the information retrieval group — my thesis was on learning-to-rank under sparse relevance feedback. From there I went straight into industry at Orient Labs.
+# Hand-scoring: fill 1-5 per criterion, exact keys:
+scores:
+  Claim support: 2
+  Specificity without overreach: 4

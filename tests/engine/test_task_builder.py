@@ -8,9 +8,9 @@ from evalyn.targets.loader import load_pack
 MINIPACK = Path(__file__).parent.parent / "fixtures" / "minipack"
 
 
-def test_build_task_runs_and_records_reducers(toy_target, monkeypatch):
+def test_build_task_runs_and_records_reducers(toy_target, monkeypatch, live_pack_dir):
     monkeypatch.setenv("EVALYN_TARGET_URL", toy_target)
-    pack = load_pack(MINIPACK)
+    pack = load_pack(live_pack_dir(MINIPACK))
     task = build_task(pack, judge_model="mockllm/model")
     meta = task.dataset[0].metadata
     assert {"id", "category", "kind", "safety_critical", "turns", "checks", "samples"} <= meta.keys()
@@ -68,6 +68,20 @@ def test_judge_family_matching_generator_family_warns(tmp_path):
         build_task(pack, judge_model="mockllm/model")
 
 
+def test_tier2_judge_matching_generator_family_warns(tmp_path):
+    # #2b Task 10: gate parity with the tier-3 rule — the TIER-2 classifier
+    # judge gets the same self-preference-bias warning as the rubric judge.
+    # rubric_model is a DIFFERENT family so the tier-3 sibling stays silent
+    # and this warning fires independently.
+    import pytest
+    from evalyn.targets.schema import JudgeSpec
+
+    pack = _mem_pack(tmp_path, judge=JudgeSpec(
+        rubric_model="anthropic/claude-sonnet-5", generator_family="openai"))
+    with pytest.warns(UserWarning, match="(?i)tier-2"):
+        build_task(pack, judge_model="openai/gpt-4o")
+
+
 def test_rubric_judge_model_override_avoids_family_warning(tmp_path, recwarn):
     from evalyn.targets.schema import JudgeSpec
 
@@ -77,3 +91,70 @@ def test_rubric_judge_model_override_avoids_family_warning(tmp_path, recwarn):
                rubric_judge_model="anthropic/claude-sonnet-5")
     assert not [w for w in recwarn.list if issubclass(w.category, UserWarning)
                 and "family" in str(w.message)]
+
+
+# --- Task 9: family-parity check extended to the discovery agent ---------------
+
+def test_family_discovery_none_reproduces_today(tmp_path):
+    # R9-2: discovery_model=None (the default) must reproduce today's EXACT
+    # output — the pre-existing judge<->generator warnings, verbatim, and no
+    # refuse-class entry. Pins zero behaviour change for callers with no
+    # discovery model.
+    from evalyn.engine.task_builder import REFUSE_PREFIX, family_warnings
+    from evalyn.targets.schema import JudgeSpec
+
+    pack = _mem_pack(tmp_path, judge=JudgeSpec(
+        rubric_model="openai/gpt-4o", generator_family="openai"))
+    msgs = family_warnings(pack, judge_model="mockllm/model",
+                           rubric_model="openai/gpt-4o")
+    assert msgs == [
+        "rubric judge model 'openai/gpt-4o' is the same model family as "
+        "the target's generator ('openai') — self-preference bias risk; "
+        "prefer a different judge family"]
+    # Passing discovery_model=None explicitly is identical to omitting it.
+    assert family_warnings(pack, judge_model="mockllm/model",
+                           rubric_model="openai/gpt-4o",
+                           discovery_model=None) == msgs
+    # No refuse-class entry appears in the pre-existing output.
+    assert not any(m.startswith(REFUSE_PREFIX) for m in msgs)
+
+
+def test_family_warns_discovery_vs_generator(tmp_path):
+    # discovery agent shares the target's GENERATOR family -> WARN-class (soft).
+    # The rubric judge is a DIFFERENT family, so only the discovery<->generator
+    # collision fires (isolates this rule from the refuse rule).
+    from evalyn.engine.task_builder import REFUSE_PREFIX, family_warnings
+    from evalyn.targets.schema import JudgeSpec
+
+    pack = _mem_pack(tmp_path, judge=JudgeSpec(
+        rubric_model="anthropic/claude-sonnet-5", generator_family="openai"))
+    msgs = family_warnings(pack, judge_model="mockllm/model",
+                           rubric_model="anthropic/claude-sonnet-5",
+                           discovery_model="openai/gpt-4o")
+    disc = [m for m in msgs if "discovery" in m.lower()]
+    assert disc, f"expected a discovery-vs-generator warning, got {msgs!r}"
+    # It is WARN-class (soft), NOT refuse-class: discriminates the two classes.
+    assert not any(m.startswith(REFUSE_PREFIX) for m in disc)
+    assert any("generator" in m for m in disc)
+
+
+def test_family_refuses_discovery_vs_judge(tmp_path):
+    # discovery agent shares the RUBRIC JUDGE family -> REFUSE-class
+    # (disqualifying). The generator family differs from the discovery family,
+    # so ONLY the discovery<->judge collision fires (isolates this rule).
+    from evalyn.engine.task_builder import REFUSE_PREFIX, family_warnings
+    from evalyn.targets.schema import JudgeSpec
+
+    pack = _mem_pack(tmp_path, judge=JudgeSpec(
+        rubric_model="anthropic/claude-sonnet-5", generator_family="openai"))
+    msgs = family_warnings(pack, judge_model="mockllm/model",
+                           rubric_model="anthropic/claude-sonnet-5",
+                           discovery_model="anthropic/claude-opus-4")
+    refuse = [m for m in msgs if m.startswith(REFUSE_PREFIX)]
+    # A refuse-class entry carrying the stable, machine-detectable prefix must
+    # exist. Were this collision (mis)labeled WARN-class, no message would carry
+    # the prefix and this assertion would fail -> the test discriminates the
+    # entry's CLASS, not merely its prose.
+    assert refuse, f"expected a {REFUSE_PREFIX!r}-prefixed entry, got {msgs!r}"
+    assert any("discovery" in m.lower() for m in refuse)
+    assert any("judge" in m.lower() for m in refuse)

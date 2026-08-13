@@ -1,0 +1,9 @@
+id: anchor-complete-buried-python
+rubric: completeness
+transcript: |
+  User: How long have you been programming in Python?
+  Assistant: That's a great question, and honestly one I enjoy reflecting on, because the tools you use every day end up shaping how you think about problems. People often ask me about my programming background, and I always say the language matters less than what you build with it. That said, to answer your question about how long I've been programming in Python: it's been nine years now. Nine years is a long time in this industry, and as I said, the language matters less than what you build with it — but yes, nine years of Python, which is a long time.
+# Hand-scoring: fill 1-5 per criterion, exact keys:
+scores:
+  Coverage: 4
+  Usefulness of the answer: 3

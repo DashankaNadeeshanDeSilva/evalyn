@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import copy
 import hashlib
 import json
 import os
@@ -16,9 +17,17 @@ from inspect_ai import eval as inspect_eval
 from inspect_ai.log import read_eval_log
 
 from evalyn.engine.budget import BudgetExceeded, estimate_cost
+from evalyn.engine.control import RunController
+from evalyn.engine.events import NULL_SINK, EventSink
 from evalyn.engine.task_builder import build_task
 from evalyn.scoring.checks import aggregate_trial
 from evalyn.targets.loader import Pack
+# The run-id grammar has ONE home (ruling R4-7): the frozen contract in
+# `evalyn.ui.models`. Importing it here — rather than re-spelling the check —
+# is what keeps the writer and the cockpit's `RunId` type from ever disagreeing.
+# The module is pure pydantic (no fastapi/starlette/uvicorn, asserted by
+# `tests/ui/test_models.py`), so this costs the engine no web dependency.
+from evalyn.ui.models import is_run_id
 
 
 @dataclass
@@ -45,6 +54,21 @@ class ProbeResult:
     unsure_trials: int = 0    # NOANSWER accounting: required-unsure or no-signal
     #                           (all non-required unsure) trials, not failures
     checks: list[dict] = field(default_factory=list)  # representative CheckResults
+    # Per-trial evidence, one dict per SCORED epoch (same rule as `trials`),
+    # sorted by epoch: {"epoch": int, "transcript": str, "checks": list[dict],
+    # "session_seconds": float | None, "invariant_failures": int}. `checks` is
+    # THIS epoch's own CheckResults across every scorer (Task 22) — the field
+    # above is one representative epoch's, so the cockpit's per-trial
+    # drill-down cannot be served from it. Also additive: artifacts written
+    # before Task 22 carry no such key and read as [] ("not captured"). The
+    # transcript is the judged one (labeled_transcript format: "User: …\n
+    # Assistant: …" — identical to what Tier-2/3 saw); session_seconds is the
+    # target session wall-clock the solver stored — concurrency-gate queue wait
+    # excluded (None on pre-#2b logs);
+    # invariant_failures counts FAILED `invariant:<id>` checks. Additive
+    # (#2b Task 6): old artifacts/baselines load with [] — this is the compare
+    # mode's pairing input (Task 8).
+    trial_records: list[dict] = field(default_factory=list)
 
 
 @dataclass
@@ -68,6 +92,18 @@ class RunArtifact:
     # checks came back unsure — judge-infra failures, distinct from product
     # failures. Sum of per-probe `unsure_trials`.
     total_unsure_trials: int = 0
+    # True when an operator cancelled this run mid-flight (Plan #4, Task 19).
+    # ADDITIVE with a default, the established pattern (cf. `expected_trials`,
+    # `eval_status`): `from_dict` raises on unknown keys, so a pre-#4 artifact
+    # simply has no such key and reads as `False` — "nobody cancelled it" —
+    # which is true of every artifact written before this field existed.
+    #
+    # It is what separates "the operator stopped this" from "the gate failed".
+    # A cancelled run's un-run probes come back `trials=0`, which the gate
+    # hard-fails as MISSING (fail-closed, and correct — a probe that never ran
+    # must never read as a pass); without this flag the cockpit and the
+    # operator have no way to tell that verdict apart from a real regression.
+    cancelled: bool = False
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -99,6 +135,58 @@ class RunArtifact:
                 f"({e}); this artifact does not match the current schema") from e
 
 
+def new_run_id(pack_name: str) -> str:
+    """Mint `<stamp><micros>-<uuid8>-<slug>` — a run's identity, no suffix.
+
+    Factored out of `atomic_write_artifact` (it is the *same* minting, moved,
+    not a second one) so a launcher can know the id BEFORE the run starts and
+    pass it down as `EVALYN_RUN_ID`. Collision-proof (microseconds + a short
+    uuid, so parallel or same-second runs never `os.replace`-clobber each other)
+    and filesystem-safe (the pack name is slugified, so an odd or hostile name
+    cannot escape `out_dir`).
+    """
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%f")
+    slug = re.sub(r"[^A-Za-z0-9._-]+", "-", pack_name).strip("-.") or "pack"
+    return f"{stamp}-{uuid.uuid4().hex[:8]}-{slug}"
+
+
+def atomic_write_artifact(payload: dict, pack_name: str, out_dir: str,
+                          suffix: str, *, run_id: str | None = None) -> Path:
+    """Write `payload` as JSON to `out_dir/<run_id><suffix>.json`.
+
+    The house pattern, factored so `gate`, `compare` and `discover` share ONE
+    writer instead of three copies that drift (R8-13). Atomic temp-then-rename:
+    a crash mid-write never leaves a torn artifact. `suffix` distinguishes the
+    modes: "" for gate, "-compare", "-discover".
+
+    `run_id` is **keyword-only and optional, and `None` mints exactly as before**
+    — same stamp, same uuid8, same slug rules — so every existing caller writes
+    a byte-identical filename format and no artifact already on disk changes
+    meaning. A caller that passes one (the `ui` launcher, via `EVALYN_RUN_ID`
+    read in `cli.py`) knows the artifact's path before the run starts, which is
+    what lets the server correlate a run without newest-file heuristics.
+
+    This function **never reads the process env** (a test asserts it by reading
+    this source, so mind the wording): env is how a subprocess is told its id,
+    the parameter is how that id flows onward. A hostile or malformed id is
+    refused rather than joined onto a path (`is_run_id` admits no `/`).
+    """
+    if run_id is None:
+        run_id = new_run_id(pack_name)
+    elif not is_run_id(run_id):
+        raise ValueError(
+            f"not a run_id: {run_id!r} — expected an artifact stem like "
+            f"'20260807T101112000000-deadbeef-example' (no directory, no .json)")
+    out_path = Path(out_dir)
+    out_path.mkdir(parents=True, exist_ok=True)
+    final = out_path / f"{run_id}{suffix}.json"
+    fd, tmp = tempfile.mkstemp(dir=out_path, suffix=".tmp")
+    with os.fdopen(fd, "w") as f:
+        f.write(json.dumps(payload, indent=2, default=str))
+    os.replace(tmp, final)
+    return final
+
+
 def pack_fingerprint(pack: Pack) -> str:
     """SHA-256 over the RAW pack file bytes (target.yaml + probes + rubrics).
 
@@ -114,7 +202,33 @@ def pack_fingerprint(pack: Pack) -> str:
     return h.hexdigest()
 
 
-def _reduce_log_to_probes(log, pack: Pack) -> list[ProbeResult]:
+def _sample_transcript(sample) -> str:
+    """The judged transcript, rebuilt from the log sample's messages.
+
+    Same format as scoring/transcript.py's labeled_transcript (the text
+    Tier-2/3 judged) — by role name here because log messages are re-parsed
+    ChatMessage variants, not the solver's original instances.
+    """
+    blocks = []
+    for m in sample.messages or []:
+        role = getattr(m, "role", "")
+        if role == "user":
+            blocks.append(f"User: {m.text}")
+        elif role == "assistant":
+            blocks.append(f"Assistant: {m.text}")
+    return "\n".join(blocks)
+
+
+def reduce_log_to_probes(log, pack: Pack,
+                         sink: EventSink = NULL_SINK) -> list[ProbeResult]:
+    """Log -> per-probe results. `sink` emits `probe.scored`, POST-HOC.
+
+    Post-hoc is the only honest place for it: scoring happens inside Inspect's
+    scorers, and the per-probe verdict does not exist until every epoch's checks
+    have been aggregated here. A cockpit therefore sees trials stream live and
+    the probe verdicts land in one burst at the end — which is what actually
+    happens.
+    """
     by_id = {p.id: p for p in pack.probes}
     # Group CheckResults per (probe_id, epoch) across ALL scorers present in the
     # log (tier3 lands later — never hardcode a scorer list). The authority is
@@ -123,12 +237,19 @@ def _reduce_log_to_probes(log, pack: Pack) -> list[ProbeResult]:
     # fully-errored probe keeps trials == 0 and the gate hard-fails it as
     # MISSING — never a silent pass (fail-closed, Plan #1 rule).
     trials: dict[str, dict[int, list[dict]]] = defaultdict(lambda: defaultdict(list))
+    # Per-sample evidence for trial_records: the judged transcript plus the
+    # session wall-clock the solver put in the sample store. Captured for every
+    # sample; only SCORED epochs (present in `trials`) ever emit a record.
+    sample_info: dict[tuple[str, int], tuple[str, float | None]] = {}
     for sample in log.samples or []:
         pid = sample.metadata["id"] if sample.metadata else sample.id
         for sc in (sample.scores or {}).values():
             checks = (sc.metadata or {}).get("checks") or []
             if checks:
                 trials[pid][sample.epoch].extend(checks)
+        sample_info[(pid, sample.epoch)] = (
+            _sample_transcript(sample),
+            (sample.store or {}).get("evalyn:session_seconds"))
 
     # The task runs EVERY probe at the pack-wide max(samples) (task_builder's
     # Epochs(k)) — record that expectation so the gate can fail probes whose
@@ -144,7 +265,9 @@ def _reduce_log_to_probes(log, pack: Pack) -> list[ProbeResult]:
         req_passes: list[bool] = []
         unsure_ct = 0
         scores: list[float] = []
-        for _epoch, crs in per_epoch.items():
+        trial_records: list[dict] = []
+        for epoch in sorted(per_epoch):
+            crs = per_epoch[epoch]
             req_pass, trial_unsure, trial_score = aggregate_trial(crs)
             req_passes.append(req_pass)
             unsure_ct += 1 if trial_unsure else 0
@@ -154,27 +277,90 @@ def _reduce_log_to_probes(log, pack: Pack) -> list[ProbeResult]:
             # fail open (PR #4 fix #1).
             if trial_score is not None:
                 scores.append(trial_score)
+            transcript, session_seconds = sample_info.get((pid, epoch), ("", None))
+            trial_records.append({
+                "epoch": epoch,
+                "transcript": transcript,
+                # THIS epoch's own checks, across every scorer (Task 22). The
+                # probe-level `checks` are one *representative* epoch's, so the
+                # drill-down had nothing true to show and served [].
+                #
+                # DEEP-copied. One epoch's list is also the representative
+                # list, and a `list(...)` would only have separated the two
+                # list objects while leaving every check DICT shared — so an
+                # in-place `pr.checks[0]["evidence"] = ...` (what a redactor
+                # does) still rewrote the trial record. The isolation this
+                # comment promises is the isolation deepcopy provides.
+                "checks": copy.deepcopy(crs),
+                "session_seconds": session_seconds,
+                "invariant_failures": sum(
+                    1 for c in crs
+                    if str(c.get("check", "")).startswith("invariant:")
+                    and c.get("passed") is False),
+            })
         pass_at_k = 1.0 if any(req_passes) else 0.0
         pass_k = 1.0 if (n > 0 and all(req_passes)) else 0.0
         # no trial produced a usable score -> 0.0 (fail-closed), surfaced via
         # unsure_trials, never a silent perfect mean
         mean_score = sum(scores) / len(scores) if scores else 0.0
-        # carry one epoch's checks as representative evidence for the report
-        rep_checks = next(iter(per_epoch.values())) if per_epoch else []
+        # Carry one epoch's checks as representative evidence for the report —
+        # a FAILING one when there is one (Task 22). The verdict is pass^k, so
+        # a probe that deviated on epoch 4 of 7 is a failure, and representing
+        # it by the first epoch printed `pass^k=0.0  7 checks  0 failed`: a
+        # report contradicting its own verdict.
+        epochs = sorted(per_epoch)
+        # The epochs the pass^k verdict is about.
+        failed = [e for e, ok in zip(epochs, req_passes) if not ok]
+        # Prefer one that actually SHOWS a `passed: false`. `not req_pass` is
+        # also true for a required check that ABSTAINED (unsure, passed=None),
+        # and twincore-injection's `injection.yaml` ends several probes with a
+        # required tier-2 classifier, which is a judge call that can abstain.
+        # Representing the probe by the abstaining epoch would print
+        # `pass^k=0.0 … 0 failed` all over again — the exact incoherence this
+        # code exists to remove — while a later epoch had the real deviation.
+        # Lowest epoch number first throughout, so the choice is deterministic
+        # when several qualify.
+        rep_epoch = next(
+            (e for e in failed
+             if any(c.get("passed") is False for c in per_epoch[e])),
+            # No epoch shows a false: every failing one only abstained, so the
+            # lowest of those (its `unsure` entries are the honest evidence).
+            # Nothing failed at all -> the lowest epoch, as before. Note this
+            # is lowest epoch NUMBER; pre-Task-22 it was the first epoch in LOG
+            # order, which for an out-of-order log is not the same epoch.
+            next(iter(failed), epochs[0] if epochs else None))
+        rep_checks = per_epoch[rep_epoch] if rep_epoch is not None else []
         results.append(ProbeResult(
             id=pid, category=probe.category, kind=probe.kind,
             safety_critical=probe.safety_critical, samples=probe.samples,
             trials=n, expected_trials=expected, pass_at_k=pass_at_k,
             pass_k=pass_k, mean_score=mean_score,
-            unsure_trials=unsure_ct, checks=rep_checks))
+            unsure_trials=unsure_ct, checks=rep_checks,
+            trial_records=trial_records))
+        sink.emit("probe.scored", probe_id=pid, category=probe.category,
+                  safety_critical=probe.safety_critical, trials=n,
+                  expected_trials=expected, pass_at_k=pass_at_k, pass_k=pass_k,
+                  mean_score=mean_score, unsure_trials=unsure_ct)
     return results
 
 
-def _judge_usd() -> float:
-    """Aggregate judge spend for the just-finished eval (post-hoc metering)."""
+#: Pre-Plan-#3 private name. The reducer went public when `discover`'s
+#: replay-once began reusing it (spec §7: replay runs the gate's OWN machinery,
+#: it does not re-derive a verdict), and the alias keeps every earlier caller
+#: and test importing the private name working unchanged.
+_reduce_log_to_probes = reduce_log_to_probes
+
+
+def _judge_usd(log) -> float:
+    """Judge spend for THIS eval, read from the returned eval log.
+
+    Never the process-global model_usage() ContextVar: that value is set inside
+    Inspect's eval event-loop context and does not propagate here (it returned
+    {} on every real run — live-confirmed 2026-07-28), and it accumulates
+    across evals in one process (would double-count compare's second eval).
+    """
     try:
-        from inspect_ai.model._model import model_usage
-        return estimate_cost(model_usage())
+        return estimate_cost(log.stats.model_usage)
     except Exception as e:
         # Fail-open by design (brief): metering failure must not kill the run.
         # But be LOUD about it — a silent 0.0 would quietly disable the cap.
@@ -188,7 +374,29 @@ def run_gate(pack: Pack, judge_model: str = "mockllm/model",
              log_dir: str = "runs/logs", rubric_judge_model: str | None = None,
              rubric_scores_untrusted: bool = False,
              out_dir: str = "runs",
-             cache_dir: str | Path | None = None) -> RunArtifact:
+             cache_dir: str | Path | None = None,
+             *, run_id: str | None = None,
+             sink: EventSink = NULL_SINK,
+             controller: RunController | None = None) -> RunArtifact:
+    """Run the probe suite and write the artifact.
+
+    `sink` is **opt-in and inert by default** (`NULL_SINK`): with no sink this
+    function does exactly what it did before the event stream existed, which
+    `tests/engine/test_events_noop.py` proves by artifact equality. Nothing here
+    branches on the sink and nothing constructs one.
+
+    `controller` is opt-in the same way (`None` = nobody can pause or stop this
+    run, and nothing is read from disk). With one, pause **starts no new
+    samples** — samples already inside the solver run to completion and keep
+    spending — and cancel marks the artifact `cancelled` rather than raising:
+    the CLI turns that into exit 3, and `--update-baseline` refuses it. Raising
+    here would deny the caller the partial evidence, which on a cancelled run is
+    the only evidence there is.
+    """
+    sink.emit("run.started", mode="gate", pack=pack.spec.name,
+              probes=len(pack.probes), judge_model=judge_model,
+              rubric_judge_model=rubric_judge_model or pack.spec.judge.rubric_model,
+              run_id=run_id)
     # Grading-steps cache for the tier-3 judge. Defaults to the pack's .cache
     # dir — the SAME location `evalyn calibrate` caches under — so gate trials
     # are judged with the steps calibration validated, instead of regenerating
@@ -196,14 +404,21 @@ def run_gate(pack: Pack, judge_model: str = "mockllm/model",
     steps_cache = Path(cache_dir) if cache_dir is not None else Path(pack.root) / ".cache"
     task = build_task(pack, judge_model=judge_model,
                       rubric_judge_model=rubric_judge_model,
-                      cache_dir=steps_cache)
+                      cache_dir=steps_cache, sink=sink, controller=controller)
     logs = inspect_eval(task, model="mockllm/model", log_dir=log_dir, display="none")
     log = logs[0]
+    # An `EarlyStop`ped sample leaves `status == "success"` (measured, Task 0
+    # spike Q2), so this guard needs no cancel-shaped exception.
     if log.status != "success":
         raise RuntimeError(f"inspect eval did not succeed: status {log.status!r}")
     if log.samples is None and log.location:
         log = read_eval_log(log.location)
-    probes = _reduce_log_to_probes(log, pack)
+    probes = reduce_log_to_probes(log, pack, sink)
+    # One last look before the artifact is built. A cancel that lands after the
+    # final `schedule_sample` would otherwise be invisible — the run completed
+    # in full, but the operator did ask it to stop and the artifact must say so.
+    if controller is not None:
+        controller.refresh("run.reduced")
     art = RunArtifact(
         pack_name=pack.spec.name,
         pack_hash=pack_fingerprint(pack),
@@ -213,39 +428,57 @@ def run_gate(pack: Pack, judge_model: str = "mockllm/model",
         log_path=str(log.location) if log.location else log_dir,
         rubric_scores_untrusted=rubric_scores_untrusted,
         total_unsure_trials=sum(p.unsure_trials for p in probes),
+        cancelled=controller is not None and controller.cancelled,
     )
-    art.judge_usd = _judge_usd()
+    art.judge_usd = _judge_usd(log)
+    sink.emit("spend.updated", judge_usd=art.judge_usd,
+              max_usd_per_run=pack.spec.budget.max_usd_per_run)
     # Write the artifact BEFORE any budget check so a partial/complete artifact
     # survives a budget breach for inspection. Atomic temp-then-rename so a
-    # crash mid-write never leaves a torn artifact behind.
-    out_path = Path(out_dir)
-    out_path.mkdir(parents=True, exist_ok=True)
-    # Collision-proof, filesystem-safe name (fix #11): microseconds + a short
-    # uuid so parallel/fast runs never os.replace-clobber each other, and the
-    # pack name is slugified so a hostile/odd name cannot escape out_dir.
-    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%f")
-    slug = re.sub(r"[^A-Za-z0-9._-]+", "-", pack.spec.name).strip("-.") or "pack"
-    fd, tmp = tempfile.mkstemp(dir=out_path, suffix=".tmp")
-    with os.fdopen(fd, "w") as f:
-        f.write(json.dumps(art.to_dict(), indent=2, default=str))
-    os.replace(tmp, out_path / f"{stamp}-{uuid.uuid4().hex[:8]}-{slug}.json")
-    # Fully-dead target (round-2 N6): with fail_on_error=False every sample can
-    # error individually while log.status stays "success" — if NO probe
-    # collected a single scored trial the run is a SETUP failure (CLI exit 2),
-    # not an all-MISSING gate FAIL. Raised AFTER the artifact write (house
-    # pattern: write-before-raise) so the evidence survives for inspection.
-    # A partially-dead run still proceeds — per-probe incompleteness is the
-    # gate's job (expected_trials / INCOMPLETE).
-    if probes and all(p.trials == 0 for p in probes):
-        raise RuntimeError(
-            "no probe collected a single scored trial — every session errored "
-            "(target down or misconfigured?); the run artifact was still "
-            f"written under {out_dir}/ for inspection")
-    # Post-hoc budget gate: there is no mid-run stop, so the run may already
-    # have overshot the cap — the breach is raised after metering.
-    cap = pack.spec.budget.max_usd_per_run
-    if cap and art.judge_usd > cap:
-        raise BudgetExceeded(
-            f"judge spend ${art.judge_usd:.4f} exceeded max_usd_per_run ${cap:.2f} "
-            f"(partial artifact written)")
+    # crash mid-write never leaves a torn artifact behind (shared writer, R8-13).
+    written = atomic_write_artifact(art.to_dict(), pack.spec.name, out_dir,
+                                    suffix="", run_id=run_id)
+    sink.emit("artifact.written", path=str(written))
+    # Both terminal conditions below are already raised AFTER the artifact
+    # write; `run.finished` goes out on that same failing path so a cockpit
+    # never leaves a finished-but-broken run spinning. The emit is the ONLY
+    # thing added to these branches — no control flow changes, which is why a
+    # default (NULL_SINK) run is byte-identical.
+    try:
+        # Fully-dead target (round-2 N6): with fail_on_error=False every sample
+        # can error individually while log.status stays "success" — if NO probe
+        # collected a single scored trial the run is a SETUP failure (CLI exit
+        # 2), not an all-MISSING gate FAIL. Raised AFTER the artifact write
+        # (house pattern: write-before-raise) so the evidence survives for
+        # inspection. A partially-dead run still proceeds — per-probe
+        # incompleteness is the gate's job (expected_trials / INCOMPLETE).
+        # ...unless the operator cancelled it. `art.cancelled` makes that
+        # diagnosis FALSE: every sample was halted before it opened a session,
+        # so nothing errored and the target is very probably fine. Raising here
+        # would cost a cancelled run its exit code (3, not the setup-error 2)
+        # and hand the operator a wrong explanation for a stop they asked for.
+        if probes and not art.cancelled and all(p.trials == 0 for p in probes):
+            raise RuntimeError(
+                "no probe collected a single scored trial — every session errored "
+                "(target down or misconfigured?); the run artifact was still "
+                f"written under {out_dir}/ for inspection")
+        # Post-hoc budget gate: there is no mid-run stop, so the run may already
+        # have overshot the cap — the breach is raised after metering.
+        cap = pack.spec.budget.max_usd_per_run
+        if cap and art.judge_usd > cap:
+            raise BudgetExceeded(
+                f"judge spend ${art.judge_usd:.4f} exceeded max_usd_per_run ${cap:.2f} "
+                f"(partial artifact written)")
+    except BaseException as e:
+        sink.emit("run.finished", mode="gate", status="error",
+                  error=f"{type(e).__name__}: {e}", judge_usd=art.judge_usd)
+        raise
+    # `cancelled` is its own terminal status, not `ok` and not `error`: the run
+    # did what it was told, and the cockpit must not render it as either a clean
+    # result or a failure. (The SPA reads `exit_code` off this event, not
+    # `status`, so this widening breaks nothing downstream.)
+    sink.emit("run.finished", mode="gate",
+              status="cancelled" if art.cancelled else "ok",
+              judge_usd=art.judge_usd, probes=len(probes),
+              total_unsure_trials=art.total_unsure_trials)
     return art

@@ -1,0 +1,8 @@
+[
+  "Identify every distinct sub-question, request, or implicit follow-up intent (e.g., 'tell me more', 'that project') present across the entire exchange.",
+  "For each identified part, locate where in the conversation (any turn) it was addressed, and check whether it was answered fully, briefly, or not at all, then assign the ## Coverage score (1-5) based on how many parts were addressed and how proportionately.",
+  "Re-read the full set of answers given and judge whether a visitor would come away meaningfully informed, checking for filler, deflection, or questions bounced back without substance.",
+  "Assess the level of detail and clarity of the substantive content provided, noting whether it is buried in preamble/repetition or presented cleanly, to assign the ## Usefulness of the answer score (1-5).",
+  "Check whether the response leaves an obvious next step or question for the visitor, which is required for the top score (5) on ## Usefulness of the answer.",
+  "Cross-check that the ## Coverage score and ## Usefulness of the answer score are each justified by specific evidence from the conversation, not assumed from tone or effort alone."
+]

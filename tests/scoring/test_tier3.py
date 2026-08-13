@@ -129,6 +129,107 @@ def test_parse_non_json_is_unparseable():
     assert _parse("The score is 4 out of 5.", ["voice"]) is None
 
 
+# --- tolerant fail-closed criterion-key matching (2026-07-30 calibrate fix) --
+# Live failure: LLM-generated grading steps renamed the rubric headings
+# ("Claim Support", "Specificity") and the judge keyed its JSON by the steps'
+# names; exact-key lookup made every such draw unparseable and 9/11 anchors
+# UNSURE. Matching is deterministic normalization + unique prefix/superset
+# only — zero or ambiguous matches stay uncounted (fail-closed), never fuzzy.
+
+GROUNDED_CRITERIA = ["Claim support", "Specificity without overreach"]
+
+
+def test_parse_accepts_case_and_whitespace_variant_keys():
+    raw = _sample({"Claim Support": 4, " specificity without overreach ": 5})
+    assert _parse(raw, GROUNDED_CRITERIA) == {
+        "Claim support": 4, "Specificity without overreach": 5}
+
+
+def test_parse_accepts_unique_prefix_key():
+    # the live failure's second renaming: "Specificity" for
+    # "Specificity without overreach"
+    raw = _sample({"Claim support": 4, "Specificity": 5})
+    assert _parse(raw, GROUNDED_CRITERIA) == {
+        "Claim support": 4, "Specificity without overreach": 5}
+
+
+def test_parse_accepts_unique_superset_key():
+    # judge key extends the heading; the heading is a unique prefix of it
+    raw = _sample({"Claim support and evidence": 4,
+                   "Specificity without overreach": 5})
+    assert _parse(raw, GROUNDED_CRITERIA) == {
+        "Claim support": 4, "Specificity without overreach": 5}
+
+
+def test_parse_keys_result_by_canonical_criterion_names():
+    # downstream (calibrate anchor labels, medians) key on parse_criteria
+    # names — a tolerant match must never leak the judge's spelling
+    raw = _sample({"SPECIFICITY": 3, "claim support": 2})
+    parsed = _parse(raw, GROUNDED_CRITERIA)
+    assert parsed is not None and sorted(parsed) == sorted(GROUNDED_CRITERIA)
+
+
+def test_parse_ambiguous_prefix_key_is_not_counted():
+    # "Claim" could be either criterion -> not counted -> "Claim support"
+    # unscored -> whole sample unparseable (fail-closed)
+    raw = _sample({"Claim": 4, "Claim clarity": 5})
+    assert _parse(raw, ["Claim support", "Claim clarity"]) is None
+
+
+def test_parse_zero_match_key_is_not_counted():
+    # a key matching no criterion never scores anything; the criterion stays
+    # unscored and the existing unsure path applies
+    raw = _sample({"Fluency": 4})
+    assert _parse(raw, ["Claim support"]) is None
+
+
+def test_parse_empty_or_whitespace_key_is_not_counted():
+    # "" is trivially a prefix of every criterion — a degenerate key must
+    # never score anything, even on a single-criterion rubric
+    assert _parse(_sample({"": 4}), ["Claim support"]) is None
+    assert _parse(_sample({"   ": 4}), ["Claim support"]) is None
+
+
+def test_parse_exact_key_beats_stray_prefix_key():
+    # 2026-08-04 ruling (reverses the old exact+prefix collision): an
+    # exact-normalizing key BINDS its criterion; a stray prefix-only key
+    # landing on an exact-bound criterion is ignored, not a collision
+    raw = _sample({"Specificity": 4, "specificity without overreach": 5})
+    assert _parse(raw, ["Specificity without overreach"]) == {
+        "Specificity without overreach": 5}
+
+
+def test_parse_two_prefix_only_keys_still_collide():
+    # equal-quality collision: two prefix-only keys, no exact key -> the
+    # criterion stays undecidable -> whole sample unparseable (fail-closed)
+    raw = _sample({"Specificity": 4, "Specificity without": 5})
+    assert _parse(raw, ["Specificity without overreach"]) is None
+
+
+def test_parse_two_exact_keys_still_collide():
+    # equal-quality collision: two keys both normalizing equal to the
+    # criterion -> fail closed
+    raw = _sample({"Specificity without overreach": 4,
+                   " SPECIFICITY WITHOUT OVERREACH ": 5})
+    assert _parse(raw, ["Specificity without overreach"]) is None
+
+
+async def test_score_transcript_survives_steps_renamed_criteria(monkeypatch):
+    # end-to-end pin of the 2026-07-30 failure mode: draws keyed by the steps'
+    # renamed criteria must parse, not collapse the anchor to UNSURE
+    grounded = ("# Groundedness\n\n## Claim support\nClaims are supported.\n\n"
+                "## Specificity without overreach\nSpecific, no overreach.\n")
+    outs = [_sample({"Claim Support": 4, "Specificity": 4}),
+            _sample({"Claim support": 4, "Specificity without overreach": 4}),
+            _sample({"Claim Support": 5, "Specificity": 4})]
+    _stub(monkeypatch, outs)
+    res = await score_transcript(grounded, _hash_text(grounded),
+                                 "User: hi\nAssistant: hello", "mockllm/model")
+    assert res.unsure is False
+    assert res.medians == {"Claim support": 4,
+                           "Specificity without overreach": 4}
+
+
 # --- score_transcript (reusable for Task 5 calibration) --------------------
 
 
@@ -152,6 +253,140 @@ async def test_score_transcript_spread_on_any_criterion_is_unsure(monkeypatch):
     res = await score_transcript(PERSONA, _hash_text(PERSONA),
                                  "User: hi\nAssistant: hello", "mockllm/model")
     assert res.unsure is True and res.medians is None
+
+
+# --- per-criterion unsure seam (2026-07-31 run #4 remediation) -------------
+# The GATE contract pinned above is untouched: spread >= 2 on ANY criterion
+# still returns unsure=True with medians=None (tier3_scorer reads only those).
+# The ADDITIVE criterion_medians/criterion_spreads fields exist so the
+# calibration harness can count only the genuinely-torn criterion as a miss.
+
+
+async def test_score_transcript_spread_unsure_exposes_clean_sibling_median(monkeypatch):
+    # voice torn (spread 4), warmth clean (spread 0): public medians stays
+    # None, but the clean sibling's median survives on criterion_medians and
+    # the torn criterion is excluded from it
+    outs = [_sample({"voice": 1, "warmth": 4}),
+            _sample({"voice": 3, "warmth": 4}),
+            _sample({"voice": 5, "warmth": 4})]
+    _stub(monkeypatch, outs)
+    res = await score_transcript(PERSONA, _hash_text(PERSONA),
+                                 "User: hi\nAssistant: hello", "mockllm/model")
+    assert res.unsure is True and res.medians is None  # gate contract intact
+    assert res.criterion_medians == {"warmth": 4}
+    assert res.criterion_spreads == {"voice": 4, "warmth": 0}
+
+
+async def test_score_transcript_unparseable_sample_exposes_no_criterion_medians(monkeypatch):
+    # < k parsed draws: NO criterion has a clean k-draw median — both
+    # additive fields stay empty (fail-closed: calibrate misses every pair)
+    outs = ["not json", _sample({"voice": 4, "warmth": 4}),
+            _sample({"voice": 4, "warmth": 4})]
+    _stub(monkeypatch, outs)
+    res = await score_transcript(PERSONA, _hash_text(PERSONA),
+                                 "User: hi\nAssistant: hello", "mockllm/model")
+    assert res.unsure is True and res.medians is None
+    assert res.criterion_medians == {} and res.criterion_spreads == {}
+
+
+async def test_score_transcript_clean_result_mirrors_criterion_medians(monkeypatch):
+    # no torn criterion: criterion_medians is exactly the public medians
+    outs = [_sample({"voice": 4, "warmth": 3}),
+            _sample({"voice": 4, "warmth": 3}),
+            _sample({"voice": 5, "warmth": 3})]
+    _stub(monkeypatch, outs)
+    res = await score_transcript(PERSONA, _hash_text(PERSONA),
+                                 "User: hi\nAssistant: hello", "mockllm/model")
+    assert res.unsure is False
+    assert res.criterion_medians == res.medians == {"voice": 4, "warmth": 3}
+    assert res.criterion_spreads == {"voice": 1, "warmth": 0}
+
+
+FACTS = "The owner has nine years of Python experience."
+
+
+async def test_score_transcript_injects_context(monkeypatch):
+    # the facts text appears under the "Reference fact sheet" heading, between
+    # the evaluation steps and the criteria line
+    judge = _stub(monkeypatch, [_sample({"Tone": 4})] * 3, steps=("step one",))
+    await score_transcript(TONE, _hash_text(TONE), "User: hi\nAssistant: hello",
+                           "mockllm/model", context=FACTS)
+    assert len(judge.prompts) == 3
+    for p in judge.prompts:
+        assert "Reference fact sheet" in p and FACTS in p
+        assert p.index("- step one") < p.index("Reference fact sheet") \
+            < p.index("Criteria to score:")
+
+
+async def test_score_transcript_without_context_prompt_is_unchanged(monkeypatch):
+    # context=None must leave the scoring prompt byte-identical to pre-#2b —
+    # pinned against the fully rendered legacy prompt, not the template
+    judge = _stub(monkeypatch, [_sample({"Tone": 4})] * 3, steps=("step one",))
+    await score_transcript(TONE, _hash_text(TONE), "User: hi\nAssistant: hello",
+                           "mockllm/model")
+    expected = (
+        "You are a strict evaluation judge. Score the assistant's behavior in the\n"
+        "conversation on the rubric criteria below, following these evaluation steps:\n"
+        "- step one\n"
+        "\n"
+        "Criteria to score: Tone\n"
+        "\n"
+        "Score EACH criterion with an integer 1-5 (1=poor, 5=excellent). Reply with ONLY a\n"
+        "JSON object of the form:\n"
+        '{"scores": {"<criterion>": {"score": <int 1-5>, "justification": "<one sentence>"}, ...}}\n'
+        "with exactly one entry per listed criterion.\n"
+        "\n"
+        "Conversation:\n"
+        "User: hi\n"
+        "Assistant: hello\n")
+    assert judge.prompts[0] == expected
+    assert "Reference fact sheet" not in judge.prompts[0]
+
+
+# --- frozen steps: committed `<rid>.steps.json` bypasses generation --------
+# (2026-07-31 run #3 remediation)
+
+
+async def test_score_transcript_prefers_provided_steps(monkeypatch):
+    # a caller-supplied steps list (from a committed steps file) is used
+    # verbatim — the generation path must not run at all
+    from evalyn.scoring import tier3 as t3
+    judge = _FakeJudge([_sample({"Tone": 4})] * 3)
+    monkeypatch.setattr(t3, "get_model", lambda m: judge)
+
+    async def boom(*a, **kw):
+        raise AssertionError("grading_steps must not be called with frozen steps")
+
+    monkeypatch.setattr(t3, "grading_steps", boom)
+    res = await score_transcript(TONE, _hash_text(TONE),
+                                 "User: hi\nAssistant: hello", "mockllm/model",
+                                 steps=["frozen step"])
+    assert res.medians == {"Tone": 4} and res.steps == ["frozen step"]
+    assert "- frozen step" in judge.prompts[0]
+
+
+async def test_tier3_scorer_uses_committed_steps_file_without_generation(
+        monkeypatch, tmp_path):
+    # end-to-end wiring: a pack-committed rubrics/<rid>.steps.json IS the
+    # grading steps — no generation call, and the frozen steps land in the
+    # judge prompt and the score metadata
+    from evalyn.scoring import tier3 as t3
+    pack = _pack(tmp_path)
+    (tmp_path / "rubrics" / "tone.steps.json").write_text(
+        '["Frozen: check calm tone"]')
+    judge = _FakeJudge([_sample({"Tone": 4})] * 3)
+    monkeypatch.setattr(t3, "get_model", lambda m: judge)
+
+    async def boom(*a, **kw):
+        raise AssertionError("grading_steps must not be called: steps file exists")
+
+    monkeypatch.setattr(t3, "grading_steps", boom)
+    score = tier3_scorer(pack, "mockllm/model")
+    checks = [{"type": "rubric", "rubric": "tone", "required": True}]
+    result = await score(_state("hello", checks), Target(""))
+    assert result.value == CORRECT
+    assert result.metadata["rubrics"]["tone"]["steps"] == ["Frozen: check calm tone"]
+    assert "- Frozen: check calm tone" in judge.prompts[0]
 
 
 # --- tier3 scorer ---------------------------------------------------------
@@ -230,6 +465,26 @@ async def test_empty_message_history_falls_back_to_completion(monkeypatch, tmp_p
     checks = [{"type": "rubric", "rubric": "tone"}]
     await score(_state("a very specific reply", checks), Target(""))
     assert all("Assistant: a very specific reply" in p for p in judge.prompts)
+
+
+async def test_tier3_scorer_passes_pack_facts_sheet_to_judge(monkeypatch, tmp_path):
+    # a sibling `<rid>.facts.md` in the pack reaches the judge's scoring prompt
+    judge = _stub(monkeypatch, [_sample({"Tone": 4})] * 3)
+    pack = _pack(tmp_path)
+    (tmp_path / "rubrics" / "tone.facts.md").write_text(FACTS)
+    score = tier3_scorer(pack, "mockllm/model")
+    checks = [{"type": "rubric", "rubric": "tone"}]
+    result = await score(_state("hello", checks), Target(""))
+    assert result.value == CORRECT
+    assert all("Reference fact sheet" in p and FACTS in p for p in judge.prompts)
+
+
+async def test_tier3_scorer_without_facts_sheet_omits_block(monkeypatch, tmp_path):
+    judge = _stub(monkeypatch, [_sample({"Tone": 4})] * 3)
+    score = tier3_scorer(_pack(tmp_path), "mockllm/model")
+    checks = [{"type": "rubric", "rubric": "tone"}]
+    await score(_state("hello", checks), Target(""))
+    assert all("Reference fact sheet" not in p for p in judge.prompts)
 
 
 async def test_metadata_records_rubric_hash_and_steps(monkeypatch, tmp_path):

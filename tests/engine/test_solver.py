@@ -62,7 +62,8 @@ async def test_open_response_without_session_id_raises(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_solver_drops_seeded_input_message_from_transcript(toy_target, monkeypatch):
+async def test_solver_drops_seeded_input_message_from_transcript(toy_target, monkeypatch,
+                                                                 live_pack_dir):
     """PR #4 fix #5: Inspect seeds state.messages with Sample.input (the probe
     id). That fabricated 'user turn' must never reach the judged transcript —
     after solve, the messages are EXACTLY the real session turns."""
@@ -70,7 +71,7 @@ async def test_solver_drops_seeded_input_message_from_transcript(toy_target, mon
     from evalyn.scoring.transcript import assistant_turns, labeled_transcript
 
     monkeypatch.setenv("EVALYN_TARGET_URL", toy_target)
-    pack = load_pack(MINIPACK)
+    pack = load_pack(live_pack_dir(MINIPACK))
     state = TaskState(model="m", sample_id="inv-nonempty", epoch=1,
                       input="inv-nonempty",
                       messages=[ChatMessageUser(content="inv-nonempty")])
@@ -84,9 +85,9 @@ async def test_solver_drops_seeded_input_message_from_transcript(toy_target, mon
     assert assistant_turns(state) == [state.output.completion]
 
 
-def test_solver_drives_toy_target(toy_target, monkeypatch):
+def test_solver_drives_toy_target(toy_target, monkeypatch, live_pack_dir):
     monkeypatch.setenv("EVALYN_TARGET_URL", toy_target)
-    pack = load_pack(MINIPACK)
+    pack = load_pack(live_pack_dir(MINIPACK))
     ds = MemoryDataset([Sample(input="work", target="x",
                                metadata={"turns": ["Where did you work?"]})])
     task = Task(dataset=ds, solver=session_solver(pack), scorer=_capture())
@@ -222,3 +223,49 @@ async def test_solver_honors_custom_flow_fields_and_auth():
     assert _custom_flow_seen["open_body"] == {"mode": "eval"}
     assert _custom_flow_seen["msg_body"] == {"text": "hi", "conversation": "s-42"}
     assert _custom_flow_seen["auth"] == "Bearer sekrit"
+
+
+# --- Task 0 review fix: partial transcript survives a mid-send failure -------
+
+
+_fail_second = {"calls": 0}
+
+
+class _FailSecondSendHandler(_BaseHandler):
+    def do_POST(self):
+        if self.path == "/open":
+            self._send(json.dumps({"session_id": "s-1"}).encode())
+        elif self.path == "/msg":
+            _fail_second["calls"] += 1
+            if _fail_second["calls"] == 1:
+                self._send(json.dumps({"delta": "first"}).encode())
+            else:
+                self.send_response(500)
+                self.send_header("Content-Length", "0")
+                self.end_headers()
+        else:
+            self.send_response(404)
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+
+
+@pytest.mark.asyncio
+async def test_mid_send_failure_preserves_partial_transcript():
+    """When turn N's HTTP fails, state.messages must keep every completed
+    user/assistant pair PLUS the dangling user message of the failed turn —
+    the errored sample's log transcript shows everything up to the failure."""
+    import httpx
+
+    _fail_second["calls"] = 0
+    with _serve(_FailSecondSendHandler) as url:
+        pack = _pack(url, {
+            "open": {"method": "POST", "path": "/open"},
+            "message": {"method": "POST", "path": "/msg", "event_format": "json"},
+        })
+        state = _state(["one", "two"])
+        with pytest.raises(httpx.HTTPStatusError):
+            await session_solver(pack)(state, None)
+    assert [m.role for m in state.messages] == ["user", "assistant", "user"]
+    assert state.messages[0].text == "one"
+    assert state.messages[1].text == "first"
+    assert state.messages[2].text == "two"

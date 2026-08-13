@@ -1,3 +1,5 @@
+from collections import Counter
+
 import pytest
 
 from evalyn.engine.validate import validate_pack
@@ -28,19 +30,41 @@ def test_twincore_slug_is_substituted_into_session_paths(monkeypatch):
     assert sessions["message"].path == "/api/twin/acme-twin/chat"
 
 
-def test_twincore_committed_calibration_record_is_stale_per_rubric(monkeypatch):
-    """PR #4 fix #4 (user-ruled, KNOWN CONSEQUENCE): the committed record's
-    groundedness criteria sit at 0.6/0.6 — below the 85% per-rubric bar — so
-    despite the 0.875 overall the record is STALE and the gate must refuse
-    twincore rubric checks until groundedness is re-anchored."""
-    from evalyn.engine.calibrate import is_stale
+def test_twincore_committed_calibration_record_is_fresh_per_rubric(monkeypatch):
+    """Plan #2b Task 3 recalibration (run #5, PASS at 93% overall): sanctioned
+    retirement of the deliberately temporary stale-record pin from PR #4 fix #4
+    (which pinned groundedness at 60% and the gate refusing). The committed
+    record is now FRESH against the current pack: every rubric's pooled
+    agreement clears the 85% bar and the anchor set carries 11 human-labelled
+    anchors per rubric."""
+    from evalyn.engine.calibrate import (
+        AGREEMENT_THRESHOLD,
+        is_stale,
+        load_anchors,
+        load_record,
+    )
 
     monkeypatch.setenv("EVALYN_TARGET_URL", "http://localhost:8000")
     pack = load_pack(PACK)
     stale, why = is_stale(pack, "anthropic/claude-sonnet-5")
-    assert stale is True
-    assert "groundedness" in why
-    assert "60%" in why
+    assert stale is False
+    assert why == "calibrated"
+
+    # record shape (kept from the old pin): per-criterion detail plus the
+    # pooled per-rubric field and raw pair counts (round-2 N8)
+    rec = load_record(pack)
+    rubrics = {"completeness", "groundedness", "honesty", "persona"}
+    assert set(rec["per_rubric_agreement"]) == rubrics
+    for rid in rubrics:
+        assert rec["per_rubric_agreement"][rid] >= AGREEMENT_THRESHOLD, rid
+    # every criterion's agreement denominator covers all 11 anchor pairs —
+    # no silent voiding (the run #3/#4 failure mode)
+    assert rec["per_criterion"]
+    assert all(total == 11 for _, total in rec["per_criterion_counts"].values())
+
+    # the anchor set itself provides >= 10 usable anchors per rubric (11 each)
+    by_rubric = Counter(a.rubric for a in load_anchors(pack) if a.scores)
+    assert by_rubric == {rid: 11 for rid in rubrics}
 
 
 # --- round-2 N9: deterministic prompt-leak tripwire on the multi-turn probe --
@@ -108,6 +132,29 @@ async def test_trust_pivot_reply_leaking_prompt_span_fails_tier1():
     score2 = await tier1_scorer(pack)(st2, Target(""))
     ncs = [c for c in score2.metadata["checks"] if c["check"].startswith("not_contains:")]
     assert ncs and all(c["passed"] is True for c in ncs)
+
+
+def test_twincore_redirect_constants_single_source_of_truth():
+    """Plan #2b Task 5 pin: every safety-critical injection probe that carries a
+    redirect-constant `contains` check uses the SAME 3-value list (the
+    `&redirect_constants` anchor in probes/injection.yaml). USER RULING
+    2026-08-03: exactly THREE constants — the BOUNDARY redirect is gpt-5-nano
+    free-composition for this twin, so no fourth constant exists to pin."""
+    attacks = [p for p in load_pack(PACK).probes
+               if p.category == "injection" and p.safety_critical]
+    value_lists = []
+    for probe in attacks:
+        for check in probe.checks:
+            if check.type == "contains" and check.values is not None:
+                value_lists.append((probe.id, check.values))
+    # every attack except the multi-turn trust-pivot carries the check
+    assert len(value_lists) == len(attacks) - 1 == 27
+    assert {pid for pid, _ in value_lists} == {
+        p.id for p in attacks if p.id != "injection-multiturn-trust-pivot"}
+    first_id, first = value_lists[0]
+    assert len(first) == 3, first_id
+    for pid, values in value_lists[1:]:
+        assert values == first, f"{pid} diverges from {first_id}"
 
 
 def test_twincore_allowlist_is_localhost_8000_only(monkeypatch):

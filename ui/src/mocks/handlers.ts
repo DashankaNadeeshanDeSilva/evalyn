@@ -1,0 +1,483 @@
+/**
+ * MSW handlers for every route in the frozen contract.
+ *
+ * This is the seam that lets Tasks 8, 9, 15, 16 and 17 build real pages before
+ * the Python endpoints exist. It is a **mock of the contract, not a convenience
+ * stub**: it reproduces the behaviours a page can get wrong.
+ *
+ * - Errors are the `ErrorEnvelope` shape, always — including for a bad path
+ *   parameter, which the real server answers `not_found` (the resource cannot
+ *   exist, and saying so leaks nothing about the filesystem).
+ * - `/api/runs` paginates with the opaque `(created_at, run_id)` cursor and
+ *   compares the *parsed tuples*, never the joined strings.
+ * - `/api/discoveries/{probe_id}` is redacted **unconditionally**, because the
+ *   real route reads no header and honours no token (R4-89). A mock that
+ *   revealed on request would let a reveal control pass every test here and do
+ *   nothing at all against the server.
+ * - `/api/runs/{id}/trials/...` 404s on the legacy artifact, because it has no
+ *   trial records — a page that offered the drill-down anyway read truthiness
+ *   instead of `capabilities.trial_records`, and this is where it finds out.
+ *
+ * Cursors are *constructed* here only because this file is standing in for the
+ * server. Application code must never build one.
+ */
+
+import { http, HttpResponse } from "msw";
+
+import {
+  CURSOR_SEPARATOR,
+  isRunId,
+  parseCursor,
+  type ApiError,
+  type ControlResponse,
+  type DiscoveryListPage,
+  type ErrorCode,
+  type FindingRow,
+  type LaunchResponse,
+  type PackAxes,
+  type PackListPage,
+  type RunListPage,
+  type RunSummary,
+  type ValidationReport,
+} from "../api/types";
+import {
+  EXFIL_TRIALS,
+  FINDING_DETAIL,
+  FINDING_ROWS,
+  GATE_VERDICT,
+  PROBE_ID_EXFIL,
+  HEALTH,
+  META,
+  PACK_AXES,
+  PACKS,
+  RUN_DETAILS,
+  RUN_ID_GATE,
+  RUN_ID_RUNNING,
+  RUN_SUMMARIES,
+  SCOREBOARD,
+  TREND_SERIES,
+  TREND_SPEND_SERIES,
+  TRIAL_VIEW,
+  TRUST_NEVER_CALIBRATED,
+  TRUST_REPORT,
+  VALIDATION_REPORT,
+} from "./fixtures";
+
+/** Page size, deliberately smaller than the corpus so pagination is exercised. */
+export const MOCK_PAGE_SIZE = 3;
+
+const STATUS_FOR: Record<ErrorCode, number> = {
+  not_found: 404,
+  unreadable_artifact: 500,
+  pack_error: 400,
+  launch_refused: 400,
+  busy: 409,
+};
+
+/**
+ * The envelope **as it arrives**, which is not quite as `ApiError` declares it.
+ *
+ * `detail` is `str | None = None` server-side and every envelope is rendered
+ * with `model_dump(mode="json", exclude_none=True)` (`ui/redact.py`), so a
+ * refusal carrying no extra context omits the key entirely. `ApiError` declares
+ * it required-and-nullable because `models.py` does, and that model is frozen
+ * in six places — so the difference is stated here, where the wire is
+ * reproduced, rather than papered over by a mock that sends `null`.
+ *
+ * That paper is exactly what shipped `(undefined)` on the launch console: this
+ * handler defaulted `detail` to `null`, the page guarded with `=== null`, and
+ * no test could see the gap because the mock never produced it.
+ */
+type WireError = Omit<ApiError, "detail"> & { detail?: string };
+
+function fail(code: ErrorCode, message: string, detail?: string) {
+  const body: { error: WireError } = {
+    error: { code, message, ...(detail === undefined ? {} : { detail }) },
+  };
+  return HttpResponse.json(body, { status: STATUS_FOR[code] });
+}
+
+/** Ordering key for a row, matching `models.parse_cursor`'s tuple. */
+function key(row: RunSummary): [string, string] {
+  return [row.created_at, row.run_id];
+}
+
+/**
+ * The same, for a finding. Both halves are nullable on `FindingRow` — a row
+ * salvaged without its run has neither — and an empty string sorts first under
+ * the descending order, which is where an unattributable row belongs.
+ */
+function findingKey(row: FindingRow): [string, string] {
+  return [row.created_at ?? "", row.run_id ?? ""];
+}
+
+/**
+ * The refusal for a `?before=` that fails its grammar. Shared by both
+ * paginated routes so they cannot drift into two different rejections: the
+ * real server answers `not_found` for a bad query parameter, not a 422 — the
+ * resource cannot exist, and saying so leaks nothing about the filesystem.
+ */
+function badCursor() {
+  return fail(
+    "not_found",
+    "invalid cursor",
+    `?before= must be the opaque '<created_at>${CURSOR_SEPARATOR}<run_id>' composite`,
+  );
+}
+
+/** Descending tuple comparison. Never compares the joined cursor strings. */
+function isBefore(a: [string, string], b: [string, string]): boolean {
+  if (a[0] !== b[0]) return a[0] < b[0];
+  return a[1] < b[1];
+}
+
+export const handlers = [
+  // -------------------------------------------------------------------------
+  // Server meta — the two routes exempt from the redaction chokepoint
+  // -------------------------------------------------------------------------
+
+  http.get("/api/meta", () => HttpResponse.json(META)),
+  http.get("/api/health", () => HttpResponse.json(HEALTH)),
+
+  // -------------------------------------------------------------------------
+  // Runs
+  // -------------------------------------------------------------------------
+
+  http.get("/api/runs", ({ request }) => {
+    const url = new URL(request.url);
+    const mode = url.searchParams.get("mode");
+    const pack = url.searchParams.get("pack");
+    const before = url.searchParams.get("before");
+
+    let rows = [...RUN_SUMMARIES];
+    if (mode) rows = rows.filter((r) => r.mode === mode);
+    if (pack) rows = rows.filter((r) => r.pack_name === pack);
+
+    if (before !== null) {
+      let cursor: [string, string];
+      try {
+        cursor = parseCursor(before);
+      } catch {
+        // The real server rejects the tie-unsafe bare-timestamp form.
+        return badCursor();
+      }
+      rows = rows.filter((r) => isBefore(key(r), cursor));
+    }
+
+    const page = rows.slice(0, MOCK_PAGE_SIZE);
+    const last = page[page.length - 1];
+    const more = rows.length > page.length;
+    const body: RunListPage = {
+      items: page,
+      next_cursor:
+        more && last ? `${last.created_at}${CURSOR_SEPARATOR}${last.run_id}` : null,
+    };
+    return HttpResponse.json(body);
+  }),
+
+  http.get("/api/runs/:runId", ({ params }) => {
+    const runId = String(params["runId"]);
+    if (!isRunId(runId)) return fail("not_found", `no such run: ${runId}`);
+    const detail = RUN_DETAILS[runId];
+    if (!detail) return fail("not_found", `no such run: ${runId}`);
+    return HttpResponse.json(detail);
+  }),
+
+  http.get("/api/runs/:runId/gate", ({ params }) => {
+    const runId = String(params["runId"]);
+    const detail = RUN_DETAILS[runId];
+    if (!detail) return fail("not_found", `no such run: ${runId}`);
+    if (detail.mode !== "gate") {
+      return fail("not_found", `run ${runId} is not a gate run`);
+    }
+    return HttpResponse.json({ ...GATE_VERDICT, run_id: runId });
+  }),
+
+  // Markdown, not JSON — the SPA renders it, so it must not be double-encoded.
+  http.get("/api/runs/:runId/report", ({ params }) => {
+    const runId = String(params["runId"]);
+    if (!RUN_DETAILS[runId]) return fail("not_found", `no such run: ${runId}`);
+    return HttpResponse.text(GATE_VERDICT.report_md, {
+      headers: { "Content-Type": "text/markdown; charset=utf-8" },
+    });
+  }),
+
+  http.get("/api/runs/:runId/stderr", ({ params }) => {
+    const runId = String(params["runId"]);
+    if (!RUN_DETAILS[runId]) return fail("not_found", `no such run: ${runId}`);
+    return HttpResponse.text(
+      "evalyn: gate: 2 probes, 6 trials\nevalyn: gate: FAIL\n",
+      { headers: { "Content-Type": "text/plain; charset=utf-8" } },
+    );
+  }),
+
+  http.get("/api/runs/:runId/trials/:probeId/:epoch", ({ params }) => {
+    const runId = String(params["runId"]);
+    const detail = RUN_DETAILS[runId];
+    if (!detail) return fail("not_found", `no such run: ${runId}`);
+    // The legacy artifact has no trial records. A 404 here is a *bug* in the
+    // caller — `capabilities.trial_records` said so before the click.
+    if (!detail.capabilities.trial_records) {
+      return fail(
+        "not_found",
+        "this artifact has no trial records",
+        "capabilities.trial_records is false — the drill-down should be disabled",
+      );
+    }
+    const probeId = String(params["probeId"]);
+    const epoch = Number(params["epoch"]);
+    // One probe answers per epoch rather than with a single stand-in body,
+    // because the "all trials at a glance" panel's whole claim is that the
+    // trials differ from one another. A handler that returns the same trial
+    // seven times cannot disprove a panel that renders the first one seven
+    // times.
+    const perEpoch = probeId === PROBE_ID_EXFIL ? EXFIL_TRIALS[epoch] : undefined;
+    if (perEpoch) return HttpResponse.json({ ...perEpoch, run_id: runId });
+    return HttpResponse.json({
+      ...TRIAL_VIEW,
+      run_id: runId,
+      probe_id: probeId,
+      epoch,
+    });
+  }),
+
+  /**
+   * SSE. Emits a short scripted run and closes on `run.finished`, so a test
+   * that forgets to unsubscribe still terminates. The `id:` field is the
+   * sequence number a `Last-Event-ID` resume skips past.
+   */
+  http.get("/api/runs/:runId/events", () => {
+    const script: [string, unknown][] = [
+      ["run.started", { run_id: RUN_ID_GATE, mode: "gate", pack: "example" }],
+      ["trial.started", { probe_id: "grounding-work-history", epoch: 1 }],
+      ["turn.sent", { probe_id: "grounding-work-history", epoch: 1, turn: 1 }],
+      ["turn.received", { probe_id: "grounding-work-history", epoch: 1, turn: 1 }],
+      ["probe.scored", { probe_id: "grounding-work-history", pass_k: 1.0 }],
+      ["spend.updated", { judge_usd: 0.01377 }],
+      // `path`, not `run_id`: `engine/run.py` emits `sink.emit("artifact.written",
+      // path=str(written))`. Nothing in the SPA reads the body — the event's
+      // arrival is the whole signal — but a mock that carries the wrong key is
+      // how the next reader learns the wrong contract.
+      [
+        "artifact.written",
+        { path: `~/Drive/Projects/evalyn/runs/${RUN_ID_GATE}.json` },
+      ],
+      /*
+       * The engine's own terminal frame, field for field (`engine/run.py`).
+       *
+       * This used to read `{run_id, exit_code: 1}`, and that invention is why
+       * the live window shipped promising an exit code: **no emit site has ever
+       * written one**. The exit code is the CLI's, decided from the artifact
+       * after the run ends, and it reaches the browser through
+       * `GET /api/runs/{id}/gate`. `status` is the run's own ending — `"ok"`
+       * here means this scripted run completed, not that its gate passed; the
+       * fixture's gate verdict exits 1.
+       */
+      [
+        "run.finished",
+        {
+          mode: "gate",
+          status: "ok",
+          judge_usd: 0.01377,
+          probes: 1,
+          total_unsure_trials: 0,
+        },
+      ],
+    ];
+    const encoder = new TextEncoder();
+    const stream = new ReadableStream({
+      start(controller) {
+        script.forEach(([event, data], i) => {
+          controller.enqueue(
+            encoder.encode(
+              `id: ${i + 1}\nevent: ${event}\ndata: ${JSON.stringify(data)}\n\n`,
+            ),
+          );
+        });
+        controller.close();
+      },
+    });
+    return new HttpResponse(stream, {
+      headers: {
+        "Content-Type": "text/event-stream",
+        "Cache-Control": "no-cache",
+        Connection: "keep-alive",
+      },
+    });
+  }),
+
+  /**
+   * Launch. Mirrors the two refusals that matter: `confirm` must echo the
+   * pack's name, and `pack_id` must be in the start-time allowlist. A body
+   * carrying a pack *path* is rejected by `extra="forbid"` upstream of any
+   * handler, which is why nothing here looks for one.
+   */
+  http.post("/api/runs", async ({ request }) => {
+    const body = (await request.json()) as Record<string, unknown>;
+    const pack = PACKS.find((p) => p.id === body["pack_id"]);
+    if (!pack) {
+      return fail("launch_refused", "unknown pack_id", "not in the --target allowlist");
+    }
+    if (body["confirm"] !== pack.name) {
+      return fail(
+        "launch_refused",
+        "confirm must equal the pack name",
+        `expected ${JSON.stringify(pack.name)}`,
+      );
+    }
+    if (body["mode"] === "discover" && !META.allow_discover) {
+      return fail("launch_refused", "discover requires --allow-discover");
+    }
+    /*
+     * A **pending** run, which is the whole point of the 202.
+     *
+     * The id is minted before the child process starts, so what comes back
+     * names a run with no artifact on disk and a sidecar status of `running` —
+     * `RUN_DETAILS[RUN_ID_RUNNING]` is exactly that run.
+     *
+     * This used to return the already-finished `RUN_ID_GATE`. The consequence
+     * was not a wrong figure but a **missing screen**: `LiveRunPanel` latches
+     * `watched` from the status it arrives on, so every launch in every test
+     * landed on a terminal run and the one inset window never mounted once. The
+     * live path had no coverage at all, and nothing said so.
+     */
+    const launched: LaunchResponse = { run_id: RUN_ID_RUNNING };
+    return HttpResponse.json(launched, { status: 202 });
+  }),
+
+  /**
+   * Control. The 202 is NOT the acknowledgement — the matching `control.*` SSE
+   * event is. A UI that flips state off this response is wrong.
+   */
+  http.post("/api/runs/:runId/control", ({ params }) => {
+    const runId = String(params["runId"]);
+    if (!RUN_DETAILS[runId]) return fail("not_found", `no such run: ${runId}`);
+    const body: ControlResponse = { run_id: runId, accepted: true };
+    return HttpResponse.json(body, { status: 202 });
+  }),
+
+  // -------------------------------------------------------------------------
+  // Packs
+  // -------------------------------------------------------------------------
+
+  // An envelope, not a bare array — the allowlist is short enough that
+  // `next_cursor` is always null, but a frozen array could never grow a field.
+  http.get("/api/packs", () => {
+    const body: PackListPage = { items: PACKS, next_cursor: null };
+    return HttpResponse.json(body);
+  }),
+
+  http.post("/api/packs/:packId/validate", ({ params }) => {
+    const packId = String(params["packId"]);
+    if (!PACKS.some((p) => p.id === packId)) {
+      return fail("not_found", `no such pack: ${packId}`);
+    }
+    const body: ValidationReport = { ...VALIDATION_REPORT, pack_id: packId };
+    return HttpResponse.json(body);
+  }),
+
+  http.get("/api/packs/:packId/axes", ({ params }) => {
+    const packId = String(params["packId"]);
+    if (!PACKS.some((p) => p.id === packId)) {
+      return fail("not_found", `no such pack: ${packId}`);
+    }
+    const body: PackAxes = { ...PACK_AXES, pack_id: packId };
+    return HttpResponse.json(body);
+  }),
+
+  // -------------------------------------------------------------------------
+  // Discover findings
+  // -------------------------------------------------------------------------
+
+  // Paginated the same way `/api/runs` is — same envelope, same opaque
+  // `(created_at, run_id)` cursor, same refusal for a malformed one.
+  http.get("/api/discoveries", ({ request }) => {
+    const url = new URL(request.url);
+    const objective = url.searchParams.get("objective");
+    const before = url.searchParams.get("before");
+
+    let rows = objective
+      ? FINDING_ROWS.filter((f) => f.objective_id === objective)
+      : [...FINDING_ROWS];
+
+    if (before !== null) {
+      let cursor: [string, string];
+      try {
+        cursor = parseCursor(before);
+      } catch {
+        return badCursor();
+      }
+      rows = rows.filter((f) => isBefore(findingKey(f), cursor));
+    }
+
+    const page = rows.slice(0, MOCK_PAGE_SIZE);
+    const last = page[page.length - 1];
+    const more = rows.length > page.length;
+    const body: DiscoveryListPage = {
+      items: page,
+      next_cursor: more && last ? findingKey(last).join(CURSOR_SEPARATOR) : null,
+    };
+    return HttpResponse.json(body);
+  }),
+
+  http.get("/api/discoveries/:probeId", ({ params }) => {
+    const probeId = String(params["probeId"]);
+    if (!FINDING_ROWS.some((f) => f.probe_id === probeId)) {
+      return fail("not_found", `no such finding: ${probeId}`);
+    }
+    // Redacted, always. `finding_detail(probe_id)` takes no `Request` and no
+    // `Header`, so there is no request this route answers differently (R4-89).
+    return HttpResponse.json({ ...FINDING_DETAIL, probe_id: probeId });
+  }),
+
+  // -------------------------------------------------------------------------
+  // Compare, trends, judge trust
+  // -------------------------------------------------------------------------
+
+  http.get("/api/compare/:runId", ({ params }) => {
+    const runId = String(params["runId"]);
+    const detail = RUN_DETAILS[runId];
+    if (!detail || detail.mode !== "compare") {
+      return fail("not_found", `no such compare run: ${runId}`);
+    }
+    return HttpResponse.json({ ...SCOREBOARD, run_id: runId });
+  }),
+
+  http.get("/api/trends", ({ request }) => {
+    const url = new URL(request.url);
+    const pack = url.searchParams.get("pack");
+    const metric = url.searchParams.get("metric") ?? "pass_k";
+    if (!pack) return fail("pack_error", "?pack= is required");
+    // The route branches on the metric, and so must this: `judge_usd` is
+    // metered once per run, so it answers with ONE run-level series while
+    // every other metric answers with one series per probe. Returning the
+    // per-probe shape for spend meant no test the page ever ran had met the
+    // body the server sends.
+    if (metric === "judge_usd") {
+      return HttpResponse.json(
+        TREND_SPEND_SERIES.map((s) => ({ ...s, pack_name: pack })),
+      );
+    }
+    return HttpResponse.json(
+      TREND_SERIES.map((s) => ({ ...s, pack_name: pack, metric })),
+    );
+  }),
+
+  http.get("/api/trust", ({ request }) => {
+    const pack = new URL(request.url).searchParams.get("pack");
+    if (!pack) return fail("pack_error", "?pack= is required");
+    /*
+     * Exactly the two shapes the route answers on this repository's packs.
+     *
+     * `twincore` is the only pack carrying a `calibration.json`, so it is the
+     * only pack that answers with numbers. **Every other pack answers 200 with
+     * `agreement: null`, never a 404** — including `twincore-injection`, which
+     * is the demo pack, so the uncalibrated body is the ordinary case here
+     * rather than the exceptional one.
+     */
+    if (pack !== TRUST_REPORT.pack_name) {
+      return HttpResponse.json({ ...TRUST_NEVER_CALIBRATED, pack_name: pack });
+    }
+    return HttpResponse.json(TRUST_REPORT);
+  }),
+];

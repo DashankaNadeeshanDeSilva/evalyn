@@ -2,6 +2,7 @@ from __future__ import annotations
 from collections import defaultdict
 from dataclasses import dataclass, field
 
+from evalyn.scoring.rubrics import parse_steps_file
 from evalyn.scoring.tier1 import INVARIANT_PATTERNS, _eval_invariant
 from evalyn.targets.loader import Pack
 
@@ -37,6 +38,14 @@ def validate_pack(pack: Pack) -> ValidationReport:
             errors.append(f"unknown pack invariant: {inv.id!r}")
     for probe in pack.probes:
         for chk in probe.checks:
+            # `scope` is honored only by deterministic Tier-1 checks; the
+            # classifier/rubric judges always see the full transcript, so a
+            # declared scope silently no-ops — warn, never error (#2b Task 10).
+            if chk.type in ("classifier", "rubric") and chk.scope:
+                warnings.append(
+                    f"probe {probe.id!r}: `scope: {chk.scope}` on a {chk.type} "
+                    f"check is silently ignored (these checks always judge the "
+                    f"full transcript)")
             if chk.type == "invariant":
                 if chk.ref is None:
                     errors.append(
@@ -81,6 +90,19 @@ def validate_pack(pack: Pack) -> ValidationReport:
                         f"probe {probe.id!r}: rubric {chk.rubric!r} not found "
                         f"(expected {chk.rubric}.md under <pack>/rubrics/; criteria "
                         f"are its '##' headings)")
+
+    # 1b. frozen grading-steps artifacts (2026-07-31): every committed
+    #     rubrics/*.steps.json must be a non-empty JSON list of non-empty
+    #     strings — when present it IS the judge's operative rubric, so a
+    #     malformed file must fail here, not degrade a paid run. (Facts sheets
+    #     are free-form markdown and need no shape check.)
+    rubrics_dir = pack.root / "rubrics"
+    if rubrics_dir.is_dir():
+        for steps_path in sorted(rubrics_dir.glob("*.steps.json")):
+            try:
+                parse_steps_file(steps_path)
+            except ValueError as e:
+                errors.append(str(e))
 
     # 2. reference solvability against deterministic checks
     for probe in pack.probes:

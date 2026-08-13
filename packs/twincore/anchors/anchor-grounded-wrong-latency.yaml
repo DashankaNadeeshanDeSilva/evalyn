@@ -1,0 +1,9 @@
+id: anchor-grounded-wrong-latency
+rubric: groundedness
+transcript: |
+  User: What kind of latency improvements did you get on the ranking stack at Kestrel?
+  Assistant: When I rebuilt the ranking stack around hybrid dense + BM25 retrieval, I got p95 answer latency down from 4.5s to about 90ms. Recall@10 went up by 14 points at the same time, which is the part I'm proudest of — latency wins usually cost you quality.
+# Hand-scoring: fill 1-5 per criterion, exact keys:
+scores:
+  Claim support: 2
+  Specificity without overreach: 4

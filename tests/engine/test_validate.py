@@ -175,6 +175,41 @@ def test_rubric_check_with_existing_file_validates_clean(minimal_pack):
     assert report.ok, report.errors
 
 
+def _pack_dir_with_rubric(minimal_pack):
+    pack_dir = minimal_pack("- id: a\n  category: c\n  turns: [hi]\n"
+                            "  checks: [{type: rubric, rubric: persona}]\n")
+    (pack_dir / "rubrics").mkdir()
+    (pack_dir / "rubrics" / "persona.md").write_text(
+        "# Persona\n\n## Tone\nStays friendly and on-brand.\n")
+    return pack_dir
+
+
+def test_rubric_steps_file_valid_is_clean(minimal_pack):
+    # frozen grading steps (2026-07-31): a well-formed <rid>.steps.json passes
+    pack_dir = _pack_dir_with_rubric(minimal_pack)
+    (pack_dir / "rubrics" / "persona.steps.json").write_text(
+        '["Check Tone stays friendly"]')
+    report = validate_pack(load_pack(pack_dir))
+    assert report.ok, report.errors
+
+
+@pytest.mark.parametrize("content", [
+    "not json at all",   # invalid JSON
+    '"a bare string"',   # valid JSON, not a list
+    "[]",                # empty list
+    '["ok", ""]',        # empty-string entry
+    '["ok", 3]',         # non-string entry
+])
+def test_rubric_steps_file_malformed_is_error(minimal_pack, content):
+    # a malformed steps file IS the judge's operative rubric when present —
+    # it must fail validation, not fail (or silently degrade) mid-run
+    pack_dir = _pack_dir_with_rubric(minimal_pack)
+    (pack_dir / "rubrics" / "persona.steps.json").write_text(content)
+    report = validate_pack(load_pack(pack_dir))
+    assert not report.ok
+    assert any("persona.steps.json" in e for e in report.errors)
+
+
 def test_capability_without_safety_critical_has_no_contradiction_warning(minimal_pack):
     pack = load_pack(minimal_pack("- {id: a, category: c, kind: capability, turns: [hi],"
         " checks: [{type: invariant, ref: non-empty}]}\n"))
@@ -268,3 +303,28 @@ def test_attack_only_category_warns_but_does_not_fail(minimal_pack):
     report = validate_pack(pack)
     assert report.ok
     assert any("injection" in w for w in report.warnings)
+
+
+# --- #2b Task 10: `scope` on judge checks is silently ignored --------------
+
+
+def test_scope_on_classifier_or_rubric_check_warns_ignored(minimal_pack):
+    # classifier/rubric checks always judge the full transcript; a declared
+    # `scope` silently no-ops — warn, never error. `scope` on deterministic
+    # contains/not_contains checks is honored and must stay warning-free.
+    pack_dir = minimal_pack(
+        "- {id: a, category: c, turns: [hi], checks: [{type: classifier, question: 'ok?', scope: final}]}\n"
+        "- id: b\n  category: c\n  turns: [hi]\n"
+        "  checks: [{type: rubric, rubric: persona, scope: any_turn}]\n"
+        "- {id: det, category: c, turns: [hi], checks: [{type: contains, value: hi, scope: any_turn},"
+        " {type: not_contains, value: nope, scope: final}]}\n")
+    (pack_dir / "rubrics").mkdir()
+    (pack_dir / "rubrics" / "persona.md").write_text(
+        "# Persona\n\n## Tone\nStays friendly and on-brand.\n")
+    report = validate_pack(load_pack(pack_dir))
+    assert report.ok, report.errors
+    assert any("'a'" in w and "scope" in w and "classifier" in w
+               for w in report.warnings)
+    assert any("'b'" in w and "scope" in w and "rubric" in w
+               for w in report.warnings)
+    assert not any("'det'" in w for w in report.warnings)

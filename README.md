@@ -149,6 +149,85 @@ still armed under a multi-turn social-engineering pivot), one probe hit a transi
 correctly marked INCOMPLETE instead of shrugged off, and the quarantine list surfaced real product
 findings the team didn't know about. A gate that says **NO** when it should — that's the product.
 
+## Compare — the blind taste test
+
+`compare` answers *"which version is actually better?"* without ever trusting a judge that knows
+which side is which. Run the gate once per configuration, then hand both artifacts to `compare` —
+it replays the captured transcripts through a pairwise rubric judge and never touches your
+product again:
+
+```bash
+uv run evalyn gate --target packs/yourproduct --out-dir runs/a    # config A, live
+# ...swap the model / prompt / retrieval config...
+uv run evalyn gate --target packs/yourproduct --out-dir runs/b    # config B, live
+
+uv run evalyn compare --target packs/yourproduct \
+    --a runs/a/<artifact>.json --b runs/b/<artifact>.json \
+    --label-a baseline --label-b candidate
+```
+
+Each trial pair is judged **blind** ("Conversation 1" vs "Conversation 2" — the judge never sees
+A/B labels) in **three order-controlled draws**: once A-first, once B-first, once in random order.
+**A verdict that flips when the order swaps is a tie** — position bias never becomes a win. A draw
+the judge garbles is `unsure`, and unsure is never a win either (fail-closed). The report puts
+pairwise verdicts next to hard metrics from the same trials:
+
+```markdown
+# Evalyn compare — yourproduct: baseline vs candidate
+
+## Pairwise verdicts
+
+| category  | baseline wins | candidate wins | ties | unsure | flip rate |
+| --------- | ------------- | -------------- | ---- | ------ | --------- |
+| grounding | 2             | 7              | 2    | 1      | 0.08      |
+| persona   | 3             | 3              | 5    | 1      | 0.17      |
+
+## Hard metrics
+
+| category  | latency mean baseline/candidate | latency p95 baseline/candidate | invariant failures baseline/candidate |
+| --------- | ------------------------------- | ------------------------------ | ------------------------------------- |
+| grounding | 1.9s/1.2s                       | 3.1s/2.0s                      | 0/0                                   |
+
+Totals: 24 pair(s) judged, 0 trial(s) excluded, judge spend $0.3100.
+
+compare is advisory: verdicts and hard metrics are reported side by side — no combined winner is computed.
+```
+
+The trust story is **inherited, not re-invented**: compare uses the same calibrated rubric judge
+as the gate — same rubrics, same frozen human-reviewed grading steps, same fact sheets, same
+≥85% calibration bar (a stale calibration refuses to run). It also refuses to judge artifacts
+from two different pack versions: the pack fingerprint must match on both sides, before a single
+judge token is spent.
+
+**compare is advisory by design.** It exits `0` (report produced) or `2` (couldn't run) — never
+`1`. It computes no combined winner: quality verdicts and latency/reliability metrics sit side by
+side, and which trade-off wins is your call, not a formula's.
+
+## CI — the gate on every pull request
+
+A reusable GitHub Actions workflow runs the gate against your product on every PR, diffs the
+committed baseline, uploads the run artifact, and posts the verdict as a **sticky PR comment**
+(one comment, updated in place on every push — your PR never drowns in bot noise):
+
+```yaml
+jobs:
+  evalyn-gate:
+    uses: DashankaNadeeshanDeSilva/evalyn/.github/workflows/evalyn-gate.yml@main
+    with:
+      pack-path: packs/yourproduct
+      baseline-path: ci/baseline-yourproduct.json
+      target-command: <command that starts your product>
+      target-health-url: http://127.0.0.1:8899/health   # polled until HTTP 200
+    secrets:
+      EVALYN_JUDGE_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+```
+
+Evalyn's own CI eats this dog food: every PR runs the test suite **plus a live gate self-test** —
+the same reusable workflow pointed at the bundled toy product with a committed baseline
+(`ci/baseline-example.json`). Setup, the paths-filter recipe, baseline blessing (and the guards
+that refuse to bless an untrusted or incomplete run): see
+[`docs/CI_ADOPTION.md`](docs/CI_ADOPTION.md).
+
 ## The flywheel
 
 `discover` **proposes**; the scoring layer **disposes**. A finding only counts when the trust
@@ -170,7 +249,7 @@ flowchart LR
 | Command | What it does |
 |---|---|
 | `evalyn gate --target <pack>` | Run the probe suite, diff the baseline, exit 0/1/2 |
-| `evalyn compare --config-a … --config-b …` | Blind, order-randomized A/B of two product configs |
+| `evalyn compare --target <pack> --a <run> --b <run>` | Blind pairwise A/B of two gate runs; flip-means-tie; advisory report |
 | `evalyn discover --target <pack>` | Budgeted adversarial exploration; confirmed findings become probes |
 | `evalyn calibrate --target <pack>` | Grade the judge against human anchors; hard-gate below 85% |
 | `evalyn validate-pack <pack>` | Task-health: schema, balanced sets, graders vs reference answers |
@@ -190,6 +269,7 @@ stream parser (Vercel AI SDK, raw SSE, named SSE, JSON). **Pydantic** schemas, *
 |---|---|
 | [`docs/EVALYN_EXPLAINED.md`](docs/EVALYN_EXPLAINED.md) | The whole system in plain English |
 | [`docs/2026-07-21-evalyn-design.md`](docs/2026-07-21-evalyn-design.md) | Full technical design |
+| [`docs/CI_ADOPTION.md`](docs/CI_ADOPTION.md) | Adopting the reusable gate workflow in your repo |
 | [`docs/ROADMAP.md`](docs/ROADMAP.md) | Where it's going |
 
 ## License

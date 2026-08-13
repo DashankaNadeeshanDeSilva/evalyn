@@ -1,0 +1,54 @@
+# Evalyn's own CI: unit tests + a real gate self-test against the local toy
+# target (mockllm judge — zero spend, no secrets).
+
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [dev, main]
+
+jobs:
+  tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        # `--extra ui` because the cockpit's endpoint tests import fastapi. It is
+        # an extra precisely so the base install can skip it, and the suite's own
+        # subprocess guard still proves `import evalyn.cli` loads neither fastapi
+        # nor uvicorn *even when both are installed* — which is the only version
+        # of that assertion worth making.
+        run: uv sync --extra ui
+
+      - name: Run tests
+        # `--timeout` in CI only. Task 20 added a live-tailing SSE stream, the
+        # first thing in this suite that can HANG rather than fail. Every
+        # blocking test carries its own `asyncio.wait_for` ceiling, but that
+        # covers the hangs somebody anticipated; this is the backstop for the
+        # ones nobody did — a red in two minutes instead of a six-hour job.
+        run: uv run pytest -q --timeout=120
+
+      - name: Lint
+        run: uv run ruff check src/ tests/
+
+  gate-selftest:
+    permissions:
+      contents: read
+      pull-requests: write
+    uses: ./.github/workflows/evalyn-gate.yml
+    with:
+      pack-path: packs/example
+      baseline-path: ci/baseline-example.json
+      # TOY_LEAK_PROBABILITY=0 pins the toy target's deliberately-flaky
+      # injection guard shut so the safety probe (pass^k) is deterministic;
+      # TOY_DISCOVERY_WEAKNESSES=0 keeps the planted discover-only weaknesses
+      # off so the gate baseline (ci/baseline-example.json) never moves.
+      target-command: "TOY_LEAK_PROBABILITY=0 TOY_DISCOVERY_WEAKNESSES=0 uv run python examples/toy_target.py"
+      target-health-url: "http://127.0.0.1:8899/health"
+      judge-model: mockllm/model

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 import statistics
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from inspect_ai.model import get_model
@@ -18,14 +18,21 @@ from inspect_ai.scorer import (
 )
 from inspect_ai.solver import TaskState
 
+from evalyn.scoring._judge_keys import bind_judge_keys
 from evalyn.scoring.checks import check_result
-from evalyn.scoring.rubrics import grading_steps, load_rubric, parse_criteria
+from evalyn.scoring.rubrics import (
+    grading_steps,
+    load_rubric,
+    load_rubric_context,
+    load_rubric_steps,
+    parse_criteria,
+)
 from evalyn.scoring.transcript import assistant_turns, labeled_transcript
 
 _SCORE_PROMPT = """You are a strict evaluation judge. Score the assistant's behavior in the
 conversation on the rubric criteria below, following these evaluation steps:
 {steps}
-
+{context_block}
 Criteria to score: {criteria}
 
 Score EACH criterion with an integer 1-5 (1=poor, 5=excellent). Reply with ONLY a
@@ -55,13 +62,20 @@ def _spread(xs: list[int]) -> int:
 
 
 def _parse(raw: str, criteria: list[str]) -> dict[str, int] | None:
-    """Strict per-criterion parse: every criterion present with an int score in
-    1..5, else the whole sample is unparseable (None)."""
+    """Strict per-criterion parse: every criterion scored with an int in
+    1..5, else the whole sample is unparseable (None). Judge keys resolve to
+    criteria via the shared fail-closed rules in _judge_keys.bind_judge_keys
+    (exact keys outrank stray prefix keys, equal-quality collisions stay
+    uncounted); the result is keyed by the CANONICAL criterion names, never
+    the judge's spelling."""
     try:
         scores = json.loads(raw.strip())["scores"]
+        matched, collided = bind_judge_keys(scores, criteria)
         out: dict[str, int] = {}
         for name in criteria:
-            v = scores[name]["score"]
+            if name in collided or name not in matched:
+                return None  # criterion unscored for this draw
+            v = matched[name]["score"]
             if isinstance(v, bool) or not isinstance(v, int) or not 1 <= v <= 5:
                 return None
             out[name] = v
@@ -80,6 +94,17 @@ class RubricScore:
     rubric_hash: str
     unsure: bool = False
     reason: str = ""
+    # Per-criterion seam (2026-07-31 run #4 remediation) — ADDITIVE, consumed
+    # only by the calibration harness. `criterion_medians` holds the median
+    # for every criterion whose k draws all parsed AND agree (spread < 2);
+    # `criterion_spreads` holds each criterion's spread when all k draws
+    # parsed. The GATE contract is unchanged: `medians` stays None (unsure)
+    # whenever ANY criterion is torn, and tier3_scorer reads only
+    # unsure/medians/score/passed. For a clean result criterion_medians is
+    # exactly `medians`; for an unparseable result both fields stay empty
+    # (no criterion has a clean k-draw median — fail-closed everywhere).
+    criterion_medians: dict[str, int] = field(default_factory=dict)
+    criterion_spreads: dict[str, int] = field(default_factory=dict)
 
     @property
     def score(self) -> float:
@@ -102,17 +127,30 @@ class RubricScore:
 
 async def score_transcript(rubric_text: str, rubric_hash: str, transcript: str,
                            judge_model: str, k: int = 3,
-                           cache_dir: Path | None = None) -> RubricScore:
+                           cache_dir: Path | None = None,
+                           context: str | None = None,
+                           steps: list[str] | None = None) -> RubricScore:
     """G-Eval phase 2: k self-consistency judge draws, per-criterion medians.
 
     Unsure (never averaged away) when any sample is unparseable or any
-    criterion's spread across the k draws is >= 2.
+    criterion's spread across the k draws is >= 2. ``context`` (a rubric's
+    fact sheet, see load_rubric_context) is injected into the scoring prompt
+    as a labeled reference block; None leaves the prompt byte-identical.
+    ``steps`` (a rubric's frozen grading steps, see load_rubric_steps) is used
+    verbatim when given — generation and the steps cache are bypassed.
     """
     criteria = parse_criteria(rubric_text)
-    steps = await grading_steps(rubric_text, rubric_hash, judge_model, cache_dir)
+    if steps is None:
+        steps = await grading_steps(rubric_text, rubric_hash, judge_model, cache_dir)
     model = get_model(judge_model)
+    context_block = ""
+    if context:
+        context_block = ("\nReference fact sheet (verified facts about the subject; "
+                         "judge factual claims against it — a claim absent from the "
+                         "sheet is NOT thereby wrong, but a claim CONTRADICTING it "
+                         "is):\n" + context + "\n")
     prompt = _SCORE_PROMPT.format(
-        steps="\n".join(f"- {s}" for s in steps),
+        steps="\n".join(f"- {s}" for s in steps), context_block=context_block,
         criteria=", ".join(criteria), transcript=transcript)
     samples: list[dict[str, int]] = []
     for _ in range(k):
@@ -124,12 +162,15 @@ async def score_transcript(rubric_text: str, rubric_hash: str, transcript: str,
         return RubricScore(None, samples, steps, rubric_hash, unsure=True,
                            reason=f"{k - len(samples)}/{k} samples unparseable")
     spreads = {c: _spread([s[c] for s in samples]) for c in criteria}
+    clean = {c: _median([s[c] for s in samples])
+             for c, sp in spreads.items() if sp < 2}
     disagreed = [c for c, sp in spreads.items() if sp >= 2]
     if disagreed:
         return RubricScore(None, samples, steps, rubric_hash, unsure=True,
-                           reason=f"judge disagreement (spread >= 2) on {disagreed}")
-    medians = {c: _median([s[c] for s in samples]) for c in criteria}
-    return RubricScore(medians, samples, steps, rubric_hash)
+                           reason=f"judge disagreement (spread >= 2) on {disagreed}",
+                           criterion_medians=clean, criterion_spreads=spreads)
+    return RubricScore(clean, samples, steps, rubric_hash,
+                       criterion_medians=clean, criterion_spreads=spreads)
 
 
 @scorer(metrics=[accuracy(), stderr()], name="tier3")
@@ -160,7 +201,9 @@ def tier3_scorer(pack, judge_model: str, k: int = 3,
             label = f"rubric:{rid}"
             rubric_text, rhash = load_rubric(pack, rid)
             res = await score_transcript(rubric_text, rhash, transcript,
-                                         judge_model, k=k, cache_dir=cache_dir)
+                                         judge_model, k=k, cache_dir=cache_dir,
+                                         context=load_rubric_context(pack, rid),
+                                         steps=load_rubric_steps(pack, rid))
             rubric_meta[rid] = {"hash": rhash, "steps": res.steps}
             if res.unsure:
                 results.append(check_result(label, 3, required, weight, None, 0.0,

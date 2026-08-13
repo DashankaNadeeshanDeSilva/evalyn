@@ -59,6 +59,16 @@ invariants:
 CHECKRESULT_KEYS = {"check", "tier", "required", "weight", "passed", "score",
                     "turn", "evidence", "unsure"}
 
+# Task 6 trial-record contract: one record per SCORED epoch, exactly these keys
+# — the compare mode (Task 8) pairs runs on this shape. `checks` joined it in
+# Plan #4 Task 22 (this epoch's own CheckResults, which the cockpit's per-trial
+# drill-down serves); the set stays EXACT so a sixth key has to be argued for
+# here rather than appearing.
+# REVERTING Task 22's `05d51d6`? Drop `"checks"` from this set too — the two
+# were one change, split only because the branch could not be rebased.
+TRIAL_RECORD_KEYS = {"epoch", "transcript", "checks", "session_seconds",
+                     "invariant_failures"}
+
 ARTIFACT_PROBES = """\
 - id: sse-grounding
   category: grounding
@@ -121,12 +131,16 @@ BAND_HEAVY_PROBES = """\
 
 
 @pytest.fixture
-def make_sse_pack(tmp_path):
-    """Factory: write a named-sse pack under tmp_path/<name> and return its dir."""
+def make_sse_pack(tmp_path, retarget_to_toy):
+    """Factory: write a named-sse pack under tmp_path/<name> and return its dir.
+
+    The pack text names the fixed port; `retarget_to_toy` moves it onto the
+    live target's ephemeral port (base_url *and* allowlist, both spellings).
+    """
     def _make(name: str, probes_yaml: str) -> Path:
         pack_dir = tmp_path / name
         pack_dir.mkdir()
-        (pack_dir / "target.yaml").write_text(TARGET_YAML)
+        (pack_dir / "target.yaml").write_text(retarget_to_toy(TARGET_YAML))
         (pack_dir / "probes").mkdir()
         (pack_dir / "probes" / "p.yaml").write_text(probes_yaml)
         return pack_dir
@@ -169,6 +183,25 @@ def test_named_sse_gate_produces_self_contained_artifact(
         assert probe["checks"], f"probe {probe['id']}: representative checks missing"
         for chk in probe["checks"]:
             assert set(chk) == CHECKRESULT_KEYS  # per-turn violation data (`turn`)
+        # Task 6: per-trial transcript + hard metrics — one record per scored
+        # epoch, round-tripped through a real inspect_eval log
+        assert len(probe["trial_records"]) == probe["trials"]
+        for rec in probe["trial_records"]:
+            assert set(rec) == TRIAL_RECORD_KEYS
+            # judged-transcript format = labeled_transcript's exactly
+            assert rec["transcript"].startswith("User: ")
+            assert "\nAssistant: " in rec["transcript"]
+            assert isinstance(rec["session_seconds"], float)
+            assert rec["session_seconds"] > 0
+            assert isinstance(rec["invariant_failures"], int)
+            # Task 22: this epoch's own checks, in the same CheckResult shape,
+            # round-tripped through a real log and a real JSON artifact
+            assert rec["checks"], f"{probe['id']} epoch {rec['epoch']}: no checks"
+            assert len(rec["checks"]) == len(probe["checks"])
+            for chk in rec["checks"]:
+                assert set(chk) == CHECKRESULT_KEYS
+                assert chk["passed"] is True   # this surface is all-passing
+            assert rec["invariant_failures"] >= 0
 
     result = evaluate_gate(art, baseline=None)
     assert result.exit_code == 0

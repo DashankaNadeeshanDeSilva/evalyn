@@ -31,8 +31,9 @@ each stage lives in its own file next to this one.
 |-------|---------------------|---------------|--------|
 | **Plan #1** | `gate` (fixed regression tests, pass/fail) | [`superpowers/plans/2026-07-22-evalyn-gate-foundation.md`](./superpowers/plans/2026-07-22-evalyn-gate-foundation.md) | ✅ **Built** (v0.1.0) |
 | **Plan #2a** | Trusted gate on the *real* product: TwinCore pack + Tier-3 judge + calibration | [`superpowers/plans/2026-07-24-evalyn-plan2a-real-gate.md`](./superpowers/plans/2026-07-24-evalyn-plan2a-real-gate.md) | ✅ **Built** |
-| **Plan #2b** | `compare` (A/B) + CI automation | *(not yet written)* | ⏳ **Next stage** (scope below) |
-| **Plan #3** | `discover` (problem-hunting agent) + the flywheel | *(not yet written)* | ⏳ Planned (scope below) |
+| **Plan #2b** | `compare` (A/B) + CI automation | [`superpowers/plans/2026-07-28-evalyn-plan2b-compare-ci.md`](./superpowers/plans/2026-07-28-evalyn-plan2b-compare-ci.md) | ✅ **Built** (v0.3.0) |
+| **Plan #3** | `discover` (problem-hunting agent) + the flywheel | [`superpowers/plans/2026-08-04-evalyn-plan3-discover.md`](./superpowers/plans/2026-08-04-evalyn-plan3-discover.md) · [spec](./superpowers/specs/2026-08-04-discover-mode-design.md) | ✅ **Built** (v0.4.0) |
+| **Plan #4** | `evalyn ui` — a local cockpit over `runs/`: history, verdicts, transcripts, findings, trends, and live run streaming | [`superpowers/plans/2026-08-07-evalyn-plan4-ui.md`](./superpowers/plans/2026-08-07-evalyn-plan4-ui.md) · [spec](./superpowers/specs/2026-08-07-evalyn-ui-cockpit-design.md) | ✅ **Built** (v0.5.0) — seven pages; some pages deferred, see the JOURNAL register |
 
 ---
 
@@ -62,7 +63,7 @@ automation. Plan #1 targets the **practice product only** to stay self-contained
 
 ---
 
-## Plan #2 — Make the gate real & trustworthy, plus `compare` *(split: #2a ✅ built, #2b ⏳ next)*
+## Plan #2 — Make the gate real & trustworthy, plus `compare` *(split: #2a ✅ built, #2b ✅ built)*
 
 **Theme:** take the gate from "works on the practice product" to "trusted on the *real* product,"
 and add the A/B `compare` job.
@@ -90,37 +91,59 @@ produces trustworthy A/B verdicts; CI catches regressions on PRs automatically.
   [`superpowers/plans/2026-07-24-evalyn-plan2a-real-gate.md`](./superpowers/plans/2026-07-24-evalyn-plan2a-real-gate.md).
   The gate now runs full 3-tier, transcript-aware, calibrated (fail-closed) scoring against the
   real TwinCore pack, with stream adapters, budget metering, and hardened artifacts.
-- **Plan #2b — `compare` + CI** (items 4–5 above): the **next stage**; its plan is not yet written.
-  **Its FIRST task (decided 2026-07-26, PR #4 review):** the KB-fact-sheet groundedness fix +
-  recalibration — inject a condensed twin-KB fact sheet into the groundedness judge's context,
-  hash it into the staleness rule, recalibrate (existing 20 hand-scored anchors reusable).
-  Rationale: PR #4 adopted **per-rubric fail-closed calibration gating**, which correctly marks
-  the current record stale (groundedness 60% agreement — the judge can't verify claims against a
-  KB it can't see). Front-loading this makes `--allow-uncalibrated` a brief interim state, not
-  the resting state; safety verdicts (deterministic Tier-1 gates) are unaffected meanwhile.
-  The recalibration should also grow the anchor set to **≥10 anchors per rubric** (PR #4
-  second-pass recommendation: at 5 anchors, per-criterion agreement moves in 20% steps, so an
-  85% bar is a de-facto 100% bar).
+- **Plan #2b — `compare` + CI** (items 4–5 above): ✅ **built** — see
+  [`superpowers/plans/2026-07-28-evalyn-plan2b-compare-ci.md`](./superpowers/plans/2026-07-28-evalyn-plan2b-compare-ci.md).
+  Shipped: the pairwise judge core (k=3 order-controlled blind draws, flip-means-tie,
+  fail-closed unsure) + `evalyn compare` over two gate artifacts (no new target traffic;
+  pack-fingerprint/transcript/calibration preconditions refuse pre-spend; **advisory exit
+  0/2** — no combined winner); the reusable `evalyn-gate.yml` GitHub Actions workflow with a
+  sticky PR comment, plus Evalyn's own CI self-test against the bundled toy target with a
+  committed baseline (`ci/baseline-example.json`, `docs/CI_ADOPTION.md`); and the front-loaded
+  trust work — KB-fact-sheet groundedness context (`rubrics/<id>.facts.md`, hash-coupled), the
+  anchor set grown to 11 per rubric, and a fresh calibration PASS (93% overall, every rubric
+  ≥85%). Per-eval `judge_usd` metering was fixed from the shakedown's 100%-under-report bug.
+  **Shakedown-driven additions** (forced by five live calibrate runs + the first live gate run,
+  none in the original plan): **frozen human-reviewed grading steps** as hash-coupled pack
+  artifacts (`rubrics/<id>.steps.json`, fail-loud never-cached generation — compare injects the
+  same frozen steps); **per-criterion unsure accounting** (a torn criterion no longer voids a
+  whole anchor); concrete Tier-2 classifier rewordings (spot-checked against the shakedown
+  transcripts); and the **Guardian BOUNDARY ruling** — the planned "fourth redirect constant"
+  does not exist (BOUNDARY redirects are model free-composition), so the pack keeps exactly 3
+  constants behind one YAML anchor and BOUNDARY stays a documented fail-loud flakiness caveat.
 
 ---
 
-## Plan #3 — The `discover` agent + the flywheel ⏳ *(scope only; plan not yet written)*
+## Plan #3 — The `discover` agent + the flywheel ✅ *(built — v0.4.0)*
 
 **Theme:** the intelligent, problem-hunting mode — the part that finds failures nobody scripted.
 
-**Planned scope:**
+**Delivered scope:**
 - The **adaptive discovery agent**: a goal-directed loop that explores an *objective × strategy*
   grid (what weakness × how to provoke it), guided by pluggable **personas** and **playbooks**, with
   coverage/novelty tracking so it explores breadth instead of repeating itself, bounded by hard
   step/turn/dollar budgets.
 - The **trust boundary**: the agent only *proposes* findings; a finding becomes real only when the
   trustworthy grading layer *independently confirms* it against the transcript (kills false wins).
-- The **flywheel**: every confirmed finding auto-emits a minimal, reproducible `gate` test, so the
-  regression suite grows itself and never re-forgets a bug.
+- The **flywheel**: every confirmed finding is emitted as a minimal, deterministic probe file into
+  the pack's **inert** `discoveries/` staging dir (never `probes/` — `gate` does not load it) and
+  then — budget permitting — replayed once through the gate's own machinery to record whether it
+  still reproduces (skipped and marked partial when replay is off or the meter is exhausted).
+  **Adoption is human-gated:** a person reviews the staged file and moves it into `probes/`; only
+  then does it gate.
 - Runs **nightly / on-demand — never** as a blocking CI gate (it's non-deterministic and slower).
 
-**Deliverable:** `evalyn discover` autonomously finds at least one *confirmed* problem (validated by
-the scoring layer, not self-asserted) and emits a reproducible probe file for it.
+**Deliverable (met):** `evalyn discover` autonomously finds at least one *confirmed* problem
+(validated by the scoring layer, not self-asserted) and emits a reproducible probe file for it.
+
+**As built (2026-08-06, 14 tasks; Task 14 is the user-gated live run):** `evalyn discover` CLI (§8
+flags, exit 0/2/3, refuse-class preflights, `--dry-run` cost preview); `SpendMeter` live USD ceiling
++ post-hoc log reconcile; the `Confirmer` trust boundary over the real tier-1/tier-3 scorers;
+outcome-graded emission with deterministic dedup against prior discoveries; replay-once; the
+judge≠generator family rule extended to the discovery agent; planted weaknesses in the toy target
+(CI-gated off) plus a shipped persona/playbook; and a zero-spend end-to-end acceptance test that
+runs the whole flywheel on `packs/example` and shows an adopted probe redding the gate. Terminal
+only — there is no UI. One honest limit: a **non**-safety-critical adopted probe quarantines
+(exit 0) until a baseline includes it; only safety-critical findings red the gate on adoption.
 
 ---
 
@@ -147,7 +170,7 @@ The design doc ([`2026-07-21-evalyn-design.md`](./2026-07-21-evalyn-design.md)) 
 - Design §3 scoring: Tier-1 & Tier-2 → **Plan #1**; Tier-3 + calibration → **Plan #2a** ✅.
 - Design §2 `gate` + §5 gate mechanics → **Plan #1**; CI wiring (§5) → **Plan #2b**.
 - Design §2 `compare` → **Plan #2b**.
-- Design §4 `discover` + flywheel → **Plan #3**.
+- Design §4 `discover` + flywheel → **Plan #3** ✅.
 - Design §6 TwinCore pack → **Plan #2a** ✅ (Plan #1 used the practice pack instead).
 
 ---
@@ -159,3 +182,20 @@ The design doc ([`2026-07-21-evalyn-design.md`](./2026-07-21-evalyn-design.md)) 
 - **2026-07-26** — Plan #1 built (v0.1.0). Plan #2 split as anticipated: **#2a** (real TwinCore
   pack + Tier-3 judge + calibration) built per its plan file; **#2b** (`compare` + CI) is the next
   stage, plan still to write.
+- **2026-08-03** — Plan #2b built (v0.3.0): `compare` (blind pairwise, flip-means-tie, advisory
+  exit 0/2) + CI (reusable gate workflow, self-test, committed baseline, adoption docs), plus the
+  shakedown-driven trust additions (frozen grading steps, per-criterion unsure accounting, rubric
+  fact sheets, fresh 93% calibration, BOUNDARY nondeterminism ruling). Plan #3 (`discover`) was
+  the next stage, plan still to write.
+- **2026-08-06** — Plan #3 built (v0.4.0): `discover` end to end — the adaptive
+  observe→reason→pursue agent (personas, playbooks, coverage/novelty tracking, hard step/turn/USD
+  budgets), the `Confirmer` trust boundary that hands every candidate to the **real scorers** rather
+  than trusting the agent, outcome-graded probe emission with deterministic dedup, replay-once
+  through the gate's own machinery, and inert `discoveries/` staging — plus the `evalyn discover`
+  CLI (exit 0/2/3, refuse-class preflights, dry-run cost preview), the `no-pii-leak` tier-1
+  invariant, `SpendMeter` (live charging + eval-log reconcile, the larger of the two used for the
+  cap), the judge≠generator family rule extended to the discovery agent, planted toy-target
+  weaknesses (CI keeps them off so `ci/baseline-example.json` never moves), and a zero-spend e2e
+  flywheel acceptance on `packs/example`. **Adoption stays human-gated:** staged findings never
+  enter `probes/` on their own, and a non-safety-critical adopted probe quarantines (exit 0) until
+  a baseline includes it. `discover` is terminal-only; the UI is a later stage.
