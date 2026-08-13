@@ -7,6 +7,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from evalyn.engine.budget import PRICES as budget_prices
 from evalyn.engine.run import (ProbeResult, RunArtifact, _judge_usd,
                                _reduce_log_to_probes, atomic_write_artifact,
                                new_run_id, pack_fingerprint, run_gate)
@@ -123,6 +124,155 @@ def test_reducer_tolerates_unknown_scorer_names(minimal_pack_with_probe):
     assert pr.trials == 1 and pr.mean_score == 0.8
 
 
+# --- Task 22: per-trial checks, and a representative that agrees with the verdict ---
+
+#: The five fields the gate reads. Task 22 is presentation-only, so every one of
+#: these literals is the value the PRE-Task-22 reducer produced on the same
+#: input — recorded here so a later "improvement" to the check plumbing that
+#: moves a verdict fails loudly instead of silently re-scoring the corpus.
+_VERDICT_FIELDS = ("trials", "pass_at_k", "pass_k", "mean_score", "unsure_trials")
+
+
+def _epoch_samples(pattern):
+    """One single-scorer `_FakeSample` per epoch. `pattern` maps epoch -> the
+    required check's `passed`; `None` means it came back unsure."""
+    return [_FakeSample("p", epoch, {"tier1": _FakeScore({"checks": [
+        _cr("contains:x", 1, True, passed, 1.0 if passed else 0.0,
+            unsure=passed is None)]})})
+        for epoch, passed in sorted(pattern.items())]
+
+
+def test_each_trial_record_carries_that_epochs_own_checks(minimal_pack_with_probe):
+    """Task 22: the drill-down must show THIS trial's checks.
+
+    Discriminating by construction — epoch 2 is the only one that deviated, so
+    a record handed the probe-level representative list (or epoch 1's, or an
+    empty one) fails on `passed`, not merely on length.
+    """
+    pack = minimal_pack_with_probe("p", samples=3)
+    samples = _epoch_samples({1: True, 2: False, 3: True})
+    # a second scorer on epoch 2 only: the plumbing is per-epoch, not per-scorer
+    samples[1].scores["tier3"] = _FakeScore(
+        {"checks": [_cr("rubric:tone", 3, False, True, 0.5)]})
+    [pr] = _reduce_log_to_probes(_FakeLog(samples), pack)
+
+    by_epoch = {rec["epoch"]: rec["checks"] for rec in pr.trial_records}
+    assert sorted(by_epoch) == [1, 2, 3]
+    assert [c["passed"] for c in by_epoch[1]] == [True]
+    assert [c["passed"] for c in by_epoch[3]] == [True]
+    assert [(c["check"], c["passed"]) for c in by_epoch[2]] == [
+        ("contains:x", False), ("rubric:tone", True)]
+    # the artifact's own check-dict shape, unchanged
+    assert all(set(c) == {"check", "tier", "required", "weight", "passed",
+                          "score", "turn", "evidence", "unsure"}
+               for checks in by_epoch.values() for c in checks)
+
+
+def test_a_trial_records_checks_are_isolated_from_the_representative_list(
+        minimal_pack_with_probe):
+    """A redactor that rewrites the drill-down must not silently rewrite the
+    report as well. They serialise the same; they must not BE the same.
+
+    The in-place mutation is the whole test: a shallow `list(crs)` separates
+    the two *lists* and passes an `is not` assertion while leaving every check
+    **dict** shared, so the write below still lands in both.
+    """
+    pack = minimal_pack_with_probe("p", samples=1)
+    [pr] = _reduce_log_to_probes(_FakeLog(_epoch_samples({1: False})), pack)
+    record_checks = pr.trial_records[0]["checks"]
+
+    assert pr.checks == record_checks
+    assert pr.checks is not record_checks
+    pr.checks[0]["evidence"] = "[redacted]"
+    assert record_checks[0]["evidence"] == "", (
+        "the trial record was rewritten through the representative list")
+
+
+@pytest.mark.parametrize("pattern, expected", [
+    ({1: True, 2: True, 3: True}, (3, 1.0, 1.0, 1.0, 0)),
+    ({1: True, 2: False, 3: True}, (3, 1.0, 0.0, 2 / 3, 0)),
+    ({1: False, 2: False, 3: False}, (3, 0.0, 0.0, 0.0, 0)),
+    # the unsure trial counts toward `trials`/`unsure_trials` but is EXCLUDED
+    # from the mean (PR #4 fix #1), so that is (1.0 + 0.0) / 2, not / 3
+    ({1: True, 2: None, 3: False}, (3, 1.0, 0.0, 0.5, 1)),
+    ({1: False, 2: True}, (2, 1.0, 0.0, 0.5, 0)),
+])
+def test_task_22_moves_no_verdict_field(minimal_pack_with_probe, pattern, expected):
+    """**PRESENTATION ONLY.** `pass_k`/`pass_at_k`/`mean_score`/`unsure_trials`
+    come from the `req_passes` aggregation, never from `checks` or
+    `trial_records`. These are the pre-Task-22 values on the same inputs."""
+    pack = minimal_pack_with_probe("p", samples=max(pattern))
+    [pr] = _reduce_log_to_probes(_FakeLog(_epoch_samples(pattern)), pack)
+
+    assert tuple(getattr(pr, f) for f in _VERDICT_FIELDS) == pytest.approx(expected)
+
+
+def test_a_failing_trial_represents_a_failing_probe(minimal_pack_with_probe):
+    """Task 22 commit 2: the representative list may not contradict pass^k.
+
+    Epoch 1 passes and epoch 3 deviates, which is exactly the shape that made
+    `injection-exfil-boundaries` render `pass^k=0.0  7 checks  0 failed` on
+    stage: the representative was always the first epoch's all-green list.
+    """
+    pack = minimal_pack_with_probe("p", samples=3)
+    [pr] = _reduce_log_to_probes(
+        _FakeLog(_epoch_samples({1: True, 2: True, 3: False})), pack)
+
+    assert pr.pass_k == 0.0, "the probe failed"
+    assert any(c["passed"] is False for c in pr.checks), (
+        "so its representative checks must show a failure")
+    assert pr.checks == pr.trial_records[-1]["checks"]  # epoch 3's, the failing one
+
+
+def test_an_all_passing_probe_keeps_the_lowest_epoch_as_representative(
+        minimal_pack_with_probe):
+    """The fallback: no failing epoch to pick, so the lowest-numbered one."""
+    pack = minimal_pack_with_probe("p", samples=2)
+    [pr] = _reduce_log_to_probes(_FakeLog(_epoch_samples({1: True, 2: True})), pack)
+
+    assert pr.pass_k == 1.0
+    assert pr.checks == pr.trial_records[0]["checks"]
+
+
+def test_an_abstaining_epoch_never_represents_a_probe_that_really_failed(
+        minimal_pack_with_probe):
+    """**Fix round I1.** `not req_pass` is true for an ABSTAINED required
+    check as well as a failed one, so selecting on it picked epoch 1 here —
+    an epoch with no `passed: false` in it — and printed `pass^k=0.0 … 0
+    failed` on stage all over again, with the real deviation on epoch 3 left
+    unshown.
+
+    Not hypothetical for the demo: `packs/twincore-injection/probes/
+    injection.yaml:257` is a `type: classifier, required: true` check, i.e. a
+    tier-2 judge call, and abstaining is exactly what a judge call does when
+    it cannot decide.
+    """
+    pack = minimal_pack_with_probe("p", samples=3)
+    [pr] = _reduce_log_to_probes(
+        _FakeLog(_epoch_samples({1: None, 2: True, 3: False})), pack)
+
+    assert pr.pass_k == 0.0 and pr.unsure_trials == 1
+    assert not any(c["passed"] is False for c in pr.trial_records[0]["checks"]), (
+        "epoch 1 must be the abstainer this test is about")
+    assert any(c["passed"] is False for c in pr.checks), (
+        "the abstaining epoch was chosen over the one that really failed")
+    assert pr.checks == pr.trial_records[-1]["checks"]  # epoch 3's
+
+
+def test_an_all_abstaining_probe_is_represented_by_its_abstention(
+        minimal_pack_with_probe):
+    """No epoch shows a `passed: false`, so there is no failure to show and
+    inventing one would be worse. The lowest failing epoch's `unsure` entries
+    are the honest evidence — and they are what the badge renders."""
+    pack = minimal_pack_with_probe("p", samples=2)
+    [pr] = _reduce_log_to_probes(
+        _FakeLog(_epoch_samples({1: True, 2: None})), pack)
+
+    assert pr.pass_k == 0.0 and pr.unsure_trials == 1
+    assert pr.checks == pr.trial_records[1]["checks"]   # epoch 2, the abstainer
+    assert [c["unsure"] for c in pr.checks] == [True]
+
+
 def test_run_gate_raises_on_non_success_eval_status(monkeypatch, tmp_path):
     """A failed Inspect eval must raise (CLI maps it to exit 2), not reduce an empty log."""
     monkeypatch.setenv("EVALYN_TARGET_URL", "http://localhost:8899")
@@ -143,12 +293,13 @@ def test_run_gate_produces_artifact_with_per_probe_trial_stats(toy_target, monke
                                                                tmp_path, live_pack_dir):
     monkeypatch.setenv("EVALYN_TARGET_URL", toy_target)
     pack = load_pack(live_pack_dir(REPO_EXAMPLE))
-    # mockllm/model is unpriced, so real metering warns and prices it at the
-    # conservative upper bound — capturing it here also PROVES the eval's own
-    # usage reaches _judge_usd (the ContextVar seam silently returned {}).
-    with pytest.warns(RuntimeWarning, match="no price entry"):
-        art = run_gate(pack, judge_model="mockllm/model", log_dir=str(tmp_path / "logs"),
-                       out_dir=str(tmp_path / "runs"))  # keep runs/ out of the repo CWD
+    # mockllm/model is priced at zero (free local stub), which would make the
+    # judge_usd guard below vacuous — a real 0.0 and the ContextVar-seam bug's
+    # 0.0 are indistinguishable. Price the stub nonzero FOR THIS TEST ONLY so
+    # judge_usd > 0.0 still proves the eval's own usage reaches _judge_usd.
+    monkeypatch.setitem(budget_prices, "mockllm", (0.015, 0.075))
+    art = run_gate(pack, judge_model="mockllm/model", log_dir=str(tmp_path / "logs"),
+                   out_dir=str(tmp_path / "runs"))  # keep runs/ out of the repo CWD
     # Plan #2b Task 1 regression guard: a REAL run must meter nonzero judge
     # spend from the returned log (live bug 2026-07-28: judge_usd == 0.0)
     assert art.judge_usd > 0.0
@@ -238,7 +389,8 @@ def test_run_gate_out_dir_writes_artifact_there_not_cwd(toy_target, monkeypatch,
     monkeypatch.setenv("EVALYN_TARGET_URL", toy_target)
     pack = load_pack(live_pack_dir(REPO_EXAMPLE))
     monkeypatch.chdir(tmp_path)  # a CWD runs/ write would be visible here
-    # metering is not this test's concern (and unpriced mockllm would warn)
+    # metering is not this test's concern — stubbed out so it cannot influence
+    # the artifact-write assertions (mockllm meters to $0.00 anyway)
     monkeypatch.setattr("evalyn.engine.run._judge_usd", lambda log: 0.0)
     out = tmp_path / "artifacts"
     art = run_gate(pack, judge_model="mockllm/model",
@@ -529,6 +681,9 @@ def test_reducer_trial_records_scored_epochs_only(minimal_pack_with_probe):
     assert pr.trials == 1
     assert pr.trial_records == [{
         "epoch": 1, "transcript": "User: hi\nAssistant: hello",
+        # Task 22: the epoch's own checks, all three of them — including the
+        # two that `invariant_failures` does not count.
+        "checks": scored.scores["tier1"].metadata["checks"],
         "session_seconds": 1.25, "invariant_failures": 1}]
 
 

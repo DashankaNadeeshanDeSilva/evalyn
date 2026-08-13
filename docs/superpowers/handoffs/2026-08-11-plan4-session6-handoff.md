@@ -70,16 +70,25 @@ Every one is review-clean: each had a task review, one fix round and a scoped re
 
 | | |
 |---|---|
-| `feat/plan4-ui` (trunk) | pushed · **draft PR #8 → `dev`, CI green** · HEAD `102c215` |
-| `feat/plan4-ui-frontend` (worktree `../Evalyn_frontend_lane`) | pushed · no PR · HEAD `9a253ab` |
+| `dev` | **PR #8 MERGED 2026-08-11** (`9a588be`). All trunk work is in `dev`. |
+| `feat/plan4-ui` (trunk worktree) | HEAD `18f5aca`, pushed, **0 commits ahead of `dev`** |
+| `feat/plan4-ui-frontend` (worktree `../Evalyn_frontend_lane`) | HEAD `9a253ab`, pushed, no PR, **18 commits ahead of `dev`** |
 | Python suite | **1197 passed**, warning-clean both colour modes, cold `__pycache__` |
 | UI suite | **237** (trunk) · **345** (frontend lane) · `tsc` clean both · bundle byte-identical |
 
-⚠️ **The frontend lane has commits the trunk does not** (Task 9, Task 21, the `vite base` fix, and
-the controller's merge repair). Merging it back into the trunk **needs an explicit maintainer ask**
-and must happen when the committed bundle is quiescent — it is minified, so a conflict there is
-unmergeable. Trunk → frontend fast-forwards are pre-authorised (R4-32); when the branches have
-diverged, **merge a pinned verified commit, never the moving branch head.**
+**Keep working on `feat/plan4-ui`.** It is fully contained in `dev`, so it continues cleanly from
+here and its next PR will show only the new commits. Do not cut a fresh branch.
+
+⚠️ **PR #8 did NOT include the frontend work.** Those 18 commits — Task 9, Task 21, the `vite base`
+deep-link fix and the controller's `CostChip` merge repair — are still only on the frontend lane, so
+**`dev` currently carries an `evalyn ui` whose committed bundle predates Tasks 9 and 21.** Merging
+the lane into the trunk **needs an explicit maintainer ask** and must happen when the committed
+bundle is quiescent — it is minified, so a conflict there is unmergeable. Doing it early is
+sensible: the longer it waits, the more frontend commits pile up behind it.
+
+Trunk → frontend fast-forwards are pre-authorised (R4-32); when the branches have diverged, **merge
+a pinned verified commit, never the moving branch head** — merging a moving head while a task is
+committing drags a half-finished task across, which has already happened once.
 
 **Expected working-tree noise — leave both alone:** the maintainer's unstaged edit to
 `docs/superpowers/handoffs/2026-08-07-plan4-ui-kickoff.md`, and the deliberately quarantined
@@ -300,9 +309,14 @@ Read first, in this order:
 3. The task-<N>-constraints.md for whatever you dispatch (6, 9 and 21 have one).
 4. PRODUCT.md and .impeccable/surfaces/ui-src.md before any page task.
 
-State: tasks 0–9, 21 (Steps 1–3 only) and prep P1/P2 are complete and review-clean. Draft PR #8
-(feat/plan4-ui → dev) is open with CI green. Nothing is merged; the frontend lane is ahead of the
-trunk and merging it back needs my explicit ask.
+State: tasks 0–9, 21 (Steps 1–3 only) and prep P1/P2 are complete and review-clean. PR #8 is MERGED
+to dev (9a588be) and local dev is synced. Keep working on feat/plan4-ui — it is 0 commits ahead of
+dev, so it continues cleanly and its next PR shows only new work.
+
+BUT PR #8 did not include the frontend lane: 18 commits (Tasks 9 and 21, the vite base fix, a merge
+repair) are still only on feat/plan4-ui-frontend, so dev's committed bundle predates those screens.
+Merging that lane into the trunk needs my explicit ask — raise it early, when no frontend task is in
+flight, because the bundle is minified and a conflict there is unmergeable.
 
 Next: Task 7 → Task 18 → the costed re-verify (R4-38) → 19 → 20 → finish Task 21 → the wiring pass.
 Tasks 10–17 come last. Do NOT re-apply "18–21 last" — R4-37 supersedes it; I want live running with

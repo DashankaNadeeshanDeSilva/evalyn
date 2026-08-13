@@ -105,7 +105,9 @@ Real ranges the layout must hold without breaking:
 - Transcript turns: up to ~12 per session; text can be long and must wrap, not truncate.
 - `pass^k`: 0.0–1.0. **Tabular figures required** for all numerics (pass^k, cost, duration) so columns
   don't jitter between renders.
-- Cost: sub-dollar, shown to cents.
+- Cost: sub-dollar, rendered to **four decimals** — `formatUsd` in `ui/src/format.ts` returns
+  `` `$${value.toFixed(4)}` `` and a named test pins it. The precision is load-bearing: a judge run
+  costing a fraction of a cent must not round to `$0.00` and read as free.
 
 Material states: first-run with an empty `runs/`; **degraded rows (common, ~26 of 80 today)**; a run
 in progress; a paused run (which is still billing — the label must say so); a cancelled run; an
@@ -136,8 +138,10 @@ a discoveries view whose `probe_path` directory is empty.
 ## 7. Constraints and open decisions
 
 **Binding:** WCAG 2.1 AA (body ≥ 4.5:1, large ≥ 3:1, visible focus, full keyboard, never
-colour-alone). React 18 + Vite + TypeScript + Tailwind v3 + Recharts, versions pinned exactly by
-Task 5 — do not bump. Charts follow the same rules: legends present, tooltips keyboard-reachable,
+colour-alone). React 18 + Vite + TypeScript + Tailwind v3, versions pinned exactly by Task 5 — do
+not bump. **Recharts was NOT pinned by Task 5**, which never installed it; it arrived with the
+Trends wave under ruling R4-65 and is pinned exactly at `3.10.1` in `ui/package.json` — same rule,
+do not bump. Charts follow the same rules: legends present, tooltips keyboard-reachable,
 never colour-alone, subtle gridlines, empty-data states that say "no data" rather than rendering an
 empty axis frame.
 

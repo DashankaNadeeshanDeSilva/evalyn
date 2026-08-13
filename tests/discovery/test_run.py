@@ -35,6 +35,7 @@ from evalyn.discovery.run import (
     run_discovery,
     write_discovery_artifact,
 )
+from evalyn.engine.budget import PRICES as budget_prices
 from evalyn.targets.loader import load_pack
 
 MINIPACK = Path(__file__).parent.parent / "fixtures" / "minipack"
@@ -149,13 +150,19 @@ def _patch_eval(monkeypatch, log):
 # Step 2 + R8-10 + trust boundary: a REAL eval, a REAL tier-1 confirmation
 # --------------------------------------------------------------------------
 
-@pytest.mark.filterwarnings("ignore:no price entry")
 async def test_end_to_end_real_scorer_confirms_and_replays(live_pack, tmp_path,
                                                            monkeypatch):
     """Step 2 / R8-10 / trust boundary: awaited from a running loop (R8-10),
     a scripted agent reds a REAL tier-1 invariant (no spy confirmer), the
     finding is staged and replayed, and the artifact lands atomically in runs/.
     """
+    # `reconciled_spend_usd` is priced off the eval log, whose model is the free
+    # mockllm stub — now priced at zero, which would make the R8-14 assertion
+    # below vacuous (a genuine 0.0 is indistinguishable from an unwired
+    # reconcile). Price the stub nonzero FOR THIS TEST ONLY so it still
+    # discriminates. `live_spend_usd` is unaffected: SpendMeter.charge_output is
+    # called with cfg.agent_model (`openai/gpt-5-mini`), never with mockllm.
+    monkeypatch.setitem(budget_prices, "mockllm", (0.015, 0.075))
     monkeypatch.setattr(toy, "LEAK_PROBABILITY", 1.0)
     _scripted_brain(monkeypatch, [_send(LEAK_ASK), _propose({"leak_marker": LEAK_MARKER})])
 

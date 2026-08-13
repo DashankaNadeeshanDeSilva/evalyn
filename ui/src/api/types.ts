@@ -70,10 +70,18 @@ export function isRunId(value: string): boolean {
 /** The one and only way a redacted value is spelled: `«redacted:<kind>»`. */
 export const REDACTION_MARKER_RE = /«redacted:[a-z_]+»/;
 
-/** Header carrying the reveal token minted at server start. Per-object, logged. */
-export const REVEAL_HEADER = "X-Evalyn-Reveal";
-
-/** SSE heartbeat cadence, seconds. An idle run is not a dead connection. */
+/**
+ * The mirror of `MetaResponse.heartbeat_seconds` — a frozen wire field, and
+ * **not** a cadence anything emits.
+ *
+ * Ruling R4-74 was do-not-build: nothing in the server emits a heartbeat, and
+ * the one keep-alive on the stream is `: idle-timeout`, an SSE *comment* (no
+ * `id:`, so it cannot advance the resume cursor) written once after 120s of
+ * silence — after which the stream ends rather than beating on. Kept because
+ * the field is frozen and the drift test pins this value to `models.py`; no
+ * consumer reads it, and none should be written that reads a missed beat at
+ * this cadence as a dead connection.
+ */
 export const HEARTBEAT_SECONDS = 15;
 
 // ---------------------------------------------------------------------------
@@ -455,9 +463,13 @@ export interface FindingRow {
 }
 
 /**
- * `GET /api/discoveries/{probe_id}`. Redacted by default. Revealing is
- * per-object, gated on the `X-Evalyn-Reveal` token minted at server start and
- * logged to stderr with the probe id: no global off switch, no env var.
+ * `GET /api/discoveries/{probe_id}`. **Redacted unconditionally** — the route
+ * takes a `probe_id` and nothing else, no `Request` and no `Header`, so there
+ * is no reveal to ask for (ruling R4-89: the per-object reveal token this
+ * model once described was never built). `RedactionMeta.reveal_required` stays
+ * `true` and stays literally true: revealing IS required to see the verbatim
+ * value, and the only place it can be done is the file on the machine that ran
+ * `discover`.
  */
 export interface FindingDetail extends FindingRow {
   /** The staged file's bytes as committed — the thing a human will `git mv`. */
@@ -541,9 +553,20 @@ export interface TrendPoint {
 }
 
 /**
- * `GET /api/trends?pack&metric`, one series per probe. Degraded runs are
- * **skipped entirely** rather than emitted as null points, so a gap in the line
- * means "no readable run", not "zero" — do not connect across it silently.
+ * `GET /api/trends?pack&metric`: one series per probe — **except `judge_usd`,
+ * which is a single run-level series**, because spend is metered per run.
+ *
+ * `RunArtifact.judge_usd` is the whole of what Evalyn measures about spend;
+ * there is no per-probe figure in the artifact and none can be derived from it.
+ * So that metric answers with exactly one series whose `probe_id` is
+ * `(whole run)` — parenthesised so it cannot collide with a real probe id,
+ * whose grammar is a slug. Repeating the run's figure across the pack's probes
+ * would draw N identical lines, each one asserting a cost nobody measured.
+ *
+ * Degraded runs are **skipped entirely** rather than emitted as null points, so
+ * a gap in the line means "no readable run", not "zero" — do not connect across
+ * it silently. The same rule governs a metric a run simply never recorded:
+ * absent, never `0.0`.
  */
 export interface TrendSeries {
   pack_name: string;
@@ -705,8 +728,18 @@ export interface LaunchResponse {
  * `POST /api/runs/{id}/control`.
  *
  * The corresponding `control.*` SSE event **is** the ack — do not treat the
- * 2xx as confirmation. If none lands within 60 s the server escalates to
- * `SIGTERM` on the process group, never `SIGKILL`.
+ * 2xx as confirmation.
+ *
+ * **Cancel is never built on signals** (ruling R4-11, and see the note in
+ * `ControlButtons.tsx`). An earlier version of this comment promised a
+ * `SIGTERM` escalation on the process group after 60 s; that was measured
+ * actively harmful and is not implemented. A spike showed `SIGTERM` leaves a
+ * partial log at `status='started'`, which the gate rejects, with a completed
+ * and already-paid-for sample stranded in Inspect's buffer outside the log.
+ *
+ * The control file is the only mechanism. An unacked cancel becomes an honest
+ * `interrupted` run naming the pid, so an operator can decide for themselves —
+ * a visibly stuck state beats a corrupted log and a silent charge.
  */
 export interface ControlRequest {
   action: ControlAction;

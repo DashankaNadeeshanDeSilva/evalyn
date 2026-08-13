@@ -6,7 +6,7 @@ import { describe, expect, it } from "vitest";
 
 import { createQueryClient } from "../../api/client";
 import { server } from "../../mocks/server";
-import { NAV_DESTINATIONS } from "../../nav";
+import { NAV_DESTINATIONS, shippedDestinations, type NavDestination } from "../../nav";
 import { appRoutes } from "../../routes";
 import { META } from "../../mocks/fixtures";
 import { AppShell } from "../AppShell";
@@ -39,9 +39,44 @@ function renderShell() {
 }
 
 describe("the nav registry", () => {
-  it("still has an unshipped destination, so the gating assertions bite", () => {
-    expect(SHIPPED.length).toBeGreaterThan(0);
-    expect(UNSHIPPED.length).toBeGreaterThan(0);
+  /**
+   * The registry, stated in full.
+   *
+   * This assertion replaces `UNSHIPPED.length > 0`, which was a guard on the
+   * guards: while some destination was unbuilt, the "unshipped labels must not
+   * appear" loop below had something to iterate. Compare was the last one, so
+   * that expectation could only be kept by refusing to ship a page — and
+   * deleting it would have left the loop iterating an empty list, passing
+   * however `shippedDestinations` broke.
+   *
+   * An inventory does not decay that way. Adding, removing, renaming,
+   * reordering or re-flagging a destination reds here and names the difference,
+   * and the iff test below then says which half of the change is missing. The
+   * filter itself keeps a discriminating test of its own, against a registry
+   * that still has an unshipped entry.
+   */
+  it("is exactly this inventory, in the operator's reading order", () => {
+    expect(
+      NAV_DESTINATIONS.map(
+        (d) => `${d.path} ${d.label} ${d.shipped ? "shipped" : "unshipped"}`,
+      ),
+    ).toEqual([
+      "/runs Runs shipped",
+      "/launch Launch shipped",
+      "/discoveries Discoveries shipped",
+      "/compare Compare shipped",
+      "/trends Trends shipped",
+      "/trust Judge Trust shipped",
+    ]);
+  });
+
+  it("keeps an unshipped destination out of the strip's source list", () => {
+    const registry: NavDestination[] = [
+      { path: "/built", label: "Built", shipped: true },
+      { path: "/unbuilt", label: "Unbuilt", shipped: false },
+    ];
+
+    expect(shippedDestinations(registry).map((d) => d.path)).toEqual(["/built"]);
   });
 
   /**
@@ -83,14 +118,19 @@ describe("AppShell", () => {
         screen.getByRole("link", { name: destination.label }),
       ).toHaveAttribute("href", destination.path);
     }
+    // Empty today, and re-arms by itself the moment a destination lands
+    // unbuilt. The discriminating half of this rule lives on the filter above.
     for (const destination of UNSHIPPED) {
       expect(
         screen.queryByRole("link", { name: destination.label }),
         `${destination.label} has no page yet and must not appear in the legend`,
       ).toBeNull();
     }
-    // Nothing else sneaks into the strip either.
-    expect(nav.querySelectorAll("a")).toHaveLength(SHIPPED.length);
+    // Nothing else sneaks into the strip, and the reading order is the
+    // registry's — a length alone would not have said that.
+    expect(
+      [...nav.querySelectorAll("a")].map((a) => a.getAttribute("href")),
+    ).toEqual(SHIPPED.map((d) => d.path));
   });
 
   it("reads the server's own display-safe labels into the legend", async () => {

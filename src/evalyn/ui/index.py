@@ -59,6 +59,7 @@ from evalyn.ui.models import (
     HardMetrics,
     ProbeRow,
     ReplayStatus,
+    ReplayView,
     RunDetail,
     RunMode,
     RunStatus,
@@ -79,9 +80,10 @@ from evalyn.ui.paths import (
 )
 
 __all__ = [
-    "RunIndex", "RunNotFound", "LoadedArtifact", "SidecarState",
-    "derive_status", "mode_of", "created_at_from_run_id",
+    "RunIndex", "RunNotFound", "LoadedArtifact", "SidecarState", "StagedProbe",
+    "derive_status", "cancelled_by", "mode_of", "created_at_from_run_id",
     "verdict_hint_of", "capabilities_of", "is_run_id",
+    "PROVENANCE_KEYS", "parse_provenance", "load_staged_probes",
 ]
 
 
@@ -239,9 +241,26 @@ def capabilities_of(loaded: LoadedArtifact) -> Capabilities:
     typed = loaded.typed
     if isinstance(typed, RunArtifact):
         records = [rec for probe in typed.probes for rec in probe.trial_records]
+        # R4-42: `trial_records` must mean EXACTLY "at least one probe has a
+        # non-empty `ProbeRow.trial_epochs`", so it is derived through the same
+        # filter `_probe_row` applies rather than from the raw list. `bool(
+        # records)` was a second, weaker spelling of the same fact, and the two
+        # disagree on a record carrying no `epoch`: the capability said yes, the
+        # epochs came back empty, and the SPA — which gates the drill-down on
+        # the capability — would offer a click that 404s while blaming the
+        # capability for being wrong. Not reachable from current engine output;
+        # derived rather than asserted so it cannot become reachable.
+        #
+        # `transcripts` narrows with it, and for the same reason: it is the
+        # claim "the drill-down works", and the drill-down is addressed by
+        # `(probe_id, epoch)` — a record with no epoch is not reachable through
+        # it. `hard_metrics` deliberately keeps the whole list: it is an
+        # *aggregate* over trial records, and an aggregate needs no address.
+        drillable = [rec for rec in records
+                     if isinstance(rec, dict) and "epoch" in rec]
         return Capabilities(
-            transcripts=any(rec.get("transcript") for rec in records),
-            trial_records=bool(records),
+            transcripts=any(rec.get("transcript") for rec in drillable),
+            trial_records=bool(drillable),
             hard_metrics=any(rec.get("session_seconds") is not None
                              for rec in records),
         )
@@ -249,6 +268,37 @@ def capabilities_of(loaded: LoadedArtifact) -> Capabilities:
         return Capabilities(transcripts=False, trial_records=False,
                             hard_metrics=bool(typed.hard_metrics))
     return Capabilities(transcripts=False, trial_records=False, hard_metrics=False)
+
+
+def cancelled_by(artifact: LoadedArtifact | None,
+                 sidecar: SidecarState) -> bool:
+    """Did an operator stop this run? **The artifact outranks the file.**
+
+    Two witnesses disagree here, and only one of them is authoritative.
+
+    `RunArtifact.cancelled` is written by the engine itself, at the moment it
+    honoured the cancel (`run.py:431`), and it is what makes the run exit 3
+    rather than 1 — a genuinely cancelled run also has `log.results is None`
+    and reduces its un-run probes to `trials=0` (R4-13). It cannot be wrong.
+
+    `<stem>.control.json` is only a **request**, and it outlives the run that
+    was asked: the endpoint removes one it wrote for a run that finished
+    underneath it, but the run can finish an instant after that check too — the
+    residual race registered in `docs/JOURNAL.md` (`be9ab3a`). Trusting the
+    request over the record was measured relabelling a run that had completed
+    all 12 of its trials as `cancelled`, in the list and on the detail page. A
+    completed evaluation's verdict must not be rewritable by a leftover file.
+
+    So the control file is consulted only where there is no artifact-side
+    answer: before an artifact exists at all; when this build cannot parse the
+    one that does; and for `compare`/`discover`, whose artifacts carry no such
+    field — a cancelled `compare` writes no artifact at all
+    (`compare.py:250-256`), so the file is the only evidence it leaves.
+    """
+    typed = artifact.typed if artifact is not None else None
+    if isinstance(typed, RunArtifact):
+        return bool(typed.cancelled)
+    return sidecar.control is ControlAction.cancel
 
 
 def derive_status(artifact: LoadedArtifact | None,
@@ -264,9 +314,13 @@ def derive_status(artifact: LoadedArtifact | None,
        the run vanished without writing its record. A `meta.json` this build
        cannot read is *not* evidence of life: it degrades to `interrupted`
        rather than leaving a dead run spinning in the table forever.
-    3. **A deliberate cancel outranks a parse failure.** "The operator stopped
-       it" is the more useful fact about a half-written artifact than "this
-       build cannot read it".
+    3. **A deliberate cancel**, decided by `cancelled_by` — the artifact's own
+       `cancelled` field where there is one, and the control file only where
+       there is not. It outranks a parse failure: "the operator stopped it" is
+       the more useful fact about a half-written artifact than "this build
+       cannot read it". It does **not** outrank a readable artifact that says
+       nobody cancelled it; see `cancelled_by` for why the file is the weaker
+       witness.
     4. **`unreadable`** — the artifact exists and this build cannot parse it.
        Distinct from `invalid`: the run may have been perfectly fine.
     5. **`invalid`** — parsed, but the numbers mean nothing: a discover run
@@ -290,7 +344,7 @@ def derive_status(artifact: LoadedArtifact | None,
         return RunStatus.failed_to_start
 
     if artifact is None:
-        if side.control is ControlAction.cancel:
+        if cancelled_by(None, side):
             return RunStatus.cancelled
         if side.present and side.exit_code is None:
             if side.control is ControlAction.pause:
@@ -301,7 +355,7 @@ def derive_status(artifact: LoadedArtifact | None,
                     else RunStatus.running)
         return RunStatus.interrupted
 
-    if side.control is ControlAction.cancel:
+    if cancelled_by(artifact, side):
         return RunStatus.cancelled
     if artifact.typed is None:
         return RunStatus.unreadable
@@ -331,6 +385,15 @@ def _number(value: object) -> float | None:
     return float(value)
 
 
+def _recorded(raw_probe: dict, key: str, value: object) -> float | None:
+    """`value` as a number, but only if the artifact actually wrote `key`.
+
+    The one place a dataclass default is told apart from a measurement. See
+    `_probe_row` for why that distinction is load-bearing.
+    """
+    return _number(value) if key in raw_probe else None
+
+
 def _check_view(check: dict) -> CheckView:
     """One artifact check dict as a `CheckView`.
 
@@ -351,18 +414,172 @@ def _check_view(check: dict) -> CheckView:
     )
 
 
-def _probe_row(probe) -> ProbeRow:
+def _probe_row(probe, raw_probe: object) -> ProbeRow:
+    """One typed probe as a `ProbeRow`, with a metric it never recorded `None`.
+
+    **The three trend metrics are read from the RAW entry's key presence, not
+    from the typed value.** `ProbeResult` is a plain dataclass whose
+    `pass_at_k` / `pass_k` / `mean_score` all default to `0.0`, so by the time
+    an artifact is typed, "this run never measured the probe" and "this run
+    measured a total failure" are the same number. The difference survives in
+    exactly one place — whether the artifact wrote the key at all — and it
+    matters more than any other distinction this file draws: `build_trends`
+    plots a `0.0` and skips a `None`, and the trends page ranks channels by the
+    metric's worst reading, so a fabricated zero for an unmeasured probe
+    becomes the channel the page opens on. `None` reads honestly as "no
+    reading" and leaves a gap in the line.
+
+    A *recorded* `0.0` is still a `0.0`: presence of the key is the test, never
+    the value, because a probe that genuinely scored zero is the failure the
+    page exists to show.
+
+    `raw_probe` is this probe's own entry from the artifact's raw `probes`
+    list. It is believed only when it is a dict carrying this probe's id; an
+    entry that cannot be positively paired says nothing about what was
+    recorded, and **unknown resolves to "no reading", never to a number this
+    function cannot vouch for**. That fallback is deliberate: fabricating is
+    the failure mode the whole rule exists to prevent, and a mis-pairing
+    introduced later should degrade to a visibly empty chart rather than
+    quietly restore the zero. In practice the pairing cannot fail —
+    `RunArtifact.from_dict` builds exactly one `ProbeResult` per raw entry, in
+    order, and rejects any entry that is not a dict with an `id` — so this is a
+    guard against a future caller rather than a live branch.
+    """
+    recorded = (raw_probe if isinstance(raw_probe, dict)
+                and raw_probe.get("id") == probe.id else {})
     return ProbeRow(
         id=probe.id, category=probe.category, kind=probe.kind,
         safety_critical=probe.safety_critical, samples=probe.samples,
         trials=probe.trials, expected_trials=probe.expected_trials,
-        pass_at_k=_number(probe.pass_at_k), pass_k=_number(probe.pass_k),
-        mean_score=_number(probe.mean_score),
+        pass_at_k=_recorded(recorded, "pass_at_k", probe.pass_at_k),
+        pass_k=_recorded(recorded, "pass_k", probe.pass_k),
+        mean_score=_recorded(recorded, "mean_score", probe.mean_score),
         unsure_trials=probe.unsure_trials,
         checks=[_check_view(c) for c in probe.checks if isinstance(c, dict)],
         trial_epochs=sorted(rec["epoch"] for rec in probe.trial_records
                             if isinstance(rec, dict) and "epoch" in rec),
     )
+
+
+# --------------------------------------------------------------------------
+# 4b. Staged discoveries — the read side of `<pack>/discoveries/*.yaml`
+# --------------------------------------------------------------------------
+
+#: The eight keys `discovery/run.py::_provenance` writes into every staged
+#: probe's comment header, in the order it writes them.
+#:
+#: An **allowlist**, not a hint. The caution block sitting above them opens
+#: `# CAUTION: this file may contain LIVE DATA ...`, which is exactly
+#: `# key: value`-shaped, so a parser that took every colon-bearing comment
+#: line would hand the SPA a paragraph of boilerplate as a provenance field.
+PROVENANCE_KEYS: tuple[str, ...] = (
+    "objective", "persona", "playbook", "agent_model",
+    "stop_reason", "usd_estimated", "confirmation", "turns",
+)
+
+#: `emit._comment_lines` re-prefixes the continuation lines of a multi-line
+#: provenance value with `#` and FIVE spaces; the caution block's own wrapped
+#: lines use three. The exact width is the only thing that tells them apart.
+_PROVENANCE_CONTINUATION = "#     "
+
+
+def parse_provenance(text: str) -> dict[str, str]:
+    """The eight provenance keys out of a staged probe's **comment** header.
+
+    Provenance is not in the YAML — `yaml.safe_load` discards comments, which
+    is why this reads the file as text. It is the read side of
+    `emit.probe_yaml`, and it mirrors that writer in two respects a naive
+    line-scan gets wrong.
+
+    First, it reads only the **contiguous run of comments at the top of the
+    file**. A `#` further down belongs to the body — a comment on a check, or a
+    character inside an agent-authored turn — and a whole-file scan would let
+    it overwrite the real value.
+
+    Second, it rejoins continuation lines. A confirmation reason containing a
+    newline is written as `# confirmation: <first line>` followed by
+    `#     <rest>`, and a parser that keeps only the first line silently
+    truncates the very field that records what was captured.
+
+    Returns `{}` rather than raising for a file with no header: an adopted
+    probe under `probes/` is a plain YAML list, and having no provenance is a
+    state, not a failure.
+    """
+    values: dict[str, str] = {}
+    current: str | None = None
+    for line in text.splitlines():
+        if not line.startswith("#"):
+            if not line.strip():
+                continue                     # a blank line is not the end of it
+            break                            # the YAML body: the header is over
+        if current is not None and line.startswith(_PROVENANCE_CONTINUATION):
+            values[current] += "\n" + line[len(_PROVENANCE_CONTINUATION):]
+            continue
+        key, separator, value = line[1:].strip().partition(":")
+        if separator and key in PROVENANCE_KEYS:
+            values[key] = value.strip()
+            current = key
+        else:
+            current = None
+    return values
+
+
+@dataclass(frozen=True)
+class StagedProbe:
+    """One `<pack>/discoveries/*.yaml` as the cockpit reads it back.
+
+    Carries the file's **bytes as committed** alongside the parsed probe: the
+    detail view shows an operator the thing they will `git mv`, and a
+    re-serialization of the parsed model is a different file.
+    """
+
+    probe_id: str
+    path: Path
+    probe: object
+    text: str
+    provenance: dict[str, str]
+
+
+def load_staged_probes(packs) -> dict[str, StagedProbe]:
+    """Every staged discovery in the allowlisted packs, keyed by probe id.
+
+    Keyed by id and **only ever looked up by id**. Both strings that reach this
+    dict from outside — the `probe_path` an artifact recorded, and the
+    `probe_id` in a URL — are untrusted, and neither is joined into a path
+    here: the dict is built by globbing the packs the operator named on the
+    command line, so a traversing id is simply a probe nobody staged.
+
+    The parse itself is `emit.load_prior_discoveries`, the read side of
+    `stage_probe`, so an unreadable file is warned about and skipped rather
+    than failing the page — one hand-edited staged file must not blank the
+    Discoveries list. `stage_probe` writes `<probe.id>.yaml`, so a file's stem
+    and its probe's id agree by construction; a file whose stem matches nothing
+    it parsed is skipped rather than paired by position.
+
+    First pack wins on a duplicate id, matching the allowlist's own order.
+    """
+    from evalyn.discovery.emit import STAGING_DIRNAME, load_prior_discoveries
+
+    staged: dict[str, StagedProbe] = {}
+    for pack in packs:
+        directory = Path(pack) / STAGING_DIRNAME
+        by_id = {probe.id: probe for probe in load_prior_discoveries(directory)}
+        if not by_id:
+            continue
+        for path in sorted({*directory.glob("*.yaml"), *directory.glob("*.yml")}):
+            probe = by_id.get(path.stem)
+            if probe is None:
+                continue
+            try:
+                text = path.read_text(encoding="utf-8")
+            except OSError:
+                # The file parsed a moment ago and is unreadable now: an
+                # adoption `git mv` mid-request. Drop the row, never 500.
+                continue
+            staged.setdefault(path.stem, StagedProbe(
+                probe_id=path.stem, path=path, probe=probe, text=text,
+                provenance=parse_provenance(text)))
+    return staged
 
 
 def _replay_status(replay: object) -> ReplayStatus:
@@ -374,14 +591,53 @@ def _replay_status(replay: object) -> ReplayStatus:
             else ReplayStatus.not_reproduced)
 
 
-def _finding_row(finding, run_id: str, created_at: str) -> FindingRow:
+def _replay_view(replay: object) -> ReplayView:
+    """`ReplayResult | ReplaySkipped` as the wire's `ReplayView`.
+
+    Read through `getattr` rather than by isinstance-branching, because the two
+    artifact types share no field beyond `reason`: a skip has no `trials` and a
+    result has no `budget`, and `None` is the wire's word for "this shape did
+    not record that". `status` is the one thing both can answer, and
+    `_replay_status` is the single place that decides it.
+    """
+    checks = getattr(replay, "checks", None)
+    return ReplayView(
+        status=_replay_status(replay),
+        reproduced=getattr(replay, "reproduced", None),
+        trials=getattr(replay, "trials", None),
+        pass_k=_number(getattr(replay, "pass_k", None)),
+        pass_at_k=_number(getattr(replay, "pass_at_k", None)),
+        expected_trials=getattr(replay, "expected_trials", None),
+        checks=[_check_view(c) for c in (checks or []) if isinstance(c, dict)],
+        reason=str(getattr(replay, "reason", "") or ""),
+    )
+
+
+def _finding_row(finding, run_id: str, created_at: str,
+                 staged: StagedProbe | None = None) -> FindingRow:
+    """One `DiscoveryArtifact.findings[]` entry joined onto its staged file.
+
+    The join is not a convenience — it is the only way either half is knowable.
+    `confirmed` and the replay verdict exist ONLY in the artifact (staging
+    happens before replay, so the YAML cannot carry them); `category` and
+    `safety_critical` exist ONLY in the YAML, because the artifact-side
+    `Finding` dataclass carries neither field.
+
+    A finding whose staged file is gone — adopted by a `git mv` into `probes/`,
+    or deleted after triage — reports `category: None`. `safety_critical` has
+    no such spelling: the wire type is `bool`, so an unjoined row falls back to
+    `False`. That is the one place this can understate a safety field, it is
+    forced by the frozen contract rather than chosen, and it is visible on the
+    same row as `category: null`.
+    """
     return FindingRow(
         probe_id=Path(finding.probe_path).stem,
         run_id=run_id,
         objective_id=finding.objective_id,
         confirmed=finding.confirmed,
         probe_path=finding.probe_path,
-        safety_critical=False,
+        category=staged.probe.category if staged is not None else None,
+        safety_critical=bool(staged.probe.safety_critical) if staged is not None else False,
         persona_id=finding.persona_id,
         playbook_id=finding.playbook_id,
         duplicate_of=finding.duplicate_of,
@@ -440,9 +696,24 @@ class RunIndex:
     least-recently-used first, which is what stops it from being a slow leak.
     """
 
-    def __init__(self, runs_dir: Path | str) -> None:
+    def __init__(self, runs_dir: Path | str, packs=None) -> None:
         self.runs_dir = Path(runs_dir)
+        #: The start-time pack allowlist, for the discover join only. Optional
+        #: because a `RunIndex` over `runs/` alone is still a complete index of
+        #: `runs/` — omitting it costs the two fields that live in the staged
+        #: YAML (`category`, `safety_critical`) and nothing else.
+        self.packs = [Path(p) for p in (packs or ())]
         self._cache: dict[str, tuple[tuple[str, int, int], LoadedArtifact]] = {}
+
+    def staged_probes(self) -> dict[str, StagedProbe]:
+        """The staged corpus, re-read on every call.
+
+        Deliberately uncached, unlike artifacts. The cache above is sound
+        because an artifact is immutable once written; a staged probe is the
+        opposite — adopting one is a `git mv` an operator performs *while* the
+        cockpit is open, and the page's whole job is to stop showing it.
+        """
+        return load_staged_probes(self.packs)
 
     # -- discovery ---------------------------------------------------------
 
@@ -478,6 +749,54 @@ class RunIndex:
                 continue
             found.append((run_id, path))
         found.sort(key=lambda pair: pair[0], reverse=True)
+        return found
+
+    def _pending(self, mode: RunMode | None = None) -> list[str]:
+        """Every run this cockpit launched that has written no artifact yet.
+
+        The glob above can only see runs that are **over**, because the
+        artifact is written once, at the end. So a run in flight had no row at
+        all until it finished — an operator who clicked **Runs** during a run
+        saw the table exactly as it was before they pressed Launch, which was
+        confirmed by execution against the real server. The launcher's own
+        sidecar directory is the only record that exists in the meantime.
+
+        Sourced from `runs/.evalyn-ui/`, so a `runs/` this cockpit never
+        launched into costs one failed `iterdir` and nothing else.
+
+        Four tests in order, cheapest and most structural first, because each
+        one is a claim the next would otherwise have to make on worse evidence:
+
+        1. **the name is a run id** — free, no syscall, and that directory is on
+           a real filesystem, so it can hold a `README` as easily as a run;
+        2. **the mode matches** — lexical, derived from the id alone;
+        3. **the entry is a directory** — the launcher writes a *directory* per
+           run (`sidecar_dir`), so a plain file wearing a run id's name is not
+           a launched run. Load-bearing rather than tidy: `_sidecar` short-
+           circuits on `meta_dir.is_dir()` and would hand back a bare
+           `SidecarState()`, whose `present=False` and `launched=True` defaults
+           `derive_status` reads as `interrupted` — a row invented out of a
+           file nobody wrote as a run;
+        4. **no artifact exists yet** — the only one that has to go looking
+           elsewhere in `runs/`, so it goes last. It is what stops a run being
+           listed twice; the artifact row knows strictly more and always wins.
+        """
+        try:
+            entries = list((self.runs_dir / SIDECAR_DIR_NAME).iterdir())
+        except OSError:
+            return []
+        found = []
+        for entry in entries:
+            run_id = entry.name
+            if not is_run_id(run_id):
+                continue
+            if mode is not None and mode_of(run_id) is not mode:
+                continue
+            if not entry.is_dir():
+                continue
+            if self.artifact_path(run_id) is not None:
+                continue
+            found.append(run_id)
         return found
 
     # -- the three-layer load ---------------------------------------------
@@ -584,6 +903,32 @@ class RunIndex:
                           if isinstance(loaded.typed, RunArtifact) else None),
         )
 
+    def _pending_summary(self, run_id: str, sidecar: SidecarState) -> RunSummary:
+        """The row for a run that exists only as a sidecar directory.
+
+        Everything an artifact would have answered is `None` rather than a
+        zero: nothing has been measured, and `judge_usd=0.0` would be the claim
+        that this run has so far cost nothing, which is false the moment the
+        first trial is judged. `degraded` is `False` — "not written yet" is a
+        different fact from "cannot be read", and the SPA paints the second one
+        as an alarm. `pack_name` is `None` because the index has no allowlist:
+        the pack a run was started against lives on the launcher, and inventing
+        it here would mean guessing.
+        """
+        return RunSummary(
+            run_id=run_id,
+            mode=mode_of(run_id),
+            pack_name=None,
+            created_at=created_at_from_run_id(run_id),
+            status=derive_status(None, sidecar),
+            degraded=False,
+            degraded_reason=None,
+            capabilities=Capabilities(transcripts=False, trial_records=False,
+                                      hard_metrics=False),
+            judge_usd=None,
+            verdict_hint=None,
+        )
+
     def list(self, *, mode: RunMode | None = None, pack: str | None = None,
              status: RunStatus | None = None, limit: int = 50,
              before: str | None = None) -> list[RunSummary]:
@@ -594,22 +939,49 @@ class RunIndex:
         separator sorts after the character that would have decided it, so a
         string comparison of the joined form can invert the order.
 
-        Raises only for a caller error — a malformed cursor. Nothing the
-        *directory* contains can raise.
+        Raises for a caller error — a malformed cursor — and, today, for one
+        class of directory content too. **The stronger claim this docstring
+        used to make is false and was measured false**: a readable artifact
+        whose `trial_records` holds a non-dict entry reaches `capabilities_of`,
+        where `hard_metrics` calls `rec.get(...)` over the unfiltered list and
+        raises `AttributeError`. Unlike `get`, `list` has no per-row guard, so
+        that single file 500s the **whole** listing rather than degrading one
+        row.
+
+        Not reachable from engine output — `run.py` always appends a dict, and
+        0 of 737 records across 87 real artifacts are non-dict — but the surface
+        is "any JSON in `runs/`", not "anything Evalyn wrote". Parked
+        deliberately: the honest fix is a per-row guard in `list`, mirroring the
+        one `get` already has, and that is structural work this task's review
+        budget excluded rather than work anyone judged unnecessary.
         """
         cursor = parse_cursor(before) if before is not None else None
+
+        def wanted(row: RunSummary) -> bool:
+            if pack is not None and row.pack_name != pack:
+                return False
+            if status is not None and row.status is not status:
+                return False
+            if cursor is not None and (row.created_at, row.run_id) >= cursor:
+                return False
+            return True
 
         rows: list[RunSummary] = []
         for run_id, path in self._candidates(mode):
             loaded = self._load(path, run_id, mode_of(run_id))
             row = self._summary(loaded, self._sidecar(run_id, path))
-            if pack is not None and row.pack_name != pack:
-                continue
-            if status is not None and row.status is not status:
-                continue
-            if cursor is not None and (row.created_at, row.run_id) >= cursor:
-                continue
-            rows.append(row)
+            if wanted(row):
+                rows.append(row)
+
+        # Two sequences, one page. The filters and the sort are applied to both
+        # through the same code, so a run in flight cannot appear on a page the
+        # operator has narrowed away from it — and cannot jump the ordering at
+        # the seam where the two sources meet.
+        for run_id in self._pending(mode):
+            row = self._pending_summary(
+                run_id, self._sidecar(run_id, self.runs_dir / f"{run_id}.json"))
+            if wanted(row):
+                rows.append(row)
 
         rows.sort(key=lambda r: (r.created_at, r.run_id), reverse=True)
         return rows[:limit] if limit is not None else rows
@@ -656,7 +1028,7 @@ class RunIndex:
             total_unsure_trials=(raw.get("total_unsure_trials")
                                  if isinstance(raw.get("total_unsure_trials"), int)
                                  else None),
-            cancelled=sidecar.control is ControlAction.cancel,
+            cancelled=cancelled_by(loaded, sidecar),
         )
         # The mode-specific half is where the WIRE models are validated, and
         # that is a second, later chance to fail than `_read_artifact`'s
@@ -669,12 +1041,26 @@ class RunIndex:
         # already does, and the endpoint has nothing left to get wrong.
         try:
             if isinstance(typed, RunArtifact):
-                return replace_detail(detail,
-                                      probes=[_probe_row(p) for p in typed.probes])
+                # Paired positionally, because that is the pairing
+                # `RunArtifact.from_dict` itself made: it builds one
+                # `ProbeResult` per raw entry, in order. `_probe_row` re-checks
+                # the id and treats anything it cannot pair as "no reading", so
+                # a raw `probes` that is missing, is not a list, or runs short
+                # costs a gap in the chart rather than an `IndexError` out of a
+                # detail read. (None of those shapes can reach here today —
+                # each one fails the typed load first — which is why the
+                # fallback may be conservative for free.)
+                raw_probes = raw.get("probes")
+                raw_probes = raw_probes if isinstance(raw_probes, list) else []
+                return replace_detail(detail, probes=[
+                    _probe_row(probe, raw_probes[i] if i < len(raw_probes) else None)
+                    for i, probe in enumerate(typed.probes)])
             if isinstance(typed, CompareArtifact):
                 return replace_detail(detail, compare=_scoreboard(run_id, typed))
             if isinstance(typed, DiscoveryArtifact):
-                return replace_detail(detail, discovery=_discovery(run_id, typed))
+                return replace_detail(
+                    detail,
+                    discovery=_discovery(run_id, typed, self.staged_probes()))
         except Exception as exc:
             return replace_detail(
                 detail, degraded=True, judge_usd=None,
@@ -706,7 +1092,17 @@ def _scoreboard(run_id: str, art: CompareArtifact) -> Scoreboard:
         rubric_scores_untrusted=art.rubric_scores_untrusted)
 
 
-def _discovery(run_id: str, art: DiscoveryArtifact) -> DiscoverySummary:
+def _discovery(run_id: str, art: DiscoveryArtifact,
+               staged: dict[str, StagedProbe] | None = None) -> DiscoverySummary:
+    """The discover half of a `RunDetail`.
+
+    `staged` is the join corpus from `RunIndex.staged_probes`. It is optional
+    so a `RunIndex` built without a pack allowlist still renders the run; the
+    cost of omitting it is that `category` and `safety_critical` — which live
+    only in the staged YAML — fall back to their contract defaults on every
+    row. See `_finding_row`.
+    """
+    staged = staged or {}
     return DiscoverySummary(
         agent_model=art.agent_model, rubric_judge_model=art.rubric_judge_model,
         eval_status=art.eval_status, error_count=art.error_count,
@@ -716,7 +1112,9 @@ def _discovery(run_id: str, art: DiscoveryArtifact) -> DiscoverySummary:
         effective_spend_usd=_number(art.effective_spend_usd),
         budget_exhausted=art.budget_exhausted, partial=art.partial,
         objectives=list(art.objectives),
-        findings=[_finding_row(f, run_id, art.created_at) for f in art.findings])
+        findings=[_finding_row(f, run_id, art.created_at,
+                               staged.get(Path(f.probe_path).stem))
+                  for f in art.findings])
 
 
 # --------------------------------------------------------------------------

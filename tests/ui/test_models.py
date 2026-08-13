@@ -519,7 +519,7 @@ def test_trend_series_points_are_run_correlated():
 def test_trust_report_never_calibrated_state():
     """Task 14 (c): a pack with no calibration.json is a legitimate 200."""
     report = m.TrustReport(pack_name="example", judge_model=None, agreement=None,
-                           stale=True, stale_reason="never calibrated")
+                           stale=True, stale_reason="no calibration record")
     assert report.agreement is None
     assert report.per_rubric_agreement == {} and report.per_criterion_counts == {}
     assert not hasattr(report, "kappa"), "±1 agreement as shipped — never named kappa"

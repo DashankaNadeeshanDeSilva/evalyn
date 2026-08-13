@@ -50,10 +50,9 @@ def test_toy_weaknesses_flag_off_matches_baseline(toy_target, monkeypatch, tmp_p
     monkeypatch.chdir(tmp_path)
 
     pack = load_pack(live_pack_dir(PACK))
-    # run_gate meters the unpriced mockllm judge and warns (Plan #2b Task 1).
-    with pytest.warns(RuntimeWarning, match="no price entry"):
-        art = run_gate(pack, judge_model="mockllm/model",
-                       log_dir=str(tmp_path / "logs"), out_dir=str(tmp_path / "runs"))
+    # the mockllm judge is priced at zero (free local stub) — silent metering.
+    art = run_gate(pack, judge_model="mockllm/model",
+                   log_dir=str(tmp_path / "logs"), out_dir=str(tmp_path / "runs"))
 
     baseline = RunArtifact.from_dict(json.loads(BASELINE.read_text()))
     # R11-3: the SHIPPED pack's fingerprint is unchanged — no invariant was
@@ -87,9 +86,8 @@ def test_toy_weaknesses_flag_on_still_matches_baseline(toy_target, monkeypatch, 
     monkeypatch.chdir(tmp_path)
 
     pack = load_pack(live_pack_dir(PACK))
-    with pytest.warns(RuntimeWarning, match="no price entry"):
-        art = run_gate(pack, judge_model="mockllm/model",
-                       log_dir=str(tmp_path / "logs"), out_dir=str(tmp_path / "runs"))
+    art = run_gate(pack, judge_model="mockllm/model",
+                   log_dir=str(tmp_path / "logs"), out_dir=str(tmp_path / "runs"))
 
     baseline = RunArtifact.from_dict(json.loads(BASELINE.read_text()))
     assert pack_fingerprint(load_pack(PACK)) == baseline.pack_hash  # see above
@@ -103,6 +101,40 @@ def test_toy_weaknesses_flag_on_still_matches_baseline(toy_target, monkeypatch, 
 
 
 # --- R11-2: the injection leak is reachable ONLY across ≥2 turns --------------
+
+async def test_the_toy_never_reissues_a_session_id(toy_target, monkeypatch,
+                                                   live_pack_dir):
+    """The regression guard for a ~7%-per-full-run flake.
+
+    `examples.toy_target._session_turns` is process-wide and never cleared, so
+    a reissued id hands a fresh session its predecessor's turn count — enough
+    to push the solo session in `test_planted_injection_reachable` below onto
+    the planted injection's `turn >= 2` branch and fail it. The ids used to be
+    `random.randint(1000, 9999)`: 9000 values, and ~36 opens per full suite is
+    a ~7% birthday collision, which is the rate that was measured.
+
+    Deterministic — `itertools.count` cannot repeat — where the bug it guards
+    was not, so a green run here is proof rather than luck.
+    """
+    monkeypatch.setenv("EVALYN_TARGET_URL", toy_target)
+    pack = load_pack(live_pack_dir(PACK))
+
+    ids = []
+    for _ in range(50):
+        async with TargetSession.open(pack) as session:
+            ids.append(session._session_id)
+
+    assert len(set(ids)) == len(ids), f"the toy reissued a session id: {ids}"
+    # Distinctness alone would NOT discriminate: 50 draws from 9000 collide
+    # only ~13% of the time, so the old code would have passed this most runs
+    # — the same coin-flip that made the bug a flake in the first place. The
+    # monotonic suffix is the deterministic half: a random sequence is not
+    # strictly increasing, a counter always is. The fixture is session-scoped
+    # and shared, so only the ORDER is asserted, never the starting value.
+    suffixes = [int(sid.removeprefix("s-")) for sid in ids]
+    assert suffixes == sorted(set(suffixes)), (
+        f"session ids are not minted from a monotonic counter: {ids[:5]}")
+
 
 async def test_planted_injection_reachable(toy_target, monkeypatch, live_pack_dir):
     """Flag ON: an audit-framed pivot leaks the internal marker on turn 2 of a

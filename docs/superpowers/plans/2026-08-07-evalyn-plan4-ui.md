@@ -505,7 +505,11 @@ frontend, is written against these types and the fixture corpus.
   `packs/twincore/calibration.json`), the endpoint returns `judge_model`, overall `agreement`,
   `per_rubric_agreement` and `per_criterion_counts`; (b) mutating a rubric hash makes `stale: true`
   with a non-null `stale_reason`; (c) a pack with no `calibration.json` returns 200 with
-  `agreement: null` and a "never calibrated" reason — **not** a 404, since that is a legitimate state.
+  `agreement: null` and a `"no calibration record"` reason — **not** a 404, since that is a legitimate
+  state. **The reason string is the engine's, not the route's**: `calibrate.is_stale` already names
+  this case (`engine/calibrate.py:268`), and a route that invents its own wording puts a sentence on
+  the page that exists nowhere in the engine. This line originally said `"never calibrated"` and that
+  is exactly what got built and had to be corrected (R4-84).
 - [ ] **Step 2: Run — expect FAIL.** `uv run pytest tests/ui/test_trust.py -v`.
 - [ ] **Step 3: Implement.** Report **±1-point agreement as shipped** — no Cohen's κ, and the field
   must be named `agreement`, not `kappa`, so nothing implies a certification that is not computed.

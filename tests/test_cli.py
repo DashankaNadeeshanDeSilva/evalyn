@@ -174,15 +174,51 @@ def test_gate_exit_2_on_contains_check_missing_value(minimal_pack):
     assert "setup error" in result.stderr
 
 
-def test_gate_validation_warnings_do_not_abort(minimal_pack):
-    # attack-only category triggers a validate-pack warning; warnings must
-    # print but never abort the gate
-    pack_dir = str(minimal_pack(
-        "- id: atk\n  category: injection\n  safety_critical: true\n  turns: [hi]\n"
-        "  checks:\n    - { type: invariant, ref: non-empty, required: true }\n"))
+#: A pack whose one probe is attack-only, which is the cheapest thing that makes
+#: `validate_pack` warn. Shared by the three commands the cockpit launches.
+_WARNING_PROBE = (
+    "- id: atk\n  category: injection\n  safety_critical: true\n  turns: [hi]\n"
+    "  checks:\n    - { type: invariant, ref: non-empty, required: true }\n")
+
+
+def test_gate_validation_warnings_do_not_abort_and_reach_the_cockpit(minimal_pack):
+    """Warnings print, never abort — and print where an operator can read them.
+
+    `spawn_child` gives the child `stdout=subprocess.DEVNULL`, so on the cockpit
+    path stdout is `/dev/null` and `stderr.log` (`GET /api/runs/{id}/stderr`) is
+    the operator's only channel. A warning on stdout is a warning nobody
+    receives; measured on the demo pack, the single warning `validate-pack`
+    emits is the one saying how many sessions the run will cost.
+    """
+    pack_dir = str(minimal_pack(_WARNING_PROBE))
     result = runner.invoke(app, ["gate", "--target", pack_dir, "--dry-run"])
     assert result.exit_code == 0
-    assert "warning:" in result.stdout
+    assert "warning:" in result.stderr
+    assert "warning:" not in result.stdout, "stdout is /dev/null on the cockpit path"
+
+
+def test_compare_validation_warnings_reach_the_cockpit(minimal_pack, tmp_path):
+    """The sibling of the gate case, and left behind by the fix wave that moved
+    the *baseline* warnings. Half a defect class fixed is a trap for the next
+    reader, who cannot tell the remaining half from a deliberate exclusion."""
+    pack_dir = str(minimal_pack(_WARNING_PROBE))
+    result = runner.invoke(app, ["compare", "--target", pack_dir,
+                                 "--a", str(tmp_path / "no-a.json"),
+                                 "--b", str(tmp_path / "no-b.json")])
+    assert "warning:" in result.stderr
+    assert "warning:" not in result.stdout, "stdout is /dev/null on the cockpit path"
+
+
+def test_discover_validation_warnings_reach_the_cockpit(minimal_pack, monkeypatch):
+    """Third of three. `--dry-run` so nothing is planned and nothing is spent."""
+    async def must_not_run(pack, cfg, **kw):
+        raise AssertionError("run_discovery must not be called under --dry-run")
+
+    monkeypatch.setattr("evalyn.discovery.run.run_discovery", must_not_run)
+    pack_dir = str(minimal_pack(_WARNING_PROBE))
+    result = runner.invoke(app, ["discover", "--target", pack_dir, "--dry-run"])
+    assert "warning:" in result.stderr
+    assert "warning:" not in result.stdout, "stdout is /dev/null on the cockpit path"
 
 
 # ------------------------------------------------- gate: mock-judge warning
@@ -200,7 +236,14 @@ def test_gate_no_mock_judge_warning_with_real_judge(monkeypatch):
     result = runner.invoke(app, ["gate", "--target", PACK, "--dry-run",
                                  "--judge-model", "openai/gpt-4o-mini"])
     assert result.exit_code == 0
-    assert "warning:" not in result.stderr
+    # Named for the mock-judge warning, so it asserts on that warning rather
+    # than on the *stream being silent*. A bare `"warning:" not in stderr` was
+    # only ever equivalent to this by accident: `validate_pack`'s warnings used
+    # to go to stdout, and once they joined stderr (R4-76, where they belong —
+    # the cockpit's child has no stdout) the broad form started failing on a
+    # warning this test was never about. Mirrors its `in` twin above.
+    assert "judge model is mockllm" not in result.stderr
+    assert "mockllm" not in result.stderr
 
 
 def test_gate_no_mock_judge_warning_without_classifier_checks(monkeypatch):
@@ -247,11 +290,10 @@ def test_gate_live_exit_code_matches_gate_policy(toy_target, monkeypatch, tmp_pa
     monkeypatch.setenv("EVALYN_TARGET_URL", toy_target)
     live_pack = str(live_pack_dir(PACK))  # allowlist must name the live port
     monkeypatch.chdir(tmp_path)  # run_gate writes runs/ relative to cwd
-    # real post-hoc metering prices the unpriced mockllm judge at the
-    # conservative upper bound and warns (Plan #2b Task 1: log-based metering)
-    with pytest.warns(RuntimeWarning, match="no price entry"):
-        result = runner.invoke(app, ["gate", "--target", live_pack,
-                                     "--baseline", str(tmp_path / "none.json")])
+    # the default mockllm judge is priced at zero (free local stub), so real
+    # post-hoc metering runs silently — no unknown-model warning to capture.
+    result = runner.invoke(app, ["gate", "--target", live_pack,
+                                 "--baseline", str(tmp_path / "none.json")])
     artifacts = sorted((tmp_path / "runs").glob("*-example.json"))
     assert artifacts, "gate run wrote no artifact"
     art = RunArtifact.from_dict(json.loads(artifacts[-1].read_text()))
@@ -277,6 +319,11 @@ def test_gate_update_baseline_writes_and_exits_0(monkeypatch, tmp_path):
 
 
 # Carry-note 1: warn (not fail) when baseline pack hash differs from current.
+# On **stderr**, and that is load-bearing rather than cosmetic: a cockpit-launched
+# gate has its stdout sent to `/dev/null` (`ui/launcher.py`, `spawn_child`), so a
+# staleness warning printed to stdout is not merely unread from the browser, it is
+# unreachable. `stderr.log`, served at `GET /api/runs/{id}/stderr`, is the only
+# channel the operator can see mid-demo.
 def test_gate_warns_on_pack_hash_mismatch(monkeypatch, tmp_path):
     monkeypatch.setenv("EVALYN_TARGET_URL", "http://localhost:8899")
     baseline_art = _artifact([_probe("ok-probe")], pack_hash="b" * 64)
@@ -288,8 +335,9 @@ def test_gate_warns_on_pack_hash_mismatch(monkeypatch, tmp_path):
                                  "--baseline", str(baseline_path)])
     expected = evaluate_gate(current, baseline_art)
     assert result.exit_code == expected.exit_code  # a warning, never a failure
-    assert "warning:" in result.stdout
-    assert "pack hash" in result.stdout
+    assert "warning:" in result.stderr
+    assert "pack hash" in result.stderr
+    assert "pack hash" not in result.stdout, "stdout is /dev/null on the cockpit path"
 
 
 # Carry-note 2: warn about probes present in baseline but absent from current
@@ -305,10 +353,12 @@ def test_gate_warns_on_probes_missing_from_current(monkeypatch, tmp_path):
                                  "--baseline", str(baseline_path)])
     expected = evaluate_gate(current, baseline_art)
     assert result.exit_code == expected.exit_code  # a warning, never a failure
-    assert "warning:" in result.stdout
-    warning_line = next(ln for ln in result.stdout.splitlines() if "dropped-probe" in ln)
+    assert "warning:" in result.stderr
+    warning_line = next(ln for ln in result.stderr.splitlines() if "dropped-probe" in ln)
     assert warning_line.startswith("warning:")
     assert "kept-probe" not in warning_line
+    assert "dropped-probe" not in result.stdout, \
+        "stdout is /dev/null on the cockpit path"
 
 
 # ------------------------------------------------- calibrate + fail-closed gate

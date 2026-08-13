@@ -7,6 +7,8 @@ from inspect_ai import Epochs, Task
 from inspect_ai.dataset import MemoryDataset, Sample
 from inspect_ai.scorer import pass_at, pass_k
 
+from evalyn.engine.control import RunController, early_stopping_supported
+from evalyn.engine.events import NULL_SINK, EventSink
 from evalyn.engine.solver import session_solver
 from evalyn.scoring.tier1 import tier1_scorer
 from evalyn.scoring.tier2 import tier2_scorer
@@ -99,7 +101,9 @@ def family_warnings(pack: Pack, *, judge_model: str, rubric_model: str,
 def build_task(pack: Pack, judge_model: str = "mockllm/model",
                rubric_judge_model: str | None = None,
                max_samples: int | None = None,
-               cache_dir: Path | None = None) -> Task:
+               cache_dir: Path | None = None,
+               sink: EventSink = NULL_SINK, *,
+               controller: RunController | None = None) -> Task:
     probes = pack.probes if max_samples is None else pack.probes[:max_samples]
     samples = [Sample(input=p.id, target=p.category, metadata=_probe_metadata(p)) for p in probes]
     k = max((p.samples for p in probes), default=1)
@@ -109,9 +113,34 @@ def build_task(pack: Pack, judge_model: str = "mockllm/model",
     # fire. The discover path (Task 10 CLI) calls family_warnings() directly.
     for msg in family_warnings(pack, judge_model=judge_model, rubric_model=rubric_model):
         warnings.warn(msg, UserWarning, stacklevel=2)
+    # Task 19. `early_stopping` is passed ONLY when a controller exists, so a
+    # default build is byte-identical to the one this function made before the
+    # control channel existed (the Task 18 inertness standard).
+    #
+    # The detect is `inspect.signature`, and it has to be: `Task.__init__` ends
+    # in `**kwargs`, so an unknown keyword is SILENTLY ABSORBED rather than
+    # raising `TypeError`. "Pass it and catch TypeError" would report success on
+    # a version that ignores it entirely — a pause button that does nothing.
+    extra: dict = {}
+    if controller is not None:
+        if early_stopping_supported(Task):
+            extra["early_stopping"] = controller.as_early_stopping()
+        else:
+            warnings.warn(
+                "this inspect_ai build's Task takes no `early_stopping` "
+                "parameter, so pause and cancel cannot stop this run — it will "
+                "run to completion and spend in full. Install "
+                "inspect_ai>=0.3.249,<0.4. (Detected by signature inspection: "
+                "passing the argument would have been absorbed silently.)",
+                # UserWarning, never RuntimeWarning (R4-44): a degraded control
+                # channel must not kill an eval that is spending money.
+                UserWarning, stacklevel=2)
     return Task(
         dataset=MemoryDataset(samples),
-        solver=session_solver(pack),
+        # The sink is threaded through the task the same way `cache_dir` is:
+        # as a plain argument. `NULL_SINK` by default, so a task built by any
+        # existing caller is byte-identical to the one it built before.
+        solver=session_solver(pack, sink=sink),
         scorer=[tier1_scorer(pack), tier2_scorer(judge_model),
                 tier3_scorer(pack, rubric_model, cache_dir=cache_dir)],
         epochs=Epochs(k, [pass_at(k), pass_k(k), "mean"]),
@@ -121,4 +150,5 @@ def build_task(pack: Pack, judge_model: str = "mockllm/model",
         # it as MISSING (fail-closed, PR #4 fix #2). Real infra failure still
         # raises via run_gate's log.status check.
         fail_on_error=False,
+        **extra,
     )

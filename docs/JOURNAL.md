@@ -1770,3 +1770,380 @@ this probe**; the transcript goes on the projector and plainly shows a refusal.
 Plan #4's parked findings are recorded in the SDD ledger rather than duplicated here, and are
 handed to the plan's final whole-branch review. Triage them there, per the standing rule that each
 plan's register is triaged at its final review.
+
+## Plan #4 scope and ordering — RATIFIED BY THE MAINTAINER 2026-08-11 (session 8)
+
+**This is a maintainer decision, not a controller convenience. Do not silently re-order it, and do
+not treat the deferred pages as abandoned.**
+
+### The order of work
+
+1. **Tasks 19 and 20 first — wired up and rehearsed.** Pause/resume/cancel in the engine, then the
+   launcher, control channel, SSE stream and the pack-list endpoints. This is the demo, and it is
+   the part that still holds unknowns: the SPA has only ever talked to mock endpoints, so the
+   wiring pass (real browser → real server) is where surprises will surface.
+2. **Then Tasks 12–17, in this priority order:** **Trends → Judge Trust → Discoveries → Compare.**
+
+**If time runs out, it runs out on Compare** — deliberately, because Compare is the only one of the
+four with nothing to show.
+
+### Why that order, measured on disk 2026-08-11 rather than assumed
+
+An earlier claim in this session that the deferred pages "would be empty" was **wrong and is
+retracted**. `PRODUCT.md`'s note about an empty `discoveries/` folder is about `packs/example/`
+only, and was over-generalised. The real corpus:
+
+| page | data on disk |
+|---|---|
+| Trends | **78** gate runs on `example`, **7 on the injection pack being demoed** |
+| Discoveries | **2** real findings (`packs/twincore/discoveries/*.yaml`) + **2** discover run artifacts |
+| Judge Trust | **reads `<pack>/calibration.json`, NOT the run corpus** (corrected 2026-08-12, R4-77). Only `packs/twincore` has one: agreement **0.9318**, 4 rubric hashes, 8 criteria, judge `anthropic/claude-sonnet-5`. `twincore-injection` and `example` have **none**, so the page pointed at the demo pack renders the never-calibrated empty state |
+| Compare | **0 compare artifacts.** Genuinely empty |
+
+Trends ranks first because 7 runs of the *demo pack* reinforce the demo's own claim: the failure is
+recurrent, not a one-off.
+
+**Caution on Discoveries:** its findings come from a live product and include a PII-leak finding
+(the file R4-3 forbids copying into fixtures). The redaction chokepoint covers it, but that page
+must be **looked at on screen** before it goes near a projector.
+
+### Dropped, by maintainer decision
+
+**`POST /api/packs/{pack_id}/validate` is DROPPED** — not deferred. Two things already cover it:
+
+- **A pack that will not load is fatal at server startup** (`src/evalyn/ui/server.py:169-187`,
+  ruling R4-18). That is deliberate: the redactor learns each pack's declared secrets from the pack,
+  so starting without one would mean serving with a redaction hole. It fails in the operator's
+  terminal, before the talk. **Do not "fix" this into a warning.**
+- `./packs/twincore-injection/demo.sh preflight` — free, no model calls.
+
+What is given up is the in-cockpit "validate before you spend" button, which matters more to the
+future CI audience than to the maintainer on their own machine. The engine-side checker
+(`evalyn.engine.validate`) already exists, so this stays cheap to add later if it is ever wanted.
+
+### Also cut for the demo (no demo value, all release hygiene)
+
+Task 21 steps 4–7: the Playwright smoke test, the CI `ui-e2e` job, the docs + `v0.5.0` version bump,
+and the wheel test. **Task 21 step 6 must not run until the plan actually finishes** — it would
+claim a release that does not exist.
+
+## Deferred: the control endpoint's residual race (Plan #4 Task 20, 2026-08-11)
+
+**Registered here rather than left in a review file**, because it is a real product limitation that
+outlives the plan workspace.
+
+`POST /api/runs/{id}/control` refuses to act on a run that has already finished — a cancel can no
+longer rewrite a completed run's verdict from `passed` to `cancelled` in the detail view, the run
+list, or on disk. That defect is fixed and tested.
+
+**The fix narrows a race; it does not close it.** The liveness check runs twice around the write and
+unlinks any control file that lands inside that window. The residual exposure was **measured, not
+reasoned about**: cancel a genuinely-live run, let it finish one instant *after* the endpoint
+returns, and the control file survives on disk with the verdict reading `cancelled`. So the window
+is the whole interval from "the second check said live" to "the run finishes" — the original
+scenario moved slightly earlier, not eliminated.
+
+**Closing it properly is structural** and was deliberately kept out of a fix round: the write and the
+liveness decision must become one atomic operation. Two candidate remedies, neither yet chosen:
+
+- an `O_EXCL` marker that makes the write fail if the run has completed, or
+- the **engine** ignoring any control file older than its own artifact.
+
+**Practical exposure is low**: the operator must press Cancel in the moments around a run finishing,
+and the consequence is a mislabelled verdict on an already-complete run, not lost data or spend.
+
+**Carry-forward:** `_run_is_live`'s docstring (`src/evalyn/ui/server.py`) currently reads as though
+the guard is complete — "the guard that stops a cancel arriving a moment late from rewriting a
+finished run's verdict" — and "a moment late" is precisely the case only partly stopped. The inline
+comment beside the write (`server.py:785-786`, "narrowed, not closed") is accurate. **Correct the
+docstring to match the comment.** Comments that overclaim are treated as first-class defects in this
+project; this is the eighth instance found in Plan #4.
+
+## Plan #4 session 10 (2026-08-12) — Trends merged; the vacuous-guard problem named
+
+**Registered here rather than left in the plan workspace**, because these outlive Plan #4.
+
+### The milestone
+
+`feat/plan4-ui` is at **`621fd6e`**: 1564 Python tests (both colour modes, cold) and 463 UI tests
+across 22 files, ruff and `tsc` clean. The **Trends page is merged** (`dea7911`) and the **served
+bundle is rebuilt and proven** (`621fd6e`), so for the first time it exists in a browser served by a
+real `evalyn ui`. `GET /api/trends` exists. **Nothing was billed; all 7 pre-approved rehearsal runs
+remain unused.**
+
+### Six vacuous guards — the defect class of the week
+
+A **vacuous guard** is a test that passes under *both* arms of a mutation: it looks like coverage and
+proves nothing. Six were found this week, in code that had already passed review:
+
+- The line a commit message called *the fix* could be deleted leaving **1539 passed, 0 failed**.
+- The **flagship** test for the Trends page's load-bearing invariant does not discriminate (open).
+- A contrast guard could not see the family it was written to protect (fixed, and the fix proved
+  non-vacuous).
+- A tooltip prop the docstring called load-bearing could be removed with nothing going red — and
+  underneath it was a **live bug**: the tooltip printed one probe's reading under another probe's
+  timestamp.
+- A "heartbeat" guard asserts the TS constant equals the Python constant, proving two numbers match
+  while **neither number does anything** (open, deliberately).
+- One an implementer **measured and declared itself**, in both the route and the test, rather than
+  shipping it silently.
+
+**The operating rule, which is now the most valuable thing in this plan:** read mutation evidence
+**by test name, never by pass/fail count**. A count that does not move is the loudest signal there is.
+
+### The controller relayed three falsehoods, and all three were caught downstream
+
+"These two files are new" (they pre-existed) · "`/api/trust` sets the 200-not-404 precedent" (no such
+route) · "356 probe entries, all explicit" (**623, with 108 omitting all three keys**). Each was a
+claim passed along without checking. The rule *"the controller's own entries are claims to verify"*
+was written in session 9 and violated three times in session 10 by the person quoting it. **A rule
+you cite but do not apply is a rule you do not have.**
+
+### Measurements that replaced fears
+
+Two controller worries were refuted by measuring rather than arguing:
+
+| | |
+|---|---|
+| A full demo run | **217 trials, ~3.1 min** (2.55–3.54 measured over 4 runs), **~$0.06** |
+| Judge already used | `anthropic/claude-sonnet-5` — the stage run is not a new cost class |
+| Bundle after Recharts | 283,136 → **655,021 bytes (+131%)**, 193 kB gzipped |
+
+A third — that the missing SSE heartbeat threatened the live demo — was killed by four greps: the SPA
+has **no liveness timer**, `EventSource` auto-reconnects and replays, and the 120s `: idle-timeout`
+is a standard SSE keep-alive comment. **A feature was not built.** What remains is a wire contract
+that advertises a cadence nothing delivers.
+
+### Two premises corrected
+
+- **Judge Trust does not read the run corpus.** It reads `<pack>/calibration.json`. The **demo pack
+  has zero calibration and zero rubric checks**; only `packs/twincore` has either. The ordering
+  ratified in session 8 rested on the wrong belief, so it went back to the maintainer rather than
+  being silently re-ordered. **Decision: keep it, pointed at `packs/twincore`.**
+- **Discoveries redaction is not "covered by luck" — it is covered not at all.** The literal harvest
+  takes `not_contains` values only, and **none of `twincore`'s three appears in either discovery
+  file**. Patterns catch emails, credentials, keys, home paths and phones; they do not catch **names,
+  organisations or hostnames**, which is what the at-risk finding's turns contain. **The prescribed
+  one-line fix buys almost nothing.** Decision: allowlist `packs/twincore` but stage the discoveries
+  directory so only the fully-pattern-caught finding renders.
+
+### A process rule deliberately exceeded, once (R4-78)
+
+R4-27 caps a task at review → one fix round → one re-review. That was spent when a reviewer measured
+the pass-threshold line as **indistinguishable from a healthy data line** (1.88:1, invisible at 6×
+zoom) — because at `pass^k` the threshold is 1.00 and a healthy probe is flat at 1.00, so the two
+marks are *geometrically coincident* and **contrast cannot be the lever**. The cap was exceeded for
+one round because the defect was demo-blocking by measurement, the remedy was a label rather than
+infrastructure, and the round cost nothing on the critical path. Recorded as an adjudication, not a
+drift.
+
+## Plan #4 session 11 (2026-08-12) — the rehearsal ran; Judge Trust shipped
+
+**`feat/plan4-ui` at `e3dd8d7`.** 1583 Python tests (both colour modes, cold), 510 UI tests / 25
+files; ruff and `tsc` clean. Bundle rebuilt and proven. Rulings R4-79 … R4-85.
+
+**The milestone: the cockpit drove a real billed run end to end.** 217 trials, **`$0.0513`**, ~2.5
+min, board RED via `injection-exfil-boundaries` (`pass^k=0.0`, `pass@k=1.0`, mean 0.71), zero
+`invariant_failures`. Every number R4-75 predicted landed, `$0.0513` being the exact low end of the
+measured range. **The live progress banner rendered for the first time in front of a human.** All
+preconditions were verified before anything billable — including curling the twin's own consent
+endpoint and getting a `session_token` back in 60ms.
+
+**Shipped:** the trends-route fix wave closed (7 findings, one review, one fix round, R4-27 honoured);
+R4-80's rename so the page says "channel" in all six user-visible places rather than calling a
+run-level series a probe; `GET /api/trust` plus the Judge Trust page, merged, bundled, and
+**wiring-checked in a browser against the real route** in both its calibrated and never-calibrated
+states.
+
+**A prescribed fix was proved vacuous before anyone built it.** The session-10 handoff prescribed
+pydantic's `model_fields_set` for the fabricated-zero hazard. Run in an interpreter first, it cannot
+work: `_probe_row` passes all three metrics explicitly on every construction, so `model_fields_set`
+always contains all three, and `ProbeResult` is a plain dataclass with no such attribute. It would
+have been the eighth vacuous guard of this plan, introduced by the ruling written to prevent them.
+The real fix reads the raw artifact's **key presence** — a no-op on today's corpus (515 loadable
+entries all carry the keys; 83 genuinely recorded zeros still plot) and a guarantee by construction
+tomorrow.
+
+**Four vacuous guards were caught, three by agents auditing their own work**; the reviewer found a
+fourth thing — the wave had *invented a false catch-claim* to justify keeping the old vacuous test.
+
+**A human clicking found a defect no test could catch.** Clicking `ALL` on the failing probe opened
+the trial panel **565px below the row**, off-screen, with no scroll-into-view and no focus move. The
+content was in the DOM, so every assertion passed. It sat on the demo's click path. Fixed.
+
+**Two demo-relevant corrections.** The "3 of 3 red" claim is stale and its retraction of the ~12%
+green figure was itself premature: the anchor probe failed in **7 of 8** runs (5 of 5 at 7 trials),
+**one genuinely green run exists** at 3 trials, and the per-trial deviation rate implies **P(green
+board) ≈ 19%**. And `packs/twincore`'s weakest criterion is `persona:Tone under refusal` at **82%** —
+below the 85% bar and the exact dimension the headline finding concerns. Both belong in the talk.
+
+**Four controller-propagated falsehoods have now been caught downstream, one this session from the
+controller's own truncated probe** (`list(d.keys())[:6]` hid the seventh key, `per_rubric_agreement`,
+and the brief was written from that output). The instruction *"flag anything in this brief you find to
+be false"* is now load-bearing infrastructure. Separately, a first per-trial deviation figure was
+wrong because the detector scored "no check data recorded" as "no deviation" — caught only because it
+contradicted `pass^k`. When two of your own numbers disagree, the instrument is wrong, not the world.
+
+**An invented string was retired across its whole class** — route, tests, frozen model docstring, and
+the **plan spec that originated it** (`"never calibrated"`, where the engine's locked rule says
+`"no calibration record"`). Found only because two parallel agents disagreed about it.
+
+**Deferred, not blocking:** pause/cancel have still never been driven by a mouse (free to test on
+`packs/example`); the Discoveries redaction gap is unchanged and the prescribed fix still buys nothing.
+
+## Plan #4 session 12 (2026-08-12) — both twincore runs; tier-3 through the cockpit; Discoveries built
+
+**Trunk `feat/plan4-ui` at `6051153`; lane `feat/plan4-ui-frontend` at `8b129b4`, unmerged.**
+1602 Python tests (both colour modes, cold, 1583 + 19), 560 UI / 27 files, ruff and `tsc` clean.
+Rulings R4-86 … R4-88.
+
+**The milestone: tier-3 rubric checks ran through the cockpit for the first time.** `packs/twincore`
+twice, back to back, 150 trials each (50 probes × k=3): 804 tier-1 / 63 tier-2 / 42 tier-3 results
+both times. Nothing broke. The second run turned all 63 UNSURE classifier results into real scores
+(`total_unsure_trials` 29 → 0).
+
+**"Step 1 is free" was false, and had been for three handoffs.** `packs/twincore/target.yaml` sets
+`judge.rubric_model: anthropic/claude-sonnet-5`, `engine/run.py:398` falls back to it, and
+`launcher.py:build_argv` never passes `--rubric-judge-model` — so rubric spend is unreachable from the
+cockpit. Omitting `--judge-model` frees only the classifier tier. **A cost premise is a claim to
+verify, exactly like a test result.**
+
+**A metering bug was found because two of our own numbers disagreed.** The "free" run recorded more
+than the billed one ($1.0436 vs $0.7610). `price_for("mockllm/model")` matches no key in
+`budget.PRICES` and falls through to the opus-tier unknown-model bound, so the free local stub is
+metered at $0.015/$0.075 per 1k — **$0.419310 of pure fiction**. Real spend was $0.624333 and
+$0.761004; the billed run was dearer, as expected. **The phantom cost counts against
+`budget.max_usd_per_run`**, so a long mock run can falsely trip the cap and abort a run that spent
+nothing — on the free path every unpaid rehearsal uses. Queued as next session's second job. The
+controller had proposed "prompt caching or similar" and moved on; the agent that actually measured it
+found the truth.
+
+**The product finding: `groundedness` scored 1/5 on both criteria in all 15 judgements, zero spread**,
+while the other six criteria spread across the scale — which is the evidence that distinguishes a
+working judge from a broken one. groundedness is the only rubric carrying a fact sheet, so the judge
+was checking claims against verified facts and consistently found them unsupported. It independently
+reproduces the August `discover` run's confirmation line.
+
+**Discoveries was not greenfield** — four frozen wire models, the TS types, working MSW handlers,
+fixtures and the nav entry already existed; the mock was *ahead* of the server. Recon caught that
+before the brief was written. Both halves shipped: the route pair (with `parse_provenance`, which was
+promised by two docstrings and had never been written) and the page. **The email is masked in all five
+places it appears, proven from live response bytes on the real route.**
+
+**Six controller falsehoods have now been caught downstream, two of them this session** — "neither
+failing probe is in the demo pack" (both are, and R4-85 already said so), and the over-corrected
+"both probes converge" (only `injection-exfil-boundaries` does; the other passes under a real judge).
+**A correction is itself a claim to verify.**
+
+**Five more vacuous guards caught, plus two instruments that were lying.** A mutation harness reported
+a perfect score while measuring nothing until CONTROL mutations that must stay green were added;
+browser window-resize drifted so badly that widths were measured in an exact-width iframe instead; a
+contrast figure was self-corrected from 2.42 to 2.30. **An instrument must be calibrated before its
+readings count.** Three real layout defects were then found in a browser that a green suite could not
+see — sixth session running.
+
+**R4-88: the ledger stays out of the public repo.** It is content-clean (zero emails, zero secrets),
+but it is 6050 lines of candid process notes and the repo is public — a disclosure judgement, made
+deliberately. A same-laptop copy exists; the maintainer was told it does not survive laptop loss and
+accepted local-only.
+
+## Plan #4 session 13 (2026-08-12) — every page ships; the metering bug is dead; pause and cancel were finally clicked
+
+**Trunk `feat/plan4-ui` at `5d48986`, pushed. All three lanes merged.** 1613 Python tests (both
+colour modes, cold), 615 UI / 29 files, ruff and `tsc` clean, served bundle rebuilt and proven.
+Rulings R4-89 … R4-107, plus BACKLOG-1. **$0.00 spent.**
+
+**The cockpit is feature-complete.** Discoveries and Compare were reviewed, fixed, merged and built
+into the served bundle. The nav has no unshipped destination left.
+
+**`mockllm` was being billed at opus rates, and fixing it nearly disarmed two real guards.** The free
+local stub matched no `PRICES` key and fell through to the unknown-model upper bound, on *synthesised*
+usage, with the phantom cost counting against the budget cap. Two regression guards — including the
+one written for the live 2026-07-28 `judge_usd == 0.0` bug — were using "mockllm gets billed the opus
+default" as their proof that metering plumbing works. The reviewer didn't settle for "deleting the fix
+reddens the test": it **reintroduced the original bug at its true sites** and watched both go red by
+name. **Verify the fix didn't hollow out the guard.**
+
+**A fixture whose numbers coincide cannot tell you which number was read** — caught twice, in two
+pages, in two shapes: `total=2/confirmed=1/safetyCritical=1`, and `wins_a:1, ties:1, flips:1` under a
+"strict" `toEqual`. On Compare this meant **five independent A/B transpositions shipped green**. No
+transposition was actually present; the defect was that nothing could have told us.
+
+**Two Discoveries defects that only reading the rendered words could find:** the replay region
+claimed the replay both reproduced the finding and never ran — in the same view, and inside the very
+test written to prove that copy honest; and the size readout could print "2 safety-critical" where
+every fixture figure was 1.
+
+**Pause and cancel were driven by a mouse for the first time.** Both work, and both say the honest
+thing: pause "finishes in-flight trials", cancel carries a two-step interlock and names the continued
+spend. **R4-13 as written did not reproduce** — probes kept `trials=3` and the artifact has no
+`exit_code` key, because every trial was already in flight. A **cancelled run still renders
+"GATE FAILED / EXIT CODE 1"** over partial data while the wire says `exit_code: null` — documented as
+BACKLOG-1, deferred by the maintainer, and "don't cancel on stage" added to the runbook.
+
+**A toy target silently shadowed the real twin on port 8000 for ten minutes.** The twin runs at
+`niuwnai-mvp-api-1  0.0.0.0:8000`, exactly where the stage command points, and an IPv4 bind on
+`127.0.0.1:8000` wins for localhost. Had it survived to Saturday the demo would have evaluated a stub
+and looked completely normal doing it. No allowlist catches this — the URL is right, the listener is
+wrong. A required pre-demo port check is now in the runbook. The same incident produced a second
+rule: **never kill by port** — the PID list included the maintainer's Docker backend.
+
+**The flag-falsehoods instruction caught something in every single dispatch.** Including a controller
+claim that was 297 lines wrong, a cost model that repeated an earlier $0.62 mistake in a new shape,
+and **one instruction which, followed literally, would have deleted two working guards.**
+
+**The first compare artifact exists, at $0.0000** — `evalyn compare` makes no target HTTP calls, so
+two existing gate runs were re-judged for free. The board shows the newer run faster on both mean and
+p95, with zero invariant failures on either side.
+
+## Plan #4 session 14 (2026-08-12) — the demo was rehearsed end to end, and the numbers it was going to be described with were wrong
+
+**Trunk `feat/plan4-ui` at `364eb17`, pushed.** 1613 Python (both colour modes, cold cache), **629
+UI / 30 files**, ruff and `tsc` clean, served bundle rebuilt and proven. Rulings R4-108 … R4-117.
+**$0.0665 spent** — one full live run.
+
+**The rehearsal ran the whole way through, from the cockpit's own Launch button.** The required
+port check was green — Docker alone on 8000, and the twin returned a real session token. 217 trials,
+about three minutes, and the board came up **red**. Every page was then walked against the real
+route. Nothing errored.
+
+**Then the demo's own numbers turned out to be stale, and every correction moved in our favour.**
+The anchor probe has failed `pass^k` in **8 of 9** runs, not 7 of 8 — and **6 of 6** at the seven
+trials the demo actually runs, where it has never once passed. The only green board in the corpus
+came from a **3-trial** run, so "P(green) ~1 in 5" was pessimistic. A **second probe now fails**
+that no document mentioned. The spend band's upper bound was $0.0628; today's run cost $0.0665.
+All of it is now in `docs/2026-08-14-DEMO-RUNBOOK.md`, a single page written to be read under stage
+lights, with the detail below a hard break.
+
+**The claim the talk rests on is now measured rather than asserted.** Across the three runs that
+record check-level detail — 651 trials, 3969 checks — failed `no-internal-leak`: **0**. Failed
+`not_contains:BOUNDARIES.md`, the file-reveal guard: **0**. Failed `contains:`, output conformance:
+**6**. Failed anything else: **0**. `invariant_failures` is present in all 1497 trial records across
+all nine runs and non-zero in none.
+
+**Three of the controller's own instruments were lying, and each was caught by a number that would
+not reconcile.** A corpus-wide check count that was two-thirds absent data — only three of nine runs
+record checks at all. A redaction probe reading a payload that never contained values, whose zero
+therefore proved nothing; the real proof needed the detail route and the raw file as a control. And
+`.get('exit_code')` returning `None`, which **cannot distinguish an absent key from a null value** —
+the error behind R4-107's "measured, not inferred", which was wrong, and which the implementer
+flagged rather than inherit.
+
+**A cancelled run no longer claims a verdict nobody earned.** It was worse than recorded: the runs
+list said `GATE FAILED` too, off a real wire field, because `verdict_hint_of` counts un-run probes
+as INCOMPLETE. Fixed on both surfaces, frontend-only by ruling. **The fix's own first attempt
+reintroduced the same overclaim through the door it opened** — the stopped check sat above the mode
+check, so a cancelled `compare` row claimed a gate that mode never had, on a signal derived from a
+leftover control file that has measurably relabelled a *completed* run. Asking what a cancelled gate
+run with a null hint should render changed the design: that state is the *early* cancel, not an edge
+case.
+
+**A guard now fails when the browser would be served a page that no longer exists** — and it caught
+a trap that would have made it worse than useless. This minifier delimits string literals with
+**backticks**, so the natural search for a double-quoted `data-testid` reads **zero for all six pages
+against a perfectly fresh bundle**. Written from the brief as given, the guard would have reported
+the entire cockpit missing, two days before the demo.
+
+**Both merges were verified by a falsifiable prediction stated before running anything** — 622, then
+629, both exact. The bundle rebuild was proven the same way: a marker that goes 0 → 1 between old and
+new, beside a control marker that stays at 1.

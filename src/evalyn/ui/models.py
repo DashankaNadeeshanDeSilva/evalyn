@@ -166,8 +166,20 @@ def redaction_marker(kind: str) -> str:
     return f"«redacted:{kind}»"
 
 
-#: The SSE stream emits a `heartbeat` comment at this cadence so an idle run
-#: does not look like a dead connection to a proxy or to the browser.
+#: The cadence at which the SSE stream was *intended* to emit a `heartbeat`
+#: comment. **Nothing emits one** (R4-74): there is no heartbeat reference in
+#: `server.py` and none on `stream.py`'s emission path, so this is a declared
+#: intention and not a description of the wire. It is exported, given an
+#: `EventName` member and advertised as `MetaResponse.heartbeat_seconds` all
+#: the same — and the SPA consumes none of that: it has no liveness timer.
+#:
+#: What actually keeps an idle subscription honest is `stream.py`'s
+#: `IDLE_COMMENT` (`: idle-timeout`), an SSE **comment** sent once when a
+#: subscription passes `DEFAULT_IDLE_TIMEOUT` — 120 seconds, not 15. That is
+#: sufficient on its own: the browser's native `EventSource` reconnects by
+#: itself and replays from the last `id:`, so a silent stream is recoverable
+#: without a server-side pulse. Read this constant as a number the wire
+#: reports, not as a promise the server keeps.
 HEARTBEAT_SECONDS = 15.0
 
 
@@ -462,7 +474,13 @@ class CheckView(_Model):
     #: `None` when the check abstained (see `unsure`) — not `False`.
     passed: bool | None = None
     score: float | None = None
-    #: 1-based turn index the evidence came from; `None` for whole-session checks.
+    #: The artifact's own `turn` field, forwarded **unchanged** (R4-40). It is
+    #: **not** an index into `TrialView.turns`, and this is measured rather than
+    #: feared: in `20260803T174149220841-76e25fee-example` the
+    #: `invariant:no-internal-leak` check reports `turn: 1` while its evidence
+    #: ("Internal path") lives in flattened turn 4. `None` for whole-session
+    #: checks. A viewer that reports such a check as *unplaced* is behaving
+    #: correctly; reconciling the two is a new design, not a mapping detail.
     turn: int | None = None
     evidence: str = ""
     unsure: bool = False
@@ -680,9 +698,11 @@ class FindingRow(_Model):
 class FindingDetail(FindingRow):
     """`GET /api/discoveries/{probe_id}`.
 
-    Redacted by default. Revealing is per-object, gated on the token minted at
-    server start and logged to stderr with the probe id: there is no global off
-    switch and no env var.
+    **Redaction on this route is unconditional** (R4-89). There is no reveal —
+    no header, no token, no query parameter, no env var, and no global off
+    switch. The handler takes the probe id and nothing else, so no request can
+    ask for the unmasked form. A masked value is recoverable only from the
+    staged file itself, on the machine that ran `discover`.
     """
 
     #: The staged file's bytes as committed — the thing a human will `git mv`.
@@ -784,11 +804,22 @@ class TrendPoint(_Model):
 
 
 class TrendSeries(_Model):
-    """`GET /api/trends?pack&metric`, one series per probe.
+    """`GET /api/trends?pack&metric`, one series per probe — with one
+    exception, which is `judge_usd`.
+
+    The three gate metrics are measured per probe and answer one series each.
+    Judge spend is metered per RUN and does not exist per probe, so that metric
+    answers a SINGLE run-level series whose `probe_id` is the literal string
+    `"(whole run)"` (`server.RUN_LEVEL_SERIES`). Splitting one run's spend
+    across its probes would invent a number nobody recorded — thirty-one
+    identical lines, each claiming to be a measurement of its own channel — so
+    the route says once, honestly, what it actually knows.
 
     Built from `RunSummary`-level data only — never by re-opening `.eval`
     logs — and degraded runs are **skipped entirely** rather than emitted as
-    null points, so a gap in the line means "no readable run", not "zero".
+    null points, so a gap in the line means "no readable run", not "zero". The
+    same rule governs a metric a run simply never recorded: absent, never
+    `0.0`.
     """
 
     pack_name: str
@@ -810,8 +841,8 @@ class TrustReport(_Model):
     The field is `agreement` — **±1-point agreement as shipped** — and never
     `kappa`: nothing here computes Cohen's κ and the name must not imply a
     certification that was not performed. A pack with no `calibration.json` is
-    a legitimate 200 with `agreement: null` and a "never calibrated" reason,
-    not a 404.
+    a legitimate 200 with `agreement: null` and a "no calibration record"
+    reason — the engine's own locked staleness string — not a 404.
     """
 
     pack_name: str
@@ -840,18 +871,29 @@ class PackRow(_Model):
     `evalyn ui --target <path>` — the complete set of packs a browser may name.
     """
 
-    #: An **index into that allowlist, never a path**. It is the only pack
-    #: identifier a request may carry, which is what stops a body from pointing
-    #: the engine at an arbitrary file — `LaunchRequest` has no path field at
-    #: all, and `extra="forbid"` rejects a body that invents one.
+    #: An **opaque handle into that allowlist, never a path**. It is the only
+    #: identifier that *resolves* to a pack on disk, which is what stops a body
+    #: from pointing the engine at an arbitrary file — `LaunchRequest` has no
+    #: path field at all, and `extra="forbid"` rejects a body that invents one.
+    #:
+    #: Deliberately narrower than this used to claim. "The only pack identifier
+    #: a request may carry" was already false when it was written: a request may
+    #: also carry a pack's **name**, and two read routes take one
+    #: (`/api/runs?pack=`, `/api/trends?pack=`). A name is safe there for a
+    #: different reason — it is compared for equality against data the server
+    #: has already loaded, and is never joined into a path or opened — and it is
+    #: necessary, because `runs/` holds the history of packs this cockpit was
+    #: never pointed at, which no allowlist id can name. The invariant is **no
+    #: request names a filesystem location**, not "no request names a pack any
+    #: other way".
     id: str
     #: What `LaunchRequest.confirm` must echo — the type-to-confirm interlock
     #: that stops a drive-by `curl` from starting spend.
     name: str
     #: A **display-safe label**, `~`-collapsed like `MetaResponse.packs`, and
     #: like those it is no longer a usable filesystem path. Never round-trip it
-    #: back into a `Path()`, and never send it back to the server: `id` is the
-    #: only thing that names a pack on the wire.
+    #: back into a `Path()`, and never send it back to the server: no route
+    #: accepts a path, and `id` is the only thing that resolves to a pack.
     path: str
     version: str | None = None
     probe_count: int = 0
@@ -974,9 +1016,12 @@ class LaunchResponse(_Model):
 class ControlRequest(_Model):
     """`POST /api/runs/{id}/control`.
 
-    The corresponding `control.*` SSE event **is** the ack. If none lands
-    within 60 s the server escalates to `SIGTERM` on the process group, after
-    writing to the control file — never `SIGKILL`, which loses the Inspect log.
+    The corresponding `control.*` SSE event **is** the ack. Writing the control
+    file is the server's **only** mechanism — it never signals the child, at
+    any delay. An action the run never acknowledges leaves an honest
+    `interrupted` run that names the pid, so a human can decide in their own
+    terminal. Signalling the child was measured and retracted: it strands a
+    completed, already-paid-for sample outside the log.
     """
 
     action: ControlAction
@@ -989,8 +1034,8 @@ class ControlResponse(_Model):
     the request was well-formed and the control file was written; the matching
     `control.*` SSE event is what says the run actually paused, resumed or
     cancelled. A UI that flips to "paused" off this response is asserting
-    something no one has confirmed — and if no event lands within 60 s the
-    server escalates to `SIGTERM`, which is a different outcome entirely.
+    something no one has confirmed — and a run that never acknowledges ends as
+    an `interrupted` run naming its pid, which is a different outcome entirely.
     """
 
     run_id: RunId
@@ -1006,7 +1051,11 @@ class RedactionMeta(_Model):
 
     enabled: bool = True
     marker: str = "«redacted:<kind>»"
-    #: Reveal requires the `X-Evalyn-Reveal` token minted at server start.
+    #: True because a masked value **cannot** be revealed over the API: no
+    #: reveal path was ever built, and R4-89 rules that none will be. The
+    #: field stays — it is the literal truth, and the banner it drives is the
+    #: only place the cockpit says so. Reading a masked value means opening
+    #: the file on the machine that ran the run.
     reveal_required: bool = True
 
 

@@ -60,8 +60,14 @@ CHECKRESULT_KEYS = {"check", "tier", "required", "weight", "passed", "score",
                     "turn", "evidence", "unsure"}
 
 # Task 6 trial-record contract: one record per SCORED epoch, exactly these keys
-# — the compare mode (Task 8) pairs runs on this shape.
-TRIAL_RECORD_KEYS = {"epoch", "transcript", "session_seconds", "invariant_failures"}
+# — the compare mode (Task 8) pairs runs on this shape. `checks` joined it in
+# Plan #4 Task 22 (this epoch's own CheckResults, which the cockpit's per-trial
+# drill-down serves); the set stays EXACT so a sixth key has to be argued for
+# here rather than appearing.
+# REVERTING Task 22's `05d51d6`? Drop `"checks"` from this set too — the two
+# were one change, split only because the branch could not be rebased.
+TRIAL_RECORD_KEYS = {"epoch", "transcript", "checks", "session_seconds",
+                     "invariant_failures"}
 
 ARTIFACT_PROBES = """\
 - id: sse-grounding
@@ -188,6 +194,13 @@ def test_named_sse_gate_produces_self_contained_artifact(
             assert isinstance(rec["session_seconds"], float)
             assert rec["session_seconds"] > 0
             assert isinstance(rec["invariant_failures"], int)
+            # Task 22: this epoch's own checks, in the same CheckResult shape,
+            # round-tripped through a real log and a real JSON artifact
+            assert rec["checks"], f"{probe['id']} epoch {rec['epoch']}: no checks"
+            assert len(rec["checks"]) == len(probe["checks"])
+            for chk in rec["checks"]:
+                assert set(chk) == CHECKRESULT_KEYS
+                assert chk["passed"] is True   # this surface is all-passing
             assert rec["invariant_failures"] >= 0
 
     result = evaluate_gate(art, baseline=None)

@@ -52,7 +52,7 @@ function Glyph({ title, children, ...rest }: IconProps & { children: ReactNode }
 }
 
 /** ✓ — the gate held. */
-function IconCheck(props: IconProps) {
+export function IconCheck(props: IconProps) {
   return (
     <Glyph {...props}>
       <path d="M3 8.4 6.2 11.6 13 4.6" />
@@ -61,7 +61,7 @@ function IconCheck(props: IconProps) {
 }
 
 /** ✗ — the gate failed. Deliberately the heaviest mark in the set. */
-function IconCross(props: IconProps) {
+export function IconCross(props: IconProps) {
   return (
     <Glyph {...props}>
       <path d="M4 4 12 12M12 4 4 12" />
@@ -81,7 +81,7 @@ export function IconAlert(props: IconProps) {
 }
 
 /** A live dot inside its ring — something is happening right now. */
-function IconLive(props: IconProps) {
+export function IconLive(props: IconProps) {
   return (
     <Glyph {...props}>
       <circle cx="8" cy="8" r="5.6" />
@@ -91,7 +91,7 @@ function IconLive(props: IconProps) {
 }
 
 /** Two bars — held, and (per the product) still billing. */
-function IconPause(props: IconProps) {
+export function IconPause(props: IconProps) {
   return (
     <Glyph {...props}>
       <path d="M6 3.8v8.4M10 3.8v8.4" />
@@ -100,7 +100,7 @@ function IconPause(props: IconProps) {
 }
 
 /** A struck circle — stopped on purpose. */
-function IconBarred(props: IconProps) {
+export function IconBarred(props: IconProps) {
   return (
     <Glyph {...props}>
       <circle cx="8" cy="8" r="5.6" />
@@ -197,13 +197,35 @@ export function IconNotApplicable({ title, ...rest }: IconProps) {
   );
 }
 
-/** An unresolved reading: the instrument has no answer, not a negative one. */
-function IconQuery(props: IconProps) {
+/**
+ * An unresolved reading: the instrument has no answer, not a negative one.
+ *
+ * Exported because it is the mark for both of `VerdictBadge`'s non-answers —
+ * `abstained` (the judge declined) and `unscored` (the check returned no
+ * score). Neither is a failure, and reusing the cross for them would say it was.
+ */
+export function IconQuery(props: IconProps) {
   return (
     <Glyph {...props}>
       <circle cx="8" cy="8" r="5.6" />
       <path d="M6.4 6.4a1.7 1.7 0 1 1 1.7 2v.9" />
       <path d="M8.1 11.5h.01" />
+    </Glyph>
+  );
+}
+
+/**
+ * A ruled triangle — start, or start again. The one mark shared by the launch
+ * key and the resume key, because they are the same act at two scales.
+ *
+ * Stroked, not filled, like every other mark here: a solid triangle is the
+ * media-player convention, and it would be the heaviest glyph in the family by
+ * a wide margin sitting next to the lightest.
+ */
+export function IconRun(props: IconProps) {
+  return (
+    <Glyph {...props}>
+      <path d="M5.6 3.6 12.4 8 5.6 12.4Z" />
     </Glyph>
   );
 }

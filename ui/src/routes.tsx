@@ -1,8 +1,13 @@
 import { Link, Navigate, type RouteObject } from "react-router-dom";
 
 import { AppShell } from "./components/AppShell";
+import { Compare } from "./pages/Compare";
+import { Discoveries } from "./pages/Discoveries";
+import { Launch } from "./pages/Launch";
 import { RunDetailPage } from "./pages/RunDetailPage";
 import { RunsPage } from "./pages/RunsPage";
+import { Trends } from "./pages/Trends";
+import { Trust } from "./pages/Trust";
 
 /**
  * The router's table — and the other half of the legend strip's gate.
@@ -24,7 +29,7 @@ function NoSuchPage() {
         The cockpit has no view at this address.{" "}
         <Link
           to="/runs"
-          className="text-chassis-900 underline decoration-chassis-400 underline-offset-4"
+          className="text-chassis-900 underline decoration-chassis-500 underline-offset-4"
         >
           Back to runs
         </Link>
@@ -42,6 +47,11 @@ export const appRoutes: RouteObject[] = [
       { index: true, element: <Navigate to="/runs" replace /> },
       { path: "/runs", element: <RunsPage /> },
       { path: "/runs/:runId", element: <RunDetailPage /> },
+      { path: "/launch", element: <Launch /> },
+      { path: "/discoveries", element: <Discoveries /> },
+      { path: "/compare", element: <Compare /> },
+      { path: "/trends", element: <Trends /> },
+      { path: "/trust", element: <Trust /> },
       { path: "*", element: <NoSuchPage /> },
     ],
   },

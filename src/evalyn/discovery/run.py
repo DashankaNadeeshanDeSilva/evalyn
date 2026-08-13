@@ -79,6 +79,8 @@ from evalyn.discovery.meter import SpendMeter, reconcile
 from evalyn.discovery.objectives import get_objective
 from evalyn.discovery.replay import ReplayResult, replay_staged_probe
 from evalyn.discovery.task_builder import build_discovery_task
+from evalyn.engine.control import RunCancelled, RunController
+from evalyn.engine.events import NULL_SINK, EventSink, hunt_key
 from evalyn.engine.run import atomic_write_artifact, pack_fingerprint
 from evalyn.targets.loader import Pack
 
@@ -337,16 +339,42 @@ def _reconcile_path(path: str) -> float:
 # --------------------------------------------------------------------------
 
 async def run_discovery(pack: Pack, cfg: DiscoveryConfig, *,
-                        run_id: str | None = None) -> DiscoveryArtifact:
+                        run_id: str | None = None,
+                        sink: EventSink = NULL_SINK,
+                        controller: RunController | None = None) -> DiscoveryArtifact:
     """Run one `discover` pass and return its record. Never raises on budget.
 
     `run_id` (keyword-only, `None` = mint as before) reaches the writer from the
     CLI's `EVALYN_RUN_ID` read. It has to travel this far because discover owns
     its own writes — including the partial one on the failing path, which is the
     write a cockpit most needs to find.
+
+    `sink` (keyword-only, inert `NULL_SINK` by default) travels the same way,
+    and for the same reason: the run-level events and the per-hunt ones have to
+    come out of one stream, and the sink reaches the hunts as an explicit
+    argument rather than ambient state (R4-43).
+
+    `controller` (keyword-only, `None` = nobody can pause or stop this run) is
+    polled at the **replay** boundary — each replay is a whole eval, so that is
+    where a cancel arriving mid-run saves real money. A cancel there raises
+    `RunCancelled` through the R8-5 durability wrap, which writes the partial
+    artifact (spend record intact) before re-raising; the CLI turns it into
+    exit 3, and the record is marked `partial`.
+
+    It is also polled *inside* each hunt, at `loop._drive`'s BOUNDS-FIRST block,
+    which it reaches through `build_discovery_task` -> `discovery_solver` ->
+    `run_session` — the same seam `sink` travels. So a cancel takes effect at
+    the next agent step, before that step's reasoning call is made or paid for,
+    and the replay checkpoint above is the second, coarser net rather than the
+    only one.
     """
+    sink.emit("run.started", mode="discover", pack=pack.spec.name,
+              objectives=list(cfg.objectives), agent_model=cfg.agent_model,
+              judge_model=cfg.judge_model, max_usd=cfg.limits.max_usd,
+              max_sessions=cfg.limits.max_sessions, run_id=run_id)
     meter = SpendMeter(cfg.limits.max_usd)
-    task = build_discovery_task(pack, cfg, meter=meter)
+    task = build_discovery_task(pack, cfg, meter=meter, sink=sink,
+                                controller=controller)
 
     stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%f")
     log_root = Path(cfg.out_dir) / "logs" / f"discover-{stamp}"
@@ -368,12 +396,16 @@ async def run_discovery(pack: Pack, cfg: DiscoveryConfig, *,
     # live figure stays independent (R8-14).
     reconciled = reconcile(log)
     log_location = str(getattr(log, "location", "") or disc_log_dir)
+    sink.emit("spend.updated", live_usd=meter.spent_usd,
+              reconciled_usd=reconciled, max_usd=cfg.limits.max_usd,
+              phase="eval")
 
     findings: list[Finding] = []
     error_count = 0
     confirmed_count = 0
     sessions_total = 0
     budget_stops = False
+    cancelled_stops = False
 
     staging_dir = Path(cfg.staging_dir) if cfg.staging_dir is not None \
         else pack.root / "discoveries"
@@ -395,7 +427,14 @@ async def run_discovery(pack: Pack, cfg: DiscoveryConfig, *,
         # OPERATOR disabled it was not work we failed to do — only a
         # budget-forced skip counts (`ReplaySkipped.budget`); folding both in
         # made `--no-replay` on a $0.01 run print the BUDGET banner.
-        partial = aborted or exhausted or budget_stops or (
+        # `cancelled_stops` (Task 19) belongs here and nowhere else. A hunt
+        # the operator stopped is NOT an error — `error_count` deliberately does
+        # not count it, because the CLI reads `error_count >= sessions_total` as
+        # "every hunt failed" and exits 3 on it — but it IS work this run did not
+        # do, which is exactly what `partial` means. Without this a cancelled
+        # discover run would print its findings with no banner at all, and
+        # absence would read as evidence of absence.
+        partial = aborted or exhausted or budget_stops or cancelled_stops or (
             eval_status != "success") or any(
             isinstance(f.replay, ReplaySkipped) and f.replay.budget
             for f in findings)
@@ -439,6 +478,8 @@ async def run_discovery(pack: Pack, cfg: DiscoveryConfig, *,
                 error_count += 1
             if session.stop_reason == "budget":
                 budget_stops = True
+            if session.stop_reason == "cancelled":
+                cancelled_stops = True
             if not (session.confirmed and session.confirmed.confirmed):
                 continue
 
@@ -457,9 +498,24 @@ async def run_discovery(pack: Pack, cfg: DiscoveryConfig, *,
             yaml_text = probe_yaml(probe, provenance=_provenance(session, cfg))
             staged = stage_probe(pack, probe, yaml_text,
                                  staging_dir=cfg.staging_dir)
+            key = hunt_key(session.objective_id, session.persona_id)
+            sink.emit("finding.staged", hunt_key=key, objective_id=session.objective_id,
+                      probe_id=probe.id, probe_path=str(staged),
+                      duplicate_of=dup.probe_id if dup else None)
 
+            # The replay phase's poll point: each replay is a whole eval, so
+            # this is where a cancel arriving during a long discover run
+            # actually saves money. A `RunCancelled` here propagates into the
+            # R8-5 handler below, which writes the partial artifact (spend
+            # record intact) before re-raising.
+            if controller is not None:
+                await controller.checkpoint(key=f"replay:{probe.id}")
             replay = await _replay_finding(pack, cfg, meter, probe.id, staged,
                                            log_root)
+            sink.emit("replay.result", hunt_key=key, probe_id=probe.id,
+                      reproduced=getattr(replay, "reproduced", None),
+                      skipped=isinstance(replay, ReplaySkipped),
+                      reason=getattr(replay, "reason", ""))
             if isinstance(replay, ReplayResult) and replay.log_path:
                 replay_usd = _reconcile_path(replay.log_path)
                 reconciled += replay_usd
@@ -483,7 +539,10 @@ async def run_discovery(pack: Pack, cfg: DiscoveryConfig, *,
                 persona_id=session.persona_id,
                 playbook_id=session.playbook_id,
             ))
-    except BaseException:
+    except BaseException as terminal:
+        cancelled = isinstance(terminal, RunCancelled)
+        if cancelled:
+            cancelled_stops = True
         # Write what we have, THEN let the original failure propagate. The
         # original is never LOST: a double failure (loop raises AND the fallback
         # write fails) still re-raises it, warning about the write. One caveat,
@@ -493,20 +552,43 @@ async def run_discovery(pack: Pack, cfg: DiscoveryConfig, *,
         # always carries both.
         try:
             write_discovery_artifact(_build_artifact(aborted=True),
-                                     out_dir=str(cfg.out_dir), run_id=run_id)
+                                     out_dir=str(cfg.out_dir), run_id=run_id,
+                                     sink=sink)
         except Exception as e:  # noqa: BLE001 — report it, never swallow it
             warnings.warn(
                 f"discovery run failed AND its partial artifact could not be "
                 f"written ({type(e).__name__}: {e}) — the spend record for this "
                 f"run is lost", RuntimeWarning, stacklevel=2)
+        # Terminal event on the failing path too, so a cockpit does not leave a
+        # dead run spinning. Emitted after the write attempt and before the
+        # re-raise; the original exception still propagates.
+        # `cancelled` is its own terminal status: the run stopped because it
+        # was told to, and a cockpit must not paint that red.
+        sink.emit("run.finished", mode="discover",
+                  status="cancelled" if cancelled else "error",
+                  findings=len(findings), confirmed_count=confirmed_count,
+                  sessions_total=sessions_total, error_count=error_count)
         raise
 
     artifact = _build_artifact()
+    sink.emit("spend.updated", live_usd=artifact.live_spend_usd,
+              reconciled_usd=artifact.reconciled_spend_usd,
+              max_usd=cfg.limits.max_usd, phase="final")
 
     # Write BEFORE returning — and, on the failing path above, before the raise
     # — so neither a budget stop nor a mid-loop exception leaves a run that
     # spent money with no record (spec §12 / R8-5).
-    write_discovery_artifact(artifact, out_dir=str(cfg.out_dir), run_id=run_id)
+    write_discovery_artifact(artifact, out_dir=str(cfg.out_dir), run_id=run_id,
+                             sink=sink)
+    # `discover` never raises on budget, so unlike `gate` there is only ever the
+    # one terminal event on this path; `eval_status` carries whether the eval
+    # itself was healthy (the CLI turns a bad one into exit 3).
+    sink.emit("run.finished", mode="discover", status="ok",
+              eval_status=artifact.eval_status, partial=artifact.partial,
+              findings=len(artifact.findings),
+              confirmed_count=artifact.confirmed_count,
+              sessions_total=artifact.sessions_total,
+              error_count=artifact.error_count)
     return artifact
 
 
@@ -539,14 +621,19 @@ async def _replay_finding(pack: Pack, cfg: DiscoveryConfig, meter: SpendMeter,
 
 def write_discovery_artifact(artifact: DiscoveryArtifact,
                              out_dir: str = "runs",
-                             *, run_id: str | None = None) -> Path:
+                             *, run_id: str | None = None,
+                             sink: EventSink = NULL_SINK) -> Path:
     """Atomic temp-then-rename write — the shared house writer (R8-13), suffixed
     `-discover`.
 
     `run_id=None` mints exactly as before; a caller that passes one gets
-    `runs/<run_id>-discover.json`."""
-    return atomic_write_artifact(artifact.to_dict(), artifact.pack_name, out_dir,
-                                 suffix="-discover", run_id=run_id)
+    `runs/<run_id>-discover.json`. `artifact.written` is emitted here — the one
+    place that knows the file landed — so the partial write on the failing path
+    announces itself exactly like the happy-path one."""
+    written = atomic_write_artifact(artifact.to_dict(), artifact.pack_name, out_dir,
+                                    suffix="-discover", run_id=run_id)
+    sink.emit("artifact.written", path=str(written))
+    return written
 
 
 def _replay_line(replay: ReplayResult | ReplaySkipped) -> str:

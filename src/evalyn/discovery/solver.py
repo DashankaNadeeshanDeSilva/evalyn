@@ -63,6 +63,8 @@ from evalyn.discovery.personas import (
     Persona,
     Playbook,
 )
+from evalyn.engine.control import RunController
+from evalyn.engine.events import NULL_SINK, EventSink
 from evalyn.targets.loader import Pack, resolve_base_url
 
 #: Sample-store key for one hunt's `SessionResult`. Stable: `run.py` (Task 8b)
@@ -110,9 +112,16 @@ def discovery_solver(pack: Pack, *, agent_model: str, meter: SpendMeter,
                      limits: Limits, confirmer,
                      personas: Mapping[str, Persona] | None = None,
                      playbooks: Mapping[str, Playbook] | None = None,
-                     seed: int | None = None) -> Solver:
+                     seed: int | None = None,
+                     sink: EventSink = NULL_SINK,
+                     controller: RunController | None = None) -> Solver:
     """One hunt per sample. `state.metadata` carries `objective_id`,
-    `persona_id`, `playbook_id`; the result lands in the sample store."""
+    `persona_id`, `playbook_id`; the result lands in the sample store.
+
+    `sink` is a constructor argument captured by the closure (R4-43), inert by
+    default. `controller` travels the same way and for the same reason — it is
+    the last hop from `run_discovery` to `loop._drive`'s pause/cancel
+    checkpoint, and `None` means this run cannot be paused or stopped."""
     # Fail fast at solver construction, before any run is scheduled — the same
     # containment check `gate` makes. `TargetSession.open` re-enforces the
     # allowlist on every session.
@@ -132,7 +141,8 @@ def discovery_solver(pack: Pack, *, agent_model: str, meter: SpendMeter,
             # come back as a partial result, which the store write below keeps.
             result = await run_session(
                 pack, objective, persona, playbook, agent_model=agent_model,
-                meter=meter, limits=limits, confirmer=confirmer, seed=seed)
+                meter=meter, limits=limits, confirmer=confirmer, seed=seed,
+                sink=sink, controller=controller)
 
         state.store.set(DISCOVERY_STORE_KEY, session_to_store(result))
         # No scorer runs, so this is purely the viewer's one-line summary.

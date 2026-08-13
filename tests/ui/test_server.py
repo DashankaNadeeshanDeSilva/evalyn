@@ -28,6 +28,7 @@ was in the spec; this is the resolution, asserted below by name.
 from __future__ import annotations
 
 import json
+import shutil
 import sys
 from pathlib import Path
 
@@ -489,6 +490,7 @@ def test_the_ui_command_passes_its_flags_through_to_serve(runs_dir, tmp_path,
     result = CliRunner().invoke(app, [
         "ui", "--port", "9999", "--runs-dir", str(runs_dir),
         "--target", str(pack), "--allow-discover", "--no-open",
+        "--judge-model", "fake-provider/not-a-real-judge",
     ])
 
     assert result.exit_code == 0, result.output
@@ -497,6 +499,33 @@ def test_the_ui_command_passes_its_flags_through_to_serve(runs_dir, tmp_path,
     assert [Path(p) for p in seen["packs"]] == [pack]
     assert seen["allow_discover"] is True
     assert seen["open_browser"] is False
+    assert seen["judge_model"] == "fake-provider/not-a-real-judge"
+
+
+def test_the_ui_command_leaves_the_judge_unset_unless_it_is_asked_for(
+        runs_dir, tmp_path, monkeypatch):
+    """T-A1's free path, at the flag.
+
+    Unset must reach `serve` as `None`, because `None` is what makes the
+    launcher omit `--judge-model` from the child's argv and leaves it on the
+    CLI's own `mockllm/model` — the judge that costs nothing and the only
+    reason this cockpit can be exercised end to end without a bill. A default
+    of any real provider here would bill on every debugging launch.
+    """
+    from tests.cli_runner import CliRunner
+
+    from evalyn.cli import app
+    from evalyn.ui import server as server_module
+
+    seen: dict = {}
+    monkeypatch.setattr(server_module, "serve", lambda **kw: seen.update(kw))
+
+    result = CliRunner().invoke(app, [
+        "ui", "--runs-dir", str(runs_dir), "--no-open",
+    ])
+
+    assert result.exit_code == 0, result.output
+    assert seen["judge_model"] is None
 
 
 def test_the_ui_command_reports_an_unloadable_pack_as_a_setup_error(
@@ -526,7 +555,8 @@ def test_the_ui_help_lists_every_flag_the_plan_promised():
     from evalyn.cli import app
 
     out = CliRunner().invoke(app, ["ui", "--help"]).output
-    for flag in ("--port", "--runs-dir", "--target", "--allow-discover", "--no-open"):
+    for flag in ("--port", "--runs-dir", "--target", "--allow-discover",
+                 "--no-open", "--judge-model"):
         assert flag in out, out
 
 
@@ -548,3 +578,840 @@ def test_importing_the_server_is_the_only_thing_that_imports_the_run_index():
     done = subprocess.run([sys.executable, "-c", probe], check=True,
                           capture_output=True, text=True)
     assert json.loads(done.stdout) is False, done.stdout
+
+
+# --------------------------------------------------------------------------
+# 9. `GET /api/trends` — the Trends page's only read
+#
+# The page is a chart, and a chart's failure mode is not an error page: it is a
+# line that looks like a measurement and is not one. Almost every assertion
+# below is therefore about a value the route must NOT invent.
+# --------------------------------------------------------------------------
+
+#: The pack these fixtures record. Deliberately not `example`: the shared
+#: `runs_dir` fixture already carries `example` history, and a test that meant
+#: to measure its own artifacts would silently be measuring those too.
+TREND_PACK = "trend-fixture"
+
+
+def _probe(probe_id: str, **metrics) -> dict:
+    """One artifact `ProbeResult` dict, every metric a real number by default.
+
+    Gaps are opt-in (`pass_k=None`) so a test that wants one has to say so —
+    the inverse would make "no reading" the accidental default and every
+    absence test vacuous.
+    """
+    entry = {
+        "id": probe_id, "category": "grounding", "kind": "behaviour",
+        "safety_critical": False, "samples": 1, "trials": 1,
+        "expected_trials": 1, "pass_at_k": 1.0, "pass_k": 1.0,
+        "mean_score": 1.0, "unsure_trials": 0, "checks": [], "trial_records": [],
+    }
+    entry.update(metrics)
+    return entry
+
+
+def _gate_artifact(runs_dir: Path, run_id: str, *, created_at: str,
+                   probes=(), pack: str = TREND_PACK, judge_usd: float = 0.0,
+                   raw_text: str | None = None, **extra) -> str:
+    """Write one gate artifact and return its run id."""
+    payload = {
+        "pack_name": pack,
+        "pack_hash": "sha256:trendfixture",
+        "judge_model": "mockllm/model",
+        "created_at": created_at,
+        "log_path": "logs/trend.eval",
+        "probes": list(probes),
+        "judge_usd": judge_usd,
+        "total_unsure_trials": 0,
+    }
+    payload.update(extra)
+    text = raw_text if raw_text is not None else json.dumps(payload)
+    (runs_dir / f"{run_id}.json").write_text(text, encoding="utf-8")
+    return run_id
+
+
+def _series_by_probe(body: list) -> dict:
+    return {one["probe_id"]: one for one in body}
+
+
+@pytest.fixture
+def trends_dir(tmp_path: Path) -> Path:
+    """An empty `runs/` of this test's own."""
+    made = tmp_path / "trend-runs"
+    made.mkdir()
+    return made
+
+
+async def test_trends_answers_a_bare_json_array_and_never_an_envelope(
+        trends_dir, asgi_client):
+    """Guarantee 4. Every *other* list route here is `{items, next_cursor}`,
+    so the enveloped shape is the one this route will be given by accident.
+    `Trends.tsx` types the read as `apiGet<TrendSeries[]>` and has no unwrap."""
+    _gate_artifact(trends_dir, "20260101T000001000000-aaaaaaa1-trend",
+                   created_at="2026-01-01T00:00:01+00:00",
+                   probes=[_probe("p-one")])
+    async with asgi_client(_app(trends_dir)) as client:
+        response = await client.get(f"/api/trends?pack={TREND_PACK}")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert isinstance(body, list), f"expected a bare array, got {type(body).__name__}"
+    assert [one["probe_id"] for one in body] == ["p-one"]
+
+
+@pytest.mark.parametrize("metric", ["pass_k", "pass_at_k", "mean_score"])
+async def test_trends_never_plots_a_metric_the_artifact_never_recorded(
+        trends_dir, asgi_client, metric):
+    """**Guarantee 1's discriminating guard, and the whole reason the page
+    exists.**
+
+    A `0.0` for a probe nobody measured does not merely mislead: the page ranks
+    channels by the metric's worst reading, so the fabricated zero becomes the
+    channel the page OPENS on — the first thing an audience sees would be a
+    catastrophe that never happened.
+
+    The fixture is the one shape that can actually produce that lie. All three
+    metrics are `ProbeResult` dataclass fields defaulting to `0.0`, so an
+    artifact that is otherwise CURRENT-schema-valid and simply omits the key
+    loads cleanly, is not degraded, and reaches this route carrying a
+    manufactured zero. `p-measured` rides along in the same run as the control:
+    a fix that answered "no reading" for everything would pass a test that only
+    looked at the gap.
+    """
+    unmeasured = _probe("p-unmeasured")
+    for key in ("pass_k", "pass_at_k", "mean_score"):
+        del unmeasured[key]
+    run_id = _gate_artifact(trends_dir, "20260101T000001000000-aaaaaaa1-trend",
+                            created_at="2026-01-01T00:00:01+00:00",
+                            probes=[_probe("p-measured", **{metric: 0.5}),
+                                    unmeasured])
+
+    async with asgi_client(_app(trends_dir)) as client:
+        response = await client.get(
+            f"/api/trends?pack={TREND_PACK}&metric={metric}")
+
+    body = response.json()
+    series = _series_by_probe(body)
+    assert set(series) == {"p-measured", "p-unmeasured"}
+    assert series["p-unmeasured"]["points"] == [], (
+        "an unrecorded metric was plotted as a number")
+    assert [one["run_id"] for one in series["p-measured"]["points"]] == [run_id]
+    assert [one["value"] for one in series["p-measured"]["points"]] == [0.5]
+
+
+async def test_trends_skips_a_degraded_run_rather_than_emitting_it_as_a_zero(
+        trends_dir, asgi_client):
+    """Guarantee 1's OUTCOME PIN for the literal *degraded* case.
+
+    **Stated honestly: this test does not discriminate, and cannot.** A
+    degraded run is one whose TYPED load failed, and `index.get()` answers such
+    a run with `probes: []` — so `build_trends`, which iterates `run.probes`,
+    reads nothing from it whatever this route's filters say. Measured by
+    mutation, stripping the status filter, the `degraded` filter, and the mode
+    filter — separately and all three at once — leaves this green. The outcome
+    is enforced by the salvage layer's shape, which is a stronger guarantee
+    than a test: there is no artifact this build can call degraded and still
+    hand probes to the chart.
+
+    Guarantee 1's real, mutation-reddening guards are elsewhere, and a reader
+    who wants to know what protects it should read those instead:
+    `test_trends_never_plots_a_metric_the_artifact_never_recorded` (the
+    fabricated-zero shape that DOES reach the route),
+    `test_trends_reads_nothing_from_a_cancelled_run`, and
+    `test_trends_keeps_a_probe_with_no_reading_as_an_empty_series` /
+    `test_trends_drops_a_non_finite_reading_rather_than_serving_nan`.
+
+    It stays as a regression pin on the outcome only. Nothing in this file
+    makes it discriminate, and the guards that do are named above.
+    """
+    readable = _gate_artifact(
+        trends_dir, "20260101T000001000000-aaaaaaa1-trend",
+        created_at="2026-01-01T00:00:01+00:00",
+        probes=[_probe("p-one", pass_k=1.0)])
+    # Unreadable at the *typed* layer, readable at the salvage layer — so it
+    # still lists as a row of this pack, which is what makes it a candidate.
+    _gate_artifact(trends_dir, "20260101T000002000000-aaaaaaa2-trend",
+                   created_at="2026-01-01T00:00:02+00:00",
+                   raw_text=json.dumps({"pack_name": TREND_PACK,
+                                        "created_at": "2026-01-01T00:00:02+00:00",
+                                        "probes": "not a list"}))
+
+    async with asgi_client(_app(trends_dir)) as client:
+        body = (await client.get(f"/api/trends?pack={TREND_PACK}")).json()
+
+    points = _series_by_probe(body)["p-one"]["points"]
+    assert [one["run_id"] for one in points] == [readable]
+    assert [one["value"] for one in points] == [1.0]
+
+
+async def test_trends_answers_200_and_an_empty_array_for_a_pack_with_no_history(
+        trends_dir, asgi_client):
+    """Guarantee 3. A 404 renders the page's error branch; an empty chart is a
+    legitimate state and must render as one."""
+    async with asgi_client(_app(trends_dir)) as client:
+        response = await client.get("/api/trends?pack=never-been-run")
+
+    assert response.status_code == 200
+    assert response.json() == []
+
+
+async def test_trends_orders_points_by_created_at_and_not_by_the_run_id(
+        trends_dir, asgi_client):
+    """Ascending `created_at`, pinned against BOTH orders a lazier implementation
+    would fall into.
+
+    The three ids sort — in either direction — into an order that is not the
+    chronological one, because each artifact's own `created_at` disagrees with
+    the stamp in its filename. Reading the directory listing, or sorting on the
+    id, therefore cannot pass this.
+    """
+    _gate_artifact(trends_dir, "20260101T000003000000-aaaaaaa3-trend",
+                   created_at="2026-01-01T00:00:01+00:00",
+                   probes=[_probe("p-one", pass_k=0.1)])
+    _gate_artifact(trends_dir, "20260101T000001000000-aaaaaaa1-trend",
+                   created_at="2026-01-01T00:00:02+00:00",
+                   probes=[_probe("p-one", pass_k=0.2)])
+    _gate_artifact(trends_dir, "20260101T000002000000-aaaaaaa2-trend",
+                   created_at="2026-01-01T00:00:03+00:00",
+                   probes=[_probe("p-one", pass_k=0.3)])
+
+    async with asgi_client(_app(trends_dir)) as client:
+        body = (await client.get(f"/api/trends?pack={TREND_PACK}")).json()
+
+    points = _series_by_probe(body)["p-one"]["points"]
+    assert [one["created_at"] for one in points] == sorted(
+        one["created_at"] for one in points)
+    assert [one["value"] for one in points] == [0.1, 0.2, 0.3]
+
+
+async def test_trends_defaults_the_metric_to_pass_k(trends_dir, asgi_client):
+    _gate_artifact(trends_dir, "20260101T000001000000-aaaaaaa1-trend",
+                   created_at="2026-01-01T00:00:01+00:00",
+                   probes=[_probe("p-one", pass_k=0.25, pass_at_k=0.5,
+                                  mean_score=0.75)])
+    async with asgi_client(_app(trends_dir)) as client:
+        body = (await client.get(f"/api/trends?pack={TREND_PACK}")).json()
+
+    assert [one["metric"] for one in body] == ["pass_k"]
+    assert [one["value"] for one in body[0]["points"]] == [0.25]
+
+
+@pytest.mark.parametrize("metric,expected", [
+    ("pass_k", 0.25), ("pass_at_k", 0.5), ("mean_score", 0.75),
+])
+async def test_trends_reports_the_metric_it_was_asked_for(
+        trends_dir, asgi_client, metric, expected):
+    """Guarantee 9. Nothing client-side converts one metric into another: the
+    page labels the axis with the metric it REQUESTED, so a server that answers
+    with a different one puts a silent lie on screen."""
+    _gate_artifact(trends_dir, "20260101T000001000000-aaaaaaa1-trend",
+                   created_at="2026-01-01T00:00:01+00:00",
+                   probes=[_probe("p-one", pass_k=0.25, pass_at_k=0.5,
+                                  mean_score=0.75)])
+    async with asgi_client(_app(trends_dir)) as client:
+        body = (await client.get(
+            f"/api/trends?pack={TREND_PACK}&metric={metric}")).json()
+
+    assert [one["metric"] for one in body] == [metric]
+    assert [one["value"] for one in body[0]["points"]] == [expected]
+
+
+async def test_trends_refuses_a_missing_pack_as_pack_error_at_400(
+        trends_dir, asgi_client):
+    """`?pack=` is not optional, and the refusal is the frozen `pack_error`
+    code — not the 400's default `launch_refused`, which would tell a client
+    this read had tried to start something."""
+    async with asgi_client(_app(trends_dir)) as client:
+        response = await client.get("/api/trends")
+
+    assert response.status_code == 400
+    body = response.json()
+    assert set(body) == {"error"}
+    assert body["error"]["code"] == "pack_error"
+
+
+async def test_trends_never_turns_the_pack_parameter_into_a_filesystem_path(
+        trends_dir, asgi_client, monkeypatch):
+    """`?pack=` filters loaded data by equality. It is never joined, never
+    interpolated, never opened.
+
+    Recording every `Path.read_text` the request makes is the structural half:
+    a route that had built a path out of the parameter would show up here even
+    if it then failed to open it and answered `200 []` anyway.
+    """
+    _gate_artifact(trends_dir, "20260101T000001000000-aaaaaaa1-trend",
+                   created_at="2026-01-01T00:00:01+00:00",
+                   probes=[_probe("p-one")])
+
+    read: list[str] = []
+    original = Path.read_text
+
+    def recording_read_text(self, *args, **kwargs):
+        read.append(str(self))
+        return original(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "read_text", recording_read_text)
+
+    hostile = "../../etc/passwd"
+    async with asgi_client(_app(trends_dir)) as client:
+        response = await client.get("/api/trends", params={"pack": hostile})
+
+    assert response.status_code == 200
+    assert response.json() == []
+    assert "passwd" not in response.text
+    assert [one for one in read if "passwd" in one or ".." in one] == [], read
+
+
+async def test_trends_never_turns_an_absolute_pack_parameter_into_a_path(
+        trends_dir, asgi_client):
+    """The other traversal shape: an absolute path swallows a `/`-join whole.
+
+    The answer is the same `200 []` an unknown pack name gets — the server does
+    not answer whether a path exists, and does not say a word about a file.
+    """
+    async with asgi_client(_app(trends_dir)) as client:
+        response = await client.get("/api/trends", params={"pack": "/etc/passwd"})
+
+    assert response.status_code == 200
+    assert response.json() == []
+    for leak in ("No such file", "Errno", "passwd", "directory"):
+        assert leak not in response.text, response.text
+
+
+async def test_trends_keeps_a_probe_with_no_reading_as_an_empty_series(
+        trends_dir, asgi_client):
+    """Guarantee 8. The page renders it as a live "no readings" channel, and
+    dropping it silently shrinks the probe count in the readout."""
+    _gate_artifact(trends_dir, "20260101T000001000000-aaaaaaa1-trend",
+                   created_at="2026-01-01T00:00:01+00:00",
+                   probes=[_probe("p-read", pass_k=1.0),
+                           _probe("p-unread", pass_k=None)])
+
+    async with asgi_client(_app(trends_dir)) as client:
+        body = (await client.get(f"/api/trends?pack={TREND_PACK}")).json()
+
+    series = _series_by_probe(body)
+    assert set(series) == {"p-read", "p-unread"}
+    assert series["p-unread"]["points"] == []
+
+
+async def test_trends_stamps_a_point_exactly_as_the_runs_index_stamps_the_row(
+        trends_dir, asgi_client):
+    """Guarantee 6. A stamp that merely *parses* is not enough: the operator
+    reads the chart beside the runs table, and two spellings of one moment make
+    the two views stop agreeing about which run a point is."""
+    run_id = _gate_artifact(
+        trends_dir, "20260101T000009000000-aaaaaaa1-trend",
+        # Deliberately NOT the moment the id encodes, and carrying microseconds.
+        created_at="2026-01-01T00:00:01.123456+00:00",
+        probes=[_probe("p-one")])
+
+    async with asgi_client(_app(trends_dir)) as client:
+        listed = (await client.get("/api/runs")).json()["items"]
+        body = (await client.get(f"/api/trends?pack={TREND_PACK}")).json()
+
+    row = next(one for one in listed if one["run_id"] == run_id)
+    point = _series_by_probe(body)["p-one"]["points"][0]
+    assert point["created_at"] == row["created_at"]
+
+
+async def test_trends_drops_a_non_finite_reading_rather_than_serving_nan(
+        trends_dir, asgi_client):
+    """Guarantee 5, and the client has NO second line of defence.
+
+    `json.loads` accepts the `NaN` literal, so an artifact carrying one loads,
+    types, and reaches the wire — where `NaN` is not JSON at all, and where the
+    page feeds `value` straight to the chart's scale without validating it.
+    """
+    _gate_artifact(trends_dir, "20260101T000001000000-aaaaaaa1-trend",
+                   created_at="2026-01-01T00:00:01+00:00",
+                   raw_text=json.dumps({
+                       "pack_name": TREND_PACK,
+                       "pack_hash": "sha256:trendfixture",
+                       "judge_model": "mockllm/model",
+                       "created_at": "2026-01-01T00:00:01+00:00",
+                       "log_path": "logs/trend.eval", "judge_usd": 0.0,
+                       "total_unsure_trials": 0,
+                       "probes": [_probe("p-one")],
+                   }).replace('"pass_k": 1.0', '"pass_k": NaN'))
+
+    async with asgi_client(_app(trends_dir)) as client:
+        response = await client.get(f"/api/trends?pack={TREND_PACK}")
+
+    assert "NaN" not in response.text, response.text
+    assert _series_by_probe(response.json())["p-one"]["points"] == []
+
+
+async def test_trends_reads_nothing_from_a_cancelled_run(trends_dir, asgi_client):
+    """A cancelled run's un-run probes come back as zeros the gate reads as
+    MISSING. Plotting those would draw the operator's own stop button as a
+    collapse in the product."""
+    kept = _gate_artifact(trends_dir, "20260101T000001000000-aaaaaaa1-trend",
+                          created_at="2026-01-01T00:00:01+00:00",
+                          probes=[_probe("p-one", pass_k=1.0)])
+    _gate_artifact(trends_dir, "20260101T000002000000-aaaaaaa2-trend",
+                   created_at="2026-01-01T00:00:02+00:00", cancelled=True,
+                   probes=[_probe("p-one", pass_k=0.0)])
+
+    async with asgi_client(_app(trends_dir)) as client:
+        body = (await client.get(f"/api/trends?pack={TREND_PACK}")).json()
+
+    assert [one["run_id"] for one in _series_by_probe(body)["p-one"]["points"]] == [kept]
+
+
+async def test_trends_reads_nothing_from_a_non_gate_artifact(
+        trends_dir, asgi_client):
+    """All four `TrendMetric` members are gate metrics.
+
+    The fixture is the hostile one — a `-compare` artifact whose BODY is
+    gate-shaped and carries probes with real numbers — so that the test is not
+    passing merely because a compare scoreboard has no `probes` attribute.
+
+    **What this pins, stated honestly.** Three independent controls keep this
+    file out: the route asks the index for gate runs only, the mode-typed load
+    refuses a gate body under a compare id (so the row is `degraded`), and the
+    status filter drops a degraded row. Measured by mutation: removing the mode
+    filter **alone changes nothing observable**, because the other two still
+    hold — so this is an outcome pin, not a proof of the filter, and the filter
+    is an optimisation rather than the control. It fails only when an
+    implementation goes around the typed load entirely, e.g. by reading
+    `probes[]` out of the raw artifact dict.
+    """
+    kept = _gate_artifact(trends_dir, "20260101T000001000000-aaaaaaa1-trend",
+                          created_at="2026-01-01T00:00:01+00:00",
+                          probes=[_probe("p-one", pass_k=1.0)])
+    _gate_artifact(trends_dir, "20260101T000002000000-aaaaaaa2-trend-compare",
+                   created_at="2026-01-01T00:00:02+00:00",
+                   probes=[_probe("p-one", pass_k=0.0)])
+
+    async with asgi_client(_app(trends_dir)) as client:
+        body = (await client.get(f"/api/trends?pack={TREND_PACK}")).json()
+
+    assert [one["run_id"] for one in _series_by_probe(body)["p-one"]["points"]] == [kept]
+
+
+async def test_trends_reports_judge_spend_as_one_run_level_series(
+        trends_dir, asgi_client):
+    """`judge_usd` is metered per RUN, not per probe, and sub-cent values are
+    real.
+
+    Attributing a run's whole spend to each of its probes would be four
+    identical lines each claiming a cost nobody measured, so the spend series is
+    the run's and says so in its `probe_id`. The value is carried at full
+    precision: the client formats to four decimals precisely so a sub-cent run
+    does not read as free.
+    """
+    _gate_artifact(trends_dir, "20260101T000001000000-aaaaaaa1-trend",
+                   created_at="2026-01-01T00:00:01+00:00", judge_usd=0.013875,
+                   probes=[_probe("p-one"), _probe("p-two")])
+
+    async with asgi_client(_app(trends_dir)) as client:
+        body = (await client.get(
+            f"/api/trends?pack={TREND_PACK}&metric=judge_usd")).json()
+
+    assert len(body) == 1, [one["probe_id"] for one in body]
+    assert [one["value"] for one in body[0]["points"]] == [0.013875]
+
+
+async def test_trends_omits_a_run_that_recorded_no_judge_spend_at_all(
+        trends_dir, asgi_client):
+    """`judge_usd: None` means "not metered", which is not "free"."""
+    metered = _gate_artifact(
+        trends_dir, "20260101T000001000000-aaaaaaa1-trend",
+        created_at="2026-01-01T00:00:01+00:00", judge_usd=0.0042,
+        probes=[_probe("p-one")])
+    _gate_artifact(trends_dir, "20260101T000002000000-aaaaaaa2-trend",
+                   created_at="2026-01-01T00:00:02+00:00", judge_usd=None,
+                   probes=[_probe("p-one")])
+
+    async with asgi_client(_app(trends_dir)) as client:
+        body = (await client.get(
+            f"/api/trends?pack={TREND_PACK}&metric=judge_usd")).json()
+
+    assert [one["run_id"] for one in body[0]["points"]] == [metered]
+
+
+async def test_trends_caps_nothing_so_the_pages_run_count_is_the_whole_history(
+        trends_dir, asgi_client):
+    """Guarantee 11. Nothing caps this client-side, and the readout says
+    "N runs" as though N were the whole history — so a server-side bound would
+    make the page lie without either side noticing."""
+    ids = [
+        _gate_artifact(trends_dir,
+                       f"2026010{n}T000001000000-aaaaaaa{n}-trend",
+                       created_at=f"2026-01-0{n}T00:00:01+00:00",
+                       probes=[_probe("p-one")])
+        for n in range(1, 10)
+    ]
+
+    async with asgi_client(_app(trends_dir)) as client:
+        body = (await client.get(f"/api/trends?pack={TREND_PACK}")).json()
+
+    assert [one["run_id"] for one in body[0]["points"]] == ids
+
+
+async def test_trends_goes_through_the_redaction_chokepoint(
+        trends_dir, tmp_path, asgi_client):
+    """Not a new serialisation path. The probe id is the one operator-authored
+    string this response carries, and a pack's `not_contains` literal can end up
+    in one."""
+    pack = _pack_with_a_secret(tmp_path / "pack")
+    _gate_artifact(trends_dir, "20260101T000001000000-aaaaaaa1-trend",
+                   created_at="2026-01-01T00:00:01+00:00",
+                   probes=[_probe(f"leaks-{PACK_SECRET}")])
+
+    async with asgi_client(_app(trends_dir, [pack])) as client:
+        response = await client.get(f"/api/trends?pack={TREND_PACK}")
+
+    assert response.status_code == 200
+    assert PACK_SECRET not in response.text, response.text
+    # An absence alone would pass on an empty body; the marker proves the
+    # scrubber actually rewrote this response rather than never seeing it.
+    assert redaction_marker("check_value") in response.text, response.text
+
+
+# --------------------------------------------------------------------------
+# 10. `GET /api/trust` — the Judge Trust page's only read
+#
+# This route reports a *record*, not a corpus: `<pack>/calibration.json`, the
+# file `evalyn calibrate` writes and the file `evalyn gate` refuses rubric
+# checks without. Two rules run through every test below.
+#
+# **The number is `agreement` — ±1-point agreement as shipped — and never
+# `kappa`.** Nothing in this repository computes Cohen's κ, and a page that
+# used the word would be claiming a certification nobody performed.
+#
+# **A pack with no record is a legitimate 200 with a null agreement**, not a
+# 404. "Never calibrated" is the state most packs are in; rendering it as a
+# missing resource turns an honest blank into an alarm.
+# --------------------------------------------------------------------------
+
+#: The shipped packs, read-only. `twincore` is the ONE pack in this repository
+#: carrying a `calibration.json` (measured, 2026-08-12); `example` carries none
+#: and is therefore the never-calibrated case with no fixture to build.
+_PACKS = Path(__file__).resolve().parents[2] / "packs"
+
+
+@pytest.fixture
+def calibrated_pack(tmp_path: Path) -> Path:
+    """A **copy** of `packs/twincore`, rubrics and calibration record included.
+
+    Copied because half these tests edit a rubric or corrupt the record, and
+    `packs/twincore/calibration.json` is the committed output of a real,
+    paid calibration run (run #5, 93% agreement). Nothing here may rewrite it.
+    """
+    dest = tmp_path / "twincore"
+    shutil.copytree(_PACKS / "twincore", dest)
+    return dest
+
+
+async def test_trust_reports_the_calibration_record_the_pack_actually_carries(
+        runs_dir, calibrated_pack, asgi_client):
+    """The real numbers off the real record — none of them recomputed.
+
+    Every figure asserted here was read off `packs/twincore/calibration.json`
+    before this test was written. The route's job is to *map* that file onto
+    the wire shape, and the one thing it must never do is derive a figure the
+    calibration run did not measure.
+    """
+    async with asgi_client(_app(runs_dir, [calibrated_pack])) as client:
+        response = await client.get("/api/trust", params={"pack": "twincore"})
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["pack_name"] == "twincore"
+    assert body["judge_model"] == "anthropic/claude-sonnet-5"
+    assert body["agreement"] == pytest.approx(0.9318181818181818)
+    # The record's own `per_rubric_agreement` — the pooled value `calibrate`
+    # writes — and not a mean this route computed for itself.
+    assert set(body["per_rubric_agreement"]) == {
+        "completeness", "groundedness", "honesty", "persona"}
+    assert body["per_rubric_agreement"]["persona"] == pytest.approx(
+        0.9090909090909091)
+    assert len(body["per_criterion_agreement"]) == 8
+    assert body["per_criterion_agreement"]["persona:Tone under refusal"] == (
+        pytest.approx(0.8181818181818182))
+    # `[9, 11]` on disk; a `{hits, total}` object on the wire.
+    assert body["per_criterion_counts"]["persona:Tone under refusal"] == {
+        "hits": 9, "total": 11}
+    assert body["calibrated_at"] == "2026-07-31T15:25:55.599863+00:00"
+    # `AGREEMENT_THRESHOLD` — the bar the gate itself fails closed against.
+    assert body["threshold"] == 0.85
+    # This record is current for these rubrics and this judge model, so the
+    # page may say so. `stale_reason` is the reason it is STALE; there is none.
+    assert body["stale"] is False
+    assert body["stale_reason"] is None
+    # All eight of the pack's rubric criteria were scored against human labels.
+    assert body["unmatched"] == []
+
+
+async def test_the_per_rubric_figure_is_the_records_pooled_value_not_a_mean_of_fractions(
+        runs_dir, calibrated_pack, asgi_client):
+    """Round-2 N8, and the reason this route prefers the recorded field.
+
+    When a rubric's criteria scored **different** numbers of anchor pairs, the
+    mean of their fractions is not that rubric's agreement — and the error can
+    fall *open*, across the 85% threshold, which is the direction that costs
+    something. `calibrate` records the pooled value for exactly that reason,
+    and this route reports the recorded value first and the legacy mean only
+    as a fallback: `is_stale`'s own order, so the page and the gate cannot
+    disagree about whether a rubric passed.
+
+    The committed twincore record cannot show this — all eight of its criteria
+    scored 11 pairs, so pooled and mean agree to the bit. This record is built
+    with divergent counts on purpose.
+    """
+    (calibrated_pack / "calibration.json").write_text(json.dumps({
+        "judge_model": "anthropic/claude-sonnet-5",
+        "rubric_hashes": {},
+        "agreement": 11 / 12,
+        "per_criterion": {"honesty:Gap acknowledgment": 1.0,
+                          "honesty:Calibration": 0.5},
+        "per_criterion_counts": {"honesty:Gap acknowledgment": [10, 10],
+                                 "honesty:Calibration": [1, 2]},
+        "per_rubric_agreement": {"honesty": 11 / 12},
+        "created_at": "2026-08-12T00:00:00+00:00",
+    }), encoding="utf-8")
+
+    async with asgi_client(_app(runs_dir, [calibrated_pack])) as client:
+        response = await client.get("/api/trust", params={"pack": "twincore"})
+
+    body = response.json()
+    assert body["per_rubric_agreement"]["honesty"] == pytest.approx(11 / 12)
+    # 0.75 is the mean of 1.0 and 0.5 — what a route that recomputed this for
+    # itself would report, and seventeen points below the pooled truth.
+    assert body["per_rubric_agreement"]["honesty"] != pytest.approx(0.75)
+
+
+async def test_a_pack_with_no_calibration_record_is_a_200_with_a_null_agreement(
+        runs_dir, asgi_client):
+    """**Not a 404.** `packs/example` has never been calibrated, which is the
+    state nearly every pack starts in — the page renders an empty state and an
+    invitation to run `evalyn calibrate`, and a 404 would render an alarm."""
+    async with asgi_client(_app(runs_dir, [_PACKS / "example"])) as client:
+        response = await client.get("/api/trust", params={"pack": "example"})
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["pack_name"] == "example"
+    assert body["agreement"] is None
+    assert body["judge_model"] is None
+    assert body["stale"] is True
+    # The engine's own words for this state (`calibrate.is_stale`), not a
+    # second sentence invented by the route for the case the engine names.
+    assert body["stale_reason"] == "no calibration record"
+    # No record measured anything against a threshold, so there is no bar to
+    # draw a pass line at either.
+    assert body["threshold"] is None
+    assert body["per_rubric_agreement"] == {}
+    assert body["per_criterion_agreement"] == {}
+    assert body["per_criterion_counts"] == {}
+    assert body["unmatched"] == []
+
+
+async def test_trust_never_turns_the_pack_parameter_into_a_filesystem_path(
+        runs_dir, calibrated_pack, asgi_client, monkeypatch):
+    """`?pack=` is a NAME resolved against the start-time allowlist by
+    equality. It is never joined onto a path, never interpolated into one and
+    never opened — which matters more here than on `/api/trends`, because this
+    route genuinely does read a file out of a pack directory.
+
+    Recording every `Path.read_text` the request makes is the structural half:
+    a route that had built `<pack>/calibration.json` out of the parameter would
+    show up here even if it then failed to open it and answered 200 anyway.
+    """
+    read: list[str] = []
+    original = Path.read_text
+
+    def recording_read_text(self, *args, **kwargs):
+        read.append(str(self))
+        return original(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "read_text", recording_read_text)
+
+    hostile = "../../etc/passwd"
+    async with asgi_client(_app(runs_dir, [calibrated_pack])) as client:
+        response = await client.get("/api/trust", params={"pack": hostile})
+
+    assert response.status_code == 200
+    assert [one for one in read if "passwd" in one or ".." in one] == [], read
+    # `pack_name` echoes the *subject* of the report, which is the one place
+    # the parameter is allowed to reappear — the SPA needs it to tell a stale
+    # answer from a fresh one. It is a JSON string in a JSON body and it never
+    # became a path, which is what the recording above proves.
+    assert response.json()["pack_name"] == hostile
+
+
+async def test_a_pack_outside_the_allowlist_says_so_rather_than_claiming_it_is_uncalibrated(
+        runs_dir, calibrated_pack, asgi_client):
+    """A name this server was never pointed at has no record this server can
+    read — which is **not** the same fact as "this pack was never calibrated",
+    and the reason must not say it was."""
+    async with asgi_client(_app(runs_dir, [calibrated_pack])) as client:
+        response = await client.get("/api/trust", params={"pack": "no-such-pack"})
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["pack_name"] == "no-such-pack"
+    assert body["agreement"] is None
+    assert body["stale"] is True
+    assert body["stale_reason"] != "no calibration record"
+    assert "allowlist" in body["stale_reason"]
+
+
+async def test_trust_refuses_a_missing_pack_as_pack_error_at_400(
+        runs_dir, asgi_client):
+    """`?pack=` is not optional, and the refusal is the frozen `pack_error`
+    code — not the 400's default `launch_refused`, which would tell a client
+    this read had tried to start something."""
+    async with asgi_client(_app(runs_dir)) as client:
+        response = await client.get("/api/trust")
+
+    assert response.status_code == 400
+    body = response.json()
+    assert set(body) == {"error"}
+    assert body["error"]["code"] == "pack_error"
+
+
+async def test_a_calibration_record_that_will_not_parse_degrades_rather_than_500ing(
+        runs_dir, calibrated_pack, asgi_client):
+    """A truncated or hand-edited record is a page that says so, never a 500.
+
+    And it degrades **closed**: `stale` stays true, because a record this
+    server cannot read is a record it cannot vouch for.
+    """
+    (calibrated_pack / "calibration.json").write_text("{not json at all",
+                                                      encoding="utf-8")
+
+    async with asgi_client(_app(runs_dir, [calibrated_pack])) as client:
+        response = await client.get("/api/trust", params={"pack": "twincore"})
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["agreement"] is None
+    assert body["stale"] is True
+    assert body["stale_reason"] is not None
+    assert body["stale_reason"] != "no calibration record"
+    assert body["per_criterion_counts"] == {}
+
+
+async def test_a_calibration_record_whose_fields_are_the_wrong_type_degrades_rather_than_500ing(
+        runs_dir, calibrated_pack, asgi_client):
+    """Valid JSON, nonsense contents. Every field is read defensively, because
+    the alternative is a pydantic validation error rendered as a 500 over a
+    file an operator can edit by hand."""
+    (calibrated_pack / "calibration.json").write_text(json.dumps({
+        "judge_model": 7,
+        "agreement": "high",
+        "per_criterion": ["not", "a", "mapping"],
+        "per_criterion_counts": {"honesty:Calibration": "nine of eleven"},
+        "created_at": {"when": "recently"},
+    }), encoding="utf-8")
+
+    async with asgi_client(_app(runs_dir, [calibrated_pack])) as client:
+        response = await client.get("/api/trust", params={"pack": "twincore"})
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["judge_model"] is None
+    assert body["agreement"] is None
+    assert body["calibrated_at"] is None
+    assert body["per_criterion_agreement"] == {}
+    assert body["per_criterion_counts"] == {}
+    assert body["stale"] is True
+
+
+async def test_a_non_finite_criterion_agreement_is_absent_rather_than_null(
+        runs_dir, calibrated_pack, asgi_client):
+    """`json.loads` accepts the bare `NaN` and `Infinity` literals and
+    pydantic's `float` admits both, so a hand-edited record can carry one.
+
+    **What is observable here, measured rather than assumed.** FastAPI
+    serialises this response through the model, and pydantic's JSON serialiser
+    already renders a non-finite float as `null` — so on the scalar
+    `agreement` field the `_finite` guard and no guard produce the *same* wire
+    bytes, and no assertion below can tell them apart. On the per-criterion
+    **map** it is the whole difference: dropped means the key is absent, which
+    reads as "not measured", where a key whose value is `null` reads as a
+    criterion that was scored and came back as nothing.
+    """
+    record = json.loads((calibrated_pack / "calibration.json").read_text())
+    record["agreement"] = float("nan")
+    record["per_criterion"]["honesty:Calibration"] = float("inf")
+    (calibrated_pack / "calibration.json").write_text(json.dumps(record),
+                                                      encoding="utf-8")
+
+    async with asgi_client(_app(runs_dir, [calibrated_pack])) as client:
+        response = await client.get("/api/trust", params={"pack": "twincore"})
+
+    assert response.status_code == 200
+    body = response.json()
+    # THE discriminating assertion: absent, not present-and-null.
+    assert "honesty:Calibration" not in body["per_criterion_agreement"]
+    assert body["agreement"] is None
+    # A tripwire, not a discriminator, and kept knowingly: it cannot fail
+    # while this route answers through `response_model=TrustReport`. It fails
+    # the day somebody hand-rolls a `JSONResponse` here — `json.dumps` writes
+    # the bare `NaN` literal back out, and no JSON parser is required to
+    # accept it.
+    assert "NaN" not in response.text
+    assert "Infinity" not in response.text
+
+
+async def test_a_rubric_edited_since_calibration_is_reported_stale_with_the_reason(
+        runs_dir, calibrated_pack, asgi_client):
+    """The staleness verdict is the **gate's own** (`calibrate.is_stale`), so
+    the page and `evalyn gate` cannot disagree about whether these rubric
+    scores may be trusted.
+
+    The measured numbers keep being reported: they are what the run actually
+    found, and blanking them would hide the evidence for the warning.
+    """
+    rubric = calibrated_pack / "rubrics" / "honesty.md"
+    rubric.write_text(rubric.read_text() + "\n- **6** — invented after the fact.\n",
+                      encoding="utf-8")
+
+    async with asgi_client(_app(runs_dir, [calibrated_pack])) as client:
+        response = await client.get("/api/trust", params={"pack": "twincore"})
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["stale"] is True
+    assert body["stale_reason"] is not None
+    assert "honesty" in body["stale_reason"]
+    assert body["agreement"] == pytest.approx(0.9318181818181818)
+
+
+async def test_a_criterion_the_calibration_never_scored_is_reported_as_unmatched(
+        runs_dir, calibrated_pack, asgi_client):
+    """`unmatched` is the pack's rubric criteria minus the ones the record
+    holds a matched pair for — a criterion added to a rubric after calibration
+    has an agreement figure of *nothing*, and the page must not let a healthy
+    overall number stand in for it."""
+    rubric = calibrated_pack / "rubrics" / "honesty.md"
+    rubric.write_text(rubric.read_text()
+                      + "\n## Brevity\n\n- **1** — rambles.\n- **5** — does not.\n",
+                      encoding="utf-8")
+
+    async with asgi_client(_app(runs_dir, [calibrated_pack])) as client:
+        response = await client.get("/api/trust", params={"pack": "twincore"})
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["unmatched"] == ["honesty:Brevity"]
+    # The eight criteria that WERE scored are not swept in with it.
+    assert "honesty:Calibration" in body["per_criterion_agreement"]
+
+
+async def test_trust_never_calls_the_number_a_kappa(
+        runs_dir, calibrated_pack, asgi_client):
+    """±1-point agreement is not Cohen's κ, and no string in this body may
+    imply it was. The frozen wire field is `agreement`; the SPA's own mock
+    suite asserts the same thing from the other side."""
+    async with asgi_client(_app(runs_dir, [calibrated_pack])) as client:
+        response = await client.get("/api/trust", params={"pack": "twincore"})
+
+    assert "agreement" in response.json()
+    assert "kappa" not in response.text.lower()
+    assert "κ" not in response.text

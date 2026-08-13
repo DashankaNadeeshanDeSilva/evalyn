@@ -1,0 +1,456 @@
+import { useState } from "react";
+import { useQuery } from "@tanstack/react-query";
+
+import { ApiFailure, apiGet } from "../api/client";
+import type {
+  CheckView,
+  GateVerdict,
+  RunDetail,
+  TrialView,
+} from "../api/types";
+import { AllTrialsPanel } from "../components/AllTrialsPanel";
+import { CheckEvidence } from "../components/CheckEvidence";
+import {
+  IconAlert,
+  IconBarred,
+  IconCheck,
+  IconCross,
+} from "../components/InstrumentIcon";
+import { RedactedChip } from "../components/RedactedChip";
+import {
+  ScenarioTable,
+  type TrialSelection,
+} from "../components/ScenarioTable";
+import {
+  TranscriptViewer,
+  type TranscriptAnnotation,
+} from "../components/TranscriptViewer";
+import { useRevealOnOpen } from "../hooks/useRevealOnOpen";
+
+/**
+ * The gate payload: the verdict, the probe rows behind it, and the conversation
+ * behind one of those rows.
+ *
+ * Task 8 owns the route and the identity header; this owns everything below it.
+ * The hierarchy is the surface brief's, top to bottom: **verdict → evidence →
+ * transcript**. The operator arrives knowing a gate went red and leaves knowing
+ * what the model said when it did.
+ *
+ * ## The verdict comes off `exit_code`, and only off `exit_code`
+ *
+ * `failures[]` is the *explanation*, not the verdict. A gate can exit non-zero
+ * with an empty `failures[]` — an incompleteness check, a capability regression
+ * measured against a baseline — and an implementation that counts the array
+ * reports that run as a pass. `evaluate_gate`'s exit code is the authority and
+ * it is the only thing this banner reads.
+ *
+ * ## No baseline is a fact, not a blank
+ *
+ * `baseline_run_id: null` means the gate had nothing to diff against, which
+ * makes its capability checks advisory rather than enforcing. There is no
+ * committed twincore baseline in this repository, so on the demo corpus this is
+ * the normal case and not an edge one. Saying nothing there would let a green
+ * banner imply a comparison that never happened.
+ *
+ * ## No SSE, no polling — and the live variant that follows from that
+ *
+ * A finished artifact does not change, so nothing here polls. The live view and
+ * the one inset window belong to `LiveRunPanel`, which the run detail page
+ * mounts above this payload.
+ *
+ * What this file owns is the **other** half of live: a run that is still on the
+ * air has no gate verdict to show. `evaluate_gate` reads the artifact, and the
+ * artifact is not written until the run ends — so `live` suppresses the verdict
+ * query entirely rather than asking a question whose only honest answers are a
+ * 404 or a verdict computed from a half-written file. The probe table below
+ * stays and is told the same thing, because a running gate's `probes[]` is
+ * empty for a reason the table cannot infer: "the artifact records no rows" and
+ * "there is no artifact yet" are different facts, and the browser read the
+ * first one under a run that was still going.
+ *
+ * ## And the third situation in that class: a run an operator stopped
+ *
+ * `evaluate_gate` does not know a run was cancelled. Handed a cancelled
+ * artifact it evaluates the probes it finds, and a run stopped part-way through
+ * its suite has un-run probes — which the gate reds as MISSING. So the endpoint
+ * answers `exit_code: 1` with real failure lines for a run whose only fault is
+ * that somebody pressed Cancel, and the page used to print that beside its own
+ * header saying the outcome was never reported.
+ *
+ * "The gate failed" and "you stopped it before it finished" are different and
+ * differently actionable claims, and the first is much the stronger. So a
+ * cancelled run is treated exactly like a live one: the verdict query is
+ * suppressed at the source rather than merely hidden, and the slot states what
+ * happened instead. `RunDetail.cancelled` is the artifact's own field, written
+ * by the engine at the moment it honoured the cancel — not the control file,
+ * which is a leftover *request* and has been measured relabelling a run that
+ * completed all twelve of its trials.
+ *
+ * The probe table stays, and is not told the run was cancelled: its rows are
+ * real trials that really ran. What the operator must not conclude is that they
+ * are the whole suite, and that is said once, here, above them.
+ */
+
+/**
+ * `TrialView.checks[]` -> `TranscriptViewer` annotations.
+ *
+ * Only checks that name a turn **and** quote something can be placed at all, so
+ * the rest are filtered out here rather than handed down as annotations that can
+ * never land. The ones that survive may still fail to place — the viewer matches
+ * verbatim and reports what it could not mark — which is the behaviour every
+ * artifact in `runs/` currently exercises, since their checks carry
+ * `turn: null` and a description of what was missing rather than a quotable
+ * span.
+ */
+export function annotationsFor(
+  checks: readonly CheckView[],
+): TranscriptAnnotation[] {
+  return checks.flatMap((check, index) =>
+    check.turn === null || check.evidence === ""
+      ? []
+      : [
+          {
+            // The check id repeats across trials and tiers, so the index is part
+            // of the key. React would otherwise collapse two real annotations.
+            id: `${check.check}#${index}`,
+            turn: check.turn,
+            evidence: check.evidence,
+            label: check.check,
+            // Rationed: only a check that actually went against the run reads as
+            // a failure. `null` (unscored) and `abstained` stay neutral.
+            tone: check.passed === false ? ("fail" as const) : ("neutral" as const),
+            ...(check.tier === "abstained"
+              ? { detail: "the judge abstained on this check" }
+              : {}),
+          },
+        ],
+  );
+}
+
+function GateBanner({ verdict }: { verdict: GateVerdict }) {
+  const failed = verdict.exit_code !== 0;
+  const Mark = failed ? IconCross : IconCheck;
+  return (
+    <section
+      data-testid="gate-banner"
+      data-verdict={failed ? "fail" : "pass"}
+      aria-label="Gate verdict"
+      className="engrave-b rule-major px-4 py-4 sm:px-6"
+    >
+      <p
+        className={`flex items-center gap-2.5 text-display uppercase tracking-display ${
+          failed ? "text-status-gate_failed" : "text-status-passed"
+        }`}
+      >
+        <Mark className="h-6 w-6 shrink-0" />
+        {/* Glyph AND word AND colour. This is the sentence the room reads. */}
+        <span>{failed ? "gate failed" : "gate passed"}</span>
+      </p>
+
+      <p className="mt-1.5 flex flex-wrap items-baseline gap-x-3 text-legend text-chassis-600">
+        <span className="uppercase tracking-legend">Exit code</span>
+        <span className="tabular-nums text-chassis-900">
+          {verdict.exit_code}
+        </span>
+        {verdict.redacted ? <RedactedChip what="this verdict" /> : null}
+      </p>
+
+      <p className="mt-2 text-legend text-chassis-600">
+        {verdict.baseline_run_id === null ? (
+          // Stated, because a gate with nothing to diff against enforces less
+          // than one that had a baseline, and the difference is invisible.
+          <>
+            <span className="uppercase tracking-legend text-chassis-900">
+              No baseline
+            </span>
+            {" — nothing was diffed against, so capability checks are advisory."}
+          </>
+        ) : (
+          <>
+            {"Diffed against baseline "}
+            <span className="break-all text-chassis-900">
+              {verdict.baseline_run_id}
+            </span>
+          </>
+        )}
+      </p>
+
+      {verdict.failures.length > 0 ? (
+        <div className="mt-3">
+          <p className="text-legend uppercase tracking-legend text-chassis-600">
+            Failures
+          </p>
+          <ul className="mt-1 space-y-1">
+            {verdict.failures.map((line) => (
+              <li
+                key={line}
+                className="break-words text-readout text-chassis-900"
+              >
+                {line}
+              </li>
+            ))}
+          </ul>
+        </div>
+      ) : null}
+
+      {verdict.quarantined.length > 0 ? (
+        <div className="mt-3">
+          <p className="text-legend uppercase tracking-legend text-chassis-600">
+            Quarantined
+          </p>
+          <ul className="mt-1 space-y-1">
+            {verdict.quarantined.map((line) => (
+              <li key={line} className="break-words text-readout text-chassis-700">
+                {line}
+              </li>
+            ))}
+          </ul>
+        </div>
+      ) : null}
+    </section>
+  );
+}
+
+/**
+ * The verdict slot on a run an operator stopped.
+ *
+ * It keeps the banner's box and the banner's display-size first line, because
+ * the slot's job is to be the sentence the room reads and a quieter treatment
+ * would let the eye skip to the probe rows and score them itself. What it does
+ * **not** keep is a status colour. Green and red are this surface's two verdict
+ * claims; spending either on a run that earned neither would be the same
+ * overclaim in a different medium. The mark is the one the status chip already
+ * uses for a cancelled run, so the two readings tie together by sight.
+ */
+function GateStopped() {
+  return (
+    <section
+      data-testid="gate-banner-cancelled"
+      /* Not "Gate verdict". The label is this region's accessible name, and
+         naming it after a verdict hands a screen reader the precise claim the
+         visible block was rewritten to stop making — the sighted fix and the
+         announced one have to say the same thing. */
+      aria-label="No gate verdict"
+      className="engrave-b rule-major px-4 py-4 sm:px-6"
+    >
+      <p className="flex items-center gap-2.5 text-display uppercase tracking-display text-chassis-900">
+        <IconBarred className="h-6 w-6 shrink-0" />
+        <span>no verdict</span>
+      </p>
+      <p className="mt-1.5 text-readout text-chassis-600">
+        An operator stopped this run. A gate verdict is only earned over a
+        complete artifact, and this one holds just the probes that finished
+        before the stop — so the rows below are partial evidence, and how this
+        build would have gated is unknown.
+      </p>
+    </section>
+  );
+}
+
+function TrialPanel({
+  runId,
+  selection,
+}: {
+  runId: string;
+  selection: TrialSelection;
+}) {
+  const trial = useQuery({
+    queryKey: ["trial", runId, selection.probeId, selection.epoch],
+    queryFn: () =>
+      apiGet<TrialView>(
+        `/runs/${encodeURIComponent(runId)}/trials/` +
+          `${encodeURIComponent(selection.probeId)}/${selection.epoch}`,
+      ),
+  });
+
+  /* The panel renders below the whole probe table, so opening it has to bring
+     it to the operator. Keyed on the selection, not on mounting: moving from
+     trial 1 to trial 4 changes a prop and remounts nothing. */
+  const panel = useRevealOnOpen(`${selection.probeId}/${selection.epoch}`);
+
+  return (
+    <section
+      ref={panel}
+      tabIndex={-1}
+      data-testid="trial-panel"
+      data-probe={selection.probeId}
+      data-epoch={String(selection.epoch)}
+      aria-label="Trial transcript"
+      className="engrave-t rule-major"
+    >
+      <div className="engrave-b px-4 py-3 sm:px-6">
+        <p className="text-legend uppercase tracking-legend text-chassis-600">
+          Transcript
+        </p>
+        <h2 className="mt-1 flex flex-wrap items-baseline gap-x-3 text-panel">
+          <span className="break-all text-chassis-900">
+            {selection.probeId}
+          </span>
+          <span className="text-legend tabular-nums text-chassis-600">
+            {`trial ${selection.epoch}`}
+          </span>
+          {trial.data?.redacted ? <RedactedChip what="this trial" /> : null}
+        </h2>
+        {trial.data ? (
+          <p className="mt-1 flex flex-wrap items-baseline gap-x-4 text-legend text-chassis-600">
+            <span>
+              {"session "}
+              {trial.data.session_seconds === null ? (
+                // Pre-#2b logs did not record it, and it is not end-to-end
+                // latency even when they did — the queue wait is excluded.
+                <span className="text-chassis-700">not recorded</span>
+              ) : (
+                <span className="tabular-nums text-chassis-700">
+                  {`${trial.data.session_seconds.toFixed(3)}s`}
+                </span>
+              )}
+            </span>
+            <span>
+              {"invariant failures "}
+              <span className="tabular-nums text-chassis-700">
+                {trial.data.invariant_failures}
+              </span>
+            </span>
+          </p>
+        ) : null}
+      </div>
+
+      {trial.isPending ? (
+        <p className="px-4 py-6 text-readout text-chassis-600 sm:px-6">
+          Reading the trial record…
+        </p>
+      ) : trial.isError ? (
+        <p className="flex items-start gap-2 px-4 py-6 text-readout text-chassis-900 sm:px-6">
+          <IconAlert className="mt-0.5 h-4 w-4 shrink-0" />
+          {trial.error instanceof ApiFailure
+            ? `${trial.error.code ?? trial.error.status}: ${trial.error.message}`
+            : "The cockpit could not reach its server."}
+        </p>
+      ) : (
+        <>
+          <TranscriptViewer
+            turns={trial.data.turns}
+            annotations={annotationsFor(trial.data.checks)}
+            emptyReason="This trial record captured no conversation. That is 'not captured', not 'the model said nothing'."
+          />
+          <div className="engrave-t rule-major px-4 pt-3 sm:px-6">
+            <p className="text-legend uppercase tracking-legend text-chassis-600">
+              Checks on this trial
+            </p>
+          </div>
+          {trial.data.checks.length === 0 ? (
+            <p className="px-4 py-6 text-readout text-chassis-600 sm:px-6">
+              This trial record carries no per-check results.
+            </p>
+          ) : (
+            <ul>
+              {trial.data.checks.map((check, index) => (
+                <CheckEvidence key={`${check.check}#${index}`} check={check} />
+              ))}
+            </ul>
+          )}
+        </>
+      )}
+    </section>
+  );
+}
+
+export function GateRunDetail({
+  run,
+  live = false,
+}: {
+  run: RunDetail;
+  /** A process is still attached: there is no artifact to evaluate a gate on. */
+  live?: boolean;
+}) {
+  /**
+   * Two views of the same evidence, and **one selection between them**.
+   *
+   * `selected` is one trial in full; `allProbeId` is every trial of one probe
+   * at a glance. They are mutually exclusive rather than stackable: a single
+   * transcript sitting under seven replies reads as an eighth trial, and the
+   * operator asked one question, not two.
+   */
+  const [selected, setSelected] = useState<TrialSelection | null>(null);
+  const [allProbeId, setAllProbeId] = useState<string | null>(null);
+  const allProbe =
+    allProbeId === null
+      ? null
+      : (run.probes.find((probe) => probe.id === allProbeId) ?? null);
+  const gate = useQuery({
+    queryKey: ["gate", run.run_id],
+    /* Suppressed at the source in both cases, not merely hidden. The server
+       answers this happily for a cancelled run — it evaluates whatever probes
+       the artifact holds — and a verdict nobody may show is a verdict nobody
+       should ask for: it warms a shared cache entry under this run's key that
+       any later reader would take for the run's real outcome. */
+    enabled: !live && !run.cancelled,
+    queryFn: () =>
+      apiGet<GateVerdict>(`/runs/${encodeURIComponent(run.run_id)}/gate`),
+  });
+
+  return (
+    <div className="mt-4">
+      {live ? (
+        <p
+          data-testid="gate-banner-pending"
+          className="engrave-t px-4 py-4 text-readout text-chassis-600 sm:px-6"
+        >
+          {/* Not a spinner: the verdict is genuinely absent, not slow. The
+              readout window above says what the run is doing meanwhile. */}
+          No verdict yet — this run is still on the air. The gate is evaluated
+          from the artifact, which is written when the run ends.
+        </p>
+      ) : run.cancelled ? (
+        /* Ahead of every query state, for the same reason the live branch is:
+           with the query disabled it never leaves pending, and a stopped run
+           would otherwise sit under "Evaluating the gate…" forever. */
+        <GateStopped />
+      ) : gate.isPending ? (
+        <p className="engrave-t px-4 py-4 text-readout text-chassis-600 sm:px-6">
+          Evaluating the gate…
+        </p>
+      ) : gate.isError ? (
+        <p
+          data-testid="gate-banner-error"
+          className="engrave-t flex items-start gap-2 px-4 py-4 text-readout text-chassis-900 sm:px-6"
+        >
+          <IconAlert className="mt-0.5 h-4 w-4 shrink-0" />
+          {/* Degrade visibly: the probe rows below are still readable, so the
+              page states what it could not compute instead of emptying. */}
+          {"The gate verdict could not be evaluated — "}
+          {gate.error instanceof ApiFailure
+            ? `${gate.error.code ?? gate.error.status}: ${gate.error.message}`
+            : "the cockpit could not reach its server."}
+        </p>
+      ) : (
+        <GateBanner verdict={gate.data} />
+      )}
+
+      <ScenarioTable
+        probes={run.probes}
+        capabilities={run.capabilities}
+        /* The same value the verdict query is suppressed on: an empty table
+           means "not written yet" while this holds, and "the artifact says so"
+           the moment it does not. */
+        live={live}
+        selected={selected}
+        allSelected={allProbeId}
+        onSelect={(selection) => {
+          setAllProbeId(null);
+          setSelected(selection);
+        }}
+        onSelectAll={(probeId) => {
+          setSelected(null);
+          setAllProbeId(probeId);
+        }}
+      />
+
+      {allProbe !== null ? (
+        <AllTrialsPanel runId={run.run_id} probe={allProbe} />
+      ) : selected === null ? null : (
+        <TrialPanel runId={run.run_id} selection={selected} />
+      )}
+    </div>
+  );
+}

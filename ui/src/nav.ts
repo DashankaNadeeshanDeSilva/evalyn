@@ -27,14 +27,26 @@ export interface NavDestination {
 
 export const NAV_DESTINATIONS: readonly NavDestination[] = [
   { path: "/runs", label: "Runs", shipped: true },
-  // Launch spends real money — it arrives with the launch console (Task 20).
-  { path: "/launch", label: "Launch", shipped: false },
-  { path: "/discoveries", label: "Discoveries", shipped: false },
-  { path: "/compare", label: "Compare", shipped: false },
-  { path: "/trends", label: "Trends", shipped: false },
-  { path: "/trust", label: "Judge Trust", shipped: false },
+  { path: "/launch", label: "Launch", shipped: true },
+  { path: "/discoveries", label: "Discoveries", shipped: true },
+  { path: "/compare", label: "Compare", shipped: true },
+  { path: "/trends", label: "Trends", shipped: true },
+  { path: "/trust", label: "Judge Trust", shipped: true },
 ];
 
-export function shippedDestinations(): NavDestination[] {
-  return NAV_DESTINATIONS.filter((destination) => destination.shipped);
+/**
+ * The strip's source list.
+ *
+ * The registry argument exists so the filter can be measured against a registry
+ * that still *has* an unshipped destination. Every entry above is shipped now,
+ * which quietly disarmed the assertions that watched this function: a loop over
+ * "labels that must not appear" iterates nothing when nothing is unshipped, and
+ * a test that iterates nothing passes however the filter is broken. Injecting
+ * the registry keeps one discriminating test on the anti-404 rule for the day
+ * a seventh destination lands unbuilt.
+ */
+export function shippedDestinations(
+  registry: readonly NavDestination[] = NAV_DESTINATIONS,
+): NavDestination[] {
+  return registry.filter((destination) => destination.shipped);
 }

@@ -27,7 +27,12 @@ jobs:
         run: uv sync --extra ui
 
       - name: Run tests
-        run: uv run pytest -q
+        # `--timeout` in CI only. Task 20 added a live-tailing SSE stream, the
+        # first thing in this suite that can HANG rather than fail. Every
+        # blocking test carries its own `asyncio.wait_for` ceiling, but that
+        # covers the hangs somebody anticipated; this is the backstop for the
+        # ones nobody did — a red in two minutes instead of a six-hour job.
+        run: uv run pytest -q --timeout=120
 
       - name: Lint
         run: uv run ruff check src/ tests/

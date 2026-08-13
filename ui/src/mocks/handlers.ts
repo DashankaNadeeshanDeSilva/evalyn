@@ -10,8 +10,10 @@
  *   exist, and saying so leaks nothing about the filesystem).
  * - `/api/runs` paginates with the opaque `(created_at, run_id)` cursor and
  *   compares the *parsed tuples*, never the joined strings.
- * - `/api/discoveries/{probe_id}` is redacted unless the request carries the
- *   `X-Evalyn-Reveal` token.
+ * - `/api/discoveries/{probe_id}` is redacted **unconditionally**, because the
+ *   real route reads no header and honours no token (R4-89). A mock that
+ *   revealed on request would let a reveal control pass every test here and do
+ *   nothing at all against the server.
  * - `/api/runs/{id}/trials/...` 404s on the legacy artifact, because it has no
  *   trial records — a page that offered the drill-down anyway read truthiness
  *   instead of `capabilities.trial_records`, and this is where it finds out.
@@ -26,10 +28,10 @@ import {
   CURSOR_SEPARATOR,
   isRunId,
   parseCursor,
+  type ApiError,
   type ControlResponse,
   type DiscoveryListPage,
   type ErrorCode,
-  type ErrorEnvelope,
   type FindingRow,
   type LaunchResponse,
   type PackAxes,
@@ -39,19 +41,22 @@ import {
   type ValidationReport,
 } from "../api/types";
 import {
+  EXFIL_TRIALS,
   FINDING_DETAIL,
-  FINDING_DETAIL_REVEALED,
   FINDING_ROWS,
   GATE_VERDICT,
+  PROBE_ID_EXFIL,
   HEALTH,
   META,
   PACK_AXES,
   PACKS,
   RUN_DETAILS,
   RUN_ID_GATE,
+  RUN_ID_RUNNING,
   RUN_SUMMARIES,
   SCOREBOARD,
   TREND_SERIES,
+  TREND_SPEND_SERIES,
   TRIAL_VIEW,
   TRUST_NEVER_CALIBRATED,
   TRUST_REPORT,
@@ -69,8 +74,26 @@ const STATUS_FOR: Record<ErrorCode, number> = {
   busy: 409,
 };
 
-function fail(code: ErrorCode, message: string, detail: string | null = null) {
-  const body: ErrorEnvelope = { error: { code, message, detail } };
+/**
+ * The envelope **as it arrives**, which is not quite as `ApiError` declares it.
+ *
+ * `detail` is `str | None = None` server-side and every envelope is rendered
+ * with `model_dump(mode="json", exclude_none=True)` (`ui/redact.py`), so a
+ * refusal carrying no extra context omits the key entirely. `ApiError` declares
+ * it required-and-nullable because `models.py` does, and that model is frozen
+ * in six places — so the difference is stated here, where the wire is
+ * reproduced, rather than papered over by a mock that sends `null`.
+ *
+ * That paper is exactly what shipped `(undefined)` on the launch console: this
+ * handler defaulted `detail` to `null`, the page guarded with `=== null`, and
+ * no test could see the gap because the mock never produced it.
+ */
+type WireError = Omit<ApiError, "detail"> & { detail?: string };
+
+function fail(code: ErrorCode, message: string, detail?: string) {
+  const body: { error: WireError } = {
+    error: { code, message, ...(detail === undefined ? {} : { detail }) },
+  };
   return HttpResponse.json(body, { status: STATUS_FOR[code] });
 }
 
@@ -201,11 +224,20 @@ export const handlers = [
         "capabilities.trial_records is false — the drill-down should be disabled",
       );
     }
+    const probeId = String(params["probeId"]);
+    const epoch = Number(params["epoch"]);
+    // One probe answers per epoch rather than with a single stand-in body,
+    // because the "all trials at a glance" panel's whole claim is that the
+    // trials differ from one another. A handler that returns the same trial
+    // seven times cannot disprove a panel that renders the first one seven
+    // times.
+    const perEpoch = probeId === PROBE_ID_EXFIL ? EXFIL_TRIALS[epoch] : undefined;
+    if (perEpoch) return HttpResponse.json({ ...perEpoch, run_id: runId });
     return HttpResponse.json({
       ...TRIAL_VIEW,
       run_id: runId,
-      probe_id: String(params["probeId"]),
-      epoch: Number(params["epoch"]),
+      probe_id: probeId,
+      epoch,
     });
   }),
 
@@ -222,8 +254,35 @@ export const handlers = [
       ["turn.received", { probe_id: "grounding-work-history", epoch: 1, turn: 1 }],
       ["probe.scored", { probe_id: "grounding-work-history", pass_k: 1.0 }],
       ["spend.updated", { judge_usd: 0.01377 }],
-      ["artifact.written", { run_id: RUN_ID_GATE }],
-      ["run.finished", { run_id: RUN_ID_GATE, exit_code: 1 }],
+      // `path`, not `run_id`: `engine/run.py` emits `sink.emit("artifact.written",
+      // path=str(written))`. Nothing in the SPA reads the body — the event's
+      // arrival is the whole signal — but a mock that carries the wrong key is
+      // how the next reader learns the wrong contract.
+      [
+        "artifact.written",
+        { path: `~/Drive/Projects/evalyn/runs/${RUN_ID_GATE}.json` },
+      ],
+      /*
+       * The engine's own terminal frame, field for field (`engine/run.py`).
+       *
+       * This used to read `{run_id, exit_code: 1}`, and that invention is why
+       * the live window shipped promising an exit code: **no emit site has ever
+       * written one**. The exit code is the CLI's, decided from the artifact
+       * after the run ends, and it reaches the browser through
+       * `GET /api/runs/{id}/gate`. `status` is the run's own ending — `"ok"`
+       * here means this scripted run completed, not that its gate passed; the
+       * fixture's gate verdict exits 1.
+       */
+      [
+        "run.finished",
+        {
+          mode: "gate",
+          status: "ok",
+          judge_usd: 0.01377,
+          probes: 1,
+          total_unsure_trials: 0,
+        },
+      ],
     ];
     const encoder = new TextEncoder();
     const stream = new ReadableStream({
@@ -269,7 +328,20 @@ export const handlers = [
     if (body["mode"] === "discover" && !META.allow_discover) {
       return fail("launch_refused", "discover requires --allow-discover");
     }
-    const launched: LaunchResponse = { run_id: RUN_ID_GATE };
+    /*
+     * A **pending** run, which is the whole point of the 202.
+     *
+     * The id is minted before the child process starts, so what comes back
+     * names a run with no artifact on disk and a sidecar status of `running` —
+     * `RUN_DETAILS[RUN_ID_RUNNING]` is exactly that run.
+     *
+     * This used to return the already-finished `RUN_ID_GATE`. The consequence
+     * was not a wrong figure but a **missing screen**: `LiveRunPanel` latches
+     * `watched` from the status it arrives on, so every launch in every test
+     * landed on a terminal run and the one inset window never mounted once. The
+     * live path had no coverage at all, and nothing said so.
+     */
+    const launched: LaunchResponse = { run_id: RUN_ID_RUNNING };
     return HttpResponse.json(launched, { status: 202 });
   }),
 
@@ -348,16 +420,14 @@ export const handlers = [
     return HttpResponse.json(body);
   }),
 
-  http.get("/api/discoveries/:probeId", ({ params, request }) => {
+  http.get("/api/discoveries/:probeId", ({ params }) => {
     const probeId = String(params["probeId"]);
     if (!FINDING_ROWS.some((f) => f.probe_id === probeId)) {
       return fail("not_found", `no such finding: ${probeId}`);
     }
-    // Per-object reveal, gated on the token minted at server start. There is no
-    // global off switch and no env var — a missing token is the normal case.
-    const revealed = Boolean(request.headers.get("X-Evalyn-Reveal"));
-    const body = revealed ? FINDING_DETAIL_REVEALED : FINDING_DETAIL;
-    return HttpResponse.json({ ...body, probe_id: probeId });
+    // Redacted, always. `finding_detail(probe_id)` takes no `Request` and no
+    // `Header`, so there is no request this route answers differently (R4-89).
+    return HttpResponse.json({ ...FINDING_DETAIL, probe_id: probeId });
   }),
 
   // -------------------------------------------------------------------------
@@ -378,6 +448,16 @@ export const handlers = [
     const pack = url.searchParams.get("pack");
     const metric = url.searchParams.get("metric") ?? "pass_k";
     if (!pack) return fail("pack_error", "?pack= is required");
+    // The route branches on the metric, and so must this: `judge_usd` is
+    // metered once per run, so it answers with ONE run-level series while
+    // every other metric answers with one series per probe. Returning the
+    // per-probe shape for spend meant no test the page ever ran had met the
+    // body the server sends.
+    if (metric === "judge_usd") {
+      return HttpResponse.json(
+        TREND_SPEND_SERIES.map((s) => ({ ...s, pack_name: pack })),
+      );
+    }
     return HttpResponse.json(
       TREND_SERIES.map((s) => ({ ...s, pack_name: pack, metric })),
     );
@@ -386,7 +466,15 @@ export const handlers = [
   http.get("/api/trust", ({ request }) => {
     const pack = new URL(request.url).searchParams.get("pack");
     if (!pack) return fail("pack_error", "?pack= is required");
-    // A pack with no calibration.json is a legitimate 200, not a 404.
+    /*
+     * Exactly the two shapes the route answers on this repository's packs.
+     *
+     * `twincore` is the only pack carrying a `calibration.json`, so it is the
+     * only pack that answers with numbers. **Every other pack answers 200 with
+     * `agreement: null`, never a 404** — including `twincore-injection`, which
+     * is the demo pack, so the uncalibrated body is the ordinary case here
+     * rather than the exceptional one.
+     */
     if (pack !== TRUST_REPORT.pack_name) {
       return HttpResponse.json({ ...TRUST_NEVER_CALIBRATED, pack_name: pack });
     }

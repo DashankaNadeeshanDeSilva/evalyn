@@ -3,10 +3,11 @@
 Standalone, project-agnostic **evaluation agent for LLM-powered products** (three modes: `gate`,
 `compare`, `discover`). Built on Inspect AI. Public, MIT-licensed.
 
-**Status (2026-08-11):** Plans #1, #2a, #2b and #3 are **built and merged to `dev`** (v0.4.0) — all
-three modes work from the CLI. **Plan #4 (the `evalyn ui` cockpit) is in progress** on
-`feat/plan4-ui`, roughly half done, with a draft PR open to `dev`. Start a Plan #4 session from the
-newest handoff in `docs/superpowers/handoffs/`, not from this file.
+**Status (2026-08-13):** Plans #1, #2a, #2b, #3 and #4 are **built** (v0.5.0) — all three modes work
+from the CLI, and the `evalyn ui` cockpit ships seven pages (Runs, run detail, Launch, Discoveries,
+Compare, Trends, Judge Trust). Some Plan #4 pages were deferred, not abandoned; the deferred
+register lives in `docs/JOURNAL.md`. Start any in-progress work from the newest handoff in
+`docs/superpowers/handoffs/`, not from this file.
 
 ## Source-of-truth docs (read on demand — don't duplicate them here)
 

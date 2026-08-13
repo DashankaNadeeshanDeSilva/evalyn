@@ -1,6 +1,6 @@
 import { Link } from "react-router-dom";
 
-import type { RunSummary, VerdictHint } from "../api/types";
+import type { RunMode, RunSummary, VerdictHint } from "../api/types";
 import { formatUsd, formatUtc } from "../format";
 import { DegradedRow } from "./DegradedRow";
 import { Flatline } from "./Flatline";
@@ -138,8 +138,64 @@ const HINT_INK: Record<VerdictHint, string> = {
   unknown: "text-chassis-600",
 };
 
-function VerdictHintCell({ hint }: { hint: VerdictHint | null }) {
-  if (hint === null) {
+/**
+ * `verdict_hint` is not readable as a verdict on a run an operator stopped.
+ *
+ * `verdict_hint_of` reds any probe with `trials == 0` or `trials <
+ * expected_trials`, which is right for a run that failed to collect its trials
+ * and wrong for one that was never allowed to try. A cancelled run's un-run
+ * probes satisfy it trivially, so the server sends `verdict_hint: "failed"` for
+ * a run whose only fault is that somebody pressed Cancel — measured on
+ * `20260811T212955379968-abc9a71e-example`, which renders `cancelled` in STATUS
+ * beside `gate failed` in this column.
+ *
+ * The field is left alone deliberately: it is documented as a cheap
+ * approximation over `probes[]`, and it is *this column's* job not to read an
+ * approximation as a verdict. `status` is the signal rather than the detail
+ * page's `cancelled`, because `RunSummary` carries no such field — but both
+ * come from the same `cancelled_by`, and `derive_status` returns `cancelled`
+ * for exactly the runs where it is true.
+ *
+ * Not the `n/a` mark and not "no gate": `compare` and `discover` genuinely have
+ * no gate to report, whereas this run has one and nobody let it finish.
+ *
+ * ## The order of the three absences is the whole correctness argument
+ *
+ * `verdict_hint: null` is not one fact but two, and `stopped` cuts across both
+ * — so whichever question is asked first decides what the other two may claim.
+ *
+ * **`mode` answers first**, because it is true of the run whatever else
+ * happened to it. Asking `stopped` first told a cancelled `compare` row that
+ * "the gate earned no verdict", a claim about a gate that never existed. It
+ * also rested that claim on the weakest signal available: a `compare` or
+ * `discover` artifact carries no `cancelled` field, so `cancelled_by` falls
+ * through to the leftover `<stem>.control.json` — which its own docstring
+ * records as having been measured relabelling a run that had completed all
+ * twelve of its trials. Ordering `mode` first puts the stopped branch out of
+ * reach for exactly the modes whose cancelled signal cannot be trusted, rather
+ * than merely avoiding it there.
+ *
+ * **Then `stopped`**, which by then can only speak about a gate run.
+ *
+ * **Then `hint === null`, which by that point means one thing**: a gate run
+ * that has measured nothing yet. `_pending_summary` (`ui/index.py:906`) emits
+ * exactly that for a run living as a sidecar with no artifact written, and sets
+ * `degraded: false`, so it arrives here rather than at `DegradedRow`. This
+ * branch used to share "no gate" with the modes that genuinely have none; once
+ * `mode` answers first, that copy would be false in every case still reaching
+ * it.
+ */
+function VerdictHintCell({
+  mode,
+  hint,
+  stopped,
+}: {
+  mode: RunMode;
+  hint: VerdictHint | null;
+  /** An operator cancelled this run, so no verdict was earned. */
+  stopped: boolean;
+}) {
+  if (mode !== "gate") {
     // Correctness, not damage: `compare` and `discover` have no gate verdict
     // to report. A dead-channel mark here would dilute the one that means the
     // artifact is broken.
@@ -148,6 +204,25 @@ function VerdictHintCell({ hint }: { hint: VerdictHint | null }) {
         variant="n/a"
         word="no gate"
         reason="this mode produces no gate verdict"
+      />
+    );
+  }
+  if (stopped) {
+    return (
+      <Flatline
+        word="stopped"
+        reason="an operator stopped this run before it could be gated, so no verdict was earned"
+      />
+    );
+  }
+  if (hint === null) {
+    // Not damage either: nothing has been measured yet. The STATUS column
+    // beside it is what says whether the run is still going.
+    return (
+      <Flatline
+        variant="n/a"
+        word="not yet"
+        reason="this run has not written an artifact, so no verdict has been computed yet"
       />
     );
   }
@@ -204,7 +279,7 @@ function RunRow({ run }: { run: RunSummary }) {
       <td className="py-2 pr-3">
         <Link
           to={`/runs/${run.run_id}`}
-          className="break-all text-readout text-chassis-900 underline decoration-chassis-400 underline-offset-4 transition-colors duration-state hover:decoration-chassis-900"
+          className="break-all text-readout text-chassis-900 underline decoration-chassis-500 underline-offset-4 transition-colors duration-state hover:decoration-chassis-900"
         >
           {run.run_id}
         </Link>
@@ -226,7 +301,11 @@ function RunRow({ run }: { run: RunSummary }) {
       </td>
 
       <td className="py-2 pr-3">
-        <VerdictHintCell hint={run.verdict_hint} />
+        <VerdictHintCell
+          mode={run.mode}
+          hint={run.verdict_hint}
+          stopped={run.status === "cancelled"}
+        />
       </td>
 
       <td className="py-2 pl-3 pr-4 text-right sm:pr-6">

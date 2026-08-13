@@ -2,6 +2,7 @@ import type { ReactNode } from "react";
 import { Link, useParams } from "react-router-dom";
 
 import { ApiFailure, useRunDetail } from "../api/client";
+import { CostChip } from "../components/CostChip";
 import { RunStatusChip } from "../components/RunStatusChip";
 import { Flatline } from "../components/Flatline";
 import {
@@ -9,8 +10,10 @@ import {
   IconArrowLeft,
   IconFlatline,
 } from "../components/InstrumentIcon";
-import { formatUsd, formatUtc } from "../format";
+import { isLive, LiveRunPanel } from "../components/LiveRunPanel";
+import { formatUtc } from "../format";
 import { isRunId, type Capabilities } from "../api/types";
+import { GateRunDetail } from "./GateRunDetail";
 
 /**
  * A single run's identity panel.
@@ -91,9 +94,53 @@ export function RunDetailPage() {
 
   const run = detail.data;
   const caps = run.capabilities;
+  /*
+   * Is a process attached right now? One value, read once per render, handed to
+   * everything that needs it — the panel included. It used to be computed here
+   * *and* latched inside the panel, and the two diverged the instant a run
+   * finished.
+   *
+   * A live run has no finished artifact, which is what it decides: no verdict
+   * to evaluate, and no artifact figure to report spend from.
+   */
+  const live = isLive(run.status);
 
   return (
-    <Shell runId={runId}>
+    <Shell
+      runId={runId}
+      /*
+       * The one inset window, directly under the run's own identity: the
+       * hierarchy is live readout -> verdict -> evidence -> history, and the
+       * operator needs to know *which* run is on the air before they read what
+       * it is doing. The panel decides for itself whether there is anything to
+       * show, and renders nothing when there is not.
+       */
+      live={
+        <LiveRunPanel
+          runId={run.run_id}
+          status={run.status}
+          live={live}
+          packName={run.pack_name}
+        />
+      }
+      /*
+       * The payload, for the one mode that has a gate verdict.
+       *
+       * `mode` is classified lexically from the artifact's filename, so this is
+       * a fact about the run rather than a guess from its contents — and
+       * `/api/runs/{id}/gate` 404s for the other two, which makes asking the
+       * bug rather than the answer. Tasks 15 and 16 hang their own payloads
+       * here for `discover` and `compare`.
+       *
+       * It goes beside `children` rather than inside it because the payload's
+       * tables and transcript span the whole instrument face: the identity
+       * panel is inset by the shell's gutter, the panel lines beneath it are
+       * not.
+       */
+      payload={
+        run.mode === "gate" ? <GateRunDetail run={run} live={live} /> : null
+      }
+    >
       <dl className="grid grid-cols-1 gap-x-10 sm:grid-cols-2 lg:grid-cols-3">
         <Field label="Status">
           <RunStatusChip status={run.status} unverified={run.degraded} />
@@ -112,13 +159,30 @@ export function RunDetailPage() {
             <Flatline word="unrecorded" reason="judge model not recorded" />
           )}
         </Field>
-        <Field label="Judge USD">
-          {run.judge_usd === null ? (
-            <Flatline word="unrecorded" reason="judge spend was not recorded" />
-          ) : (
-            <span className="tabular-nums">{formatUsd(run.judge_usd)}</span>
-          )}
-        </Field>
+        {live ? null : (
+          <Field label="Judge USD">
+            {/*
+              **Spend is reported by the stream only while there is no artifact
+              to report it, and by the artifact from the moment there is.**
+
+              That sentence is true in every state, which the one it replaces
+              was not. "One spend readout per screen" was asserted while `live`
+              was recomputed here and separately latched inside the panel — so
+              the instant a run finished, the refetch flipped this copy while
+              the panel's stayed put, and a finished run rendered this chip
+              *and* the window's figure together. In the `judge_usd: null` case
+              that put "unrecorded" beside a real number, on the screen carrying
+              the Cancel key.
+
+              Both sides now key off the same `live`, in the same render. While
+              it holds, the window owns the reading; the moment the refetch
+              brings back a terminal status, this chip does — carrying the same
+              pack ceiling by the same join. There is no instant at which both
+              are on screen, and none at which neither is.
+            */}
+            <CostChip judgeUsd={run.judge_usd} packName={run.pack_name} />
+          </Field>
+        )}
         <Field label="Probes indexed">
           <span className="tabular-nums">{run.probes.length}</span>
         </Field>
@@ -154,9 +218,15 @@ export function RunDetailPage() {
 function Shell({
   runId,
   children,
+  live = null,
+  payload = null,
 }: {
   runId: string;
   children: ReactNode;
+  /** The inset readout window, full-bleed. Absent unless a run is on the air. */
+  live?: ReactNode;
+  /** Full-bleed, so its panel lines span the face rather than the gutter. */
+  payload?: ReactNode;
 }) {
   return (
     <section className="pb-16">
@@ -174,7 +244,9 @@ function Shell({
           {runId}
         </h1>
       </div>
+      {live}
       <div className="px-4 py-2 sm:px-6">{children}</div>
+      {payload}
     </section>
   );
 }

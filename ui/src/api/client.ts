@@ -33,7 +33,7 @@ import type {
  * mount, but API calls are not assets — they are absolute so a client-side
  * route like `/runs/<id>` cannot turn `api/meta` into `/runs/api/meta`.
  */
-const API_ROOT = "/api";
+export const API_ROOT = "/api";
 
 /** A non-2xx response, parsed. `code` is the thing worth switching on. */
 export class ApiFailure extends Error {
@@ -60,7 +60,20 @@ async function toFailure(res: Response): Promise<ApiFailure> {
     const body = (await res.json()) as ErrorEnvelope;
     const err = body.error;
     if (err && typeof err.message === "string") {
-      return new ApiFailure(res.status, err.code, err.message, err.detail);
+      /*
+       * `?? null` makes the declared `string | null` actually true, and this is
+       * the **only** place that coalesce may live.
+       *
+       * The server renders every envelope with `exclude_none=True`, so a
+       * refusal with no extra context omits `detail` rather than sending null,
+       * and a renderer that trusted the declared type printed the word
+       * "undefined" at the end of every real refusal. Normalising here — the
+       * one seam every failure passes through, and the only place `ApiFailure`
+       * is constructed — leaves every consumer with the two states the type
+       * promises. Repeating the guard at a call site would be unreachable code
+       * that also stops this one from being caught when it is deleted.
+       */
+      return new ApiFailure(res.status, err.code, err.message, err.detail ?? null);
     }
   } catch {
     // Fall through: a body that is not the envelope is itself the anomaly.
@@ -72,6 +85,31 @@ export async function apiGet<T>(path: string, init?: RequestInit): Promise<T> {
   const res = await fetch(`${API_ROOT}${path}`, {
     headers: { Accept: "application/json" },
     ...init,
+  });
+  if (!res.ok) throw await toFailure(res);
+  return (await res.json()) as T;
+}
+
+/**
+ * The write side. Two routes use it: launch and control.
+ *
+ * Both bodies are `extra="forbid"` server-side, which is a **safety guard**
+ * rather than tidiness — `LaunchRequest` has no field for a pack path, so a
+ * body carrying one is rejected rather than ignored. Nothing here adds a field
+ * of its own for that reason, and callers pass the frozen request models.
+ *
+ * A 202 from either route means "well-formed and written", never "done": the
+ * matching `control.*` event is the acknowledgement, and `LaunchResponse.run_id`
+ * names a run whose process has not started yet.
+ */
+export async function apiPost<T>(path: string, body: unknown): Promise<T> {
+  const res = await fetch(`${API_ROOT}${path}`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Accept: "application/json",
+    },
+    body: JSON.stringify(body),
   });
   if (!res.ok) throw await toFailure(res);
   return (await res.json()) as T;

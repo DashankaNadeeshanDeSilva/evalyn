@@ -45,7 +45,7 @@ export function DegradedRow({ run }: { run: RunSummary }) {
       <td className="py-2 pr-3">
         <Link
           to={`/runs/${run.run_id}`}
-          className="break-all text-readout text-chassis-900 underline decoration-chassis-400 underline-offset-4 transition-colors duration-state hover:decoration-chassis-900"
+          className="break-all text-readout text-chassis-900 underline decoration-chassis-500 underline-offset-4 transition-colors duration-state hover:decoration-chassis-900"
         >
           {run.run_id}
         </Link>

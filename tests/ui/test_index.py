@@ -79,11 +79,13 @@ def _probe(**kw) -> ProbeResult:
     return ProbeResult(**base)
 
 
-def _gate_artifact(probes: list[ProbeResult] | None = None) -> RunArtifact:
-    return RunArtifact(
+def _gate_artifact(probes: list[ProbeResult] | None = None, **kw) -> RunArtifact:
+    base = dict(
         pack_name="example", pack_hash="0" * 64, judge_model="mockllm/model",
         created_at="2026-08-04T08:15:44.953115+00:00",
         probes=[_probe()] if probes is None else probes, log_path="logs/x")
+    base.update(kw)
+    return RunArtifact(**base)
 
 
 def _loaded(typed=None, *, run_id: str = GATE_ID, mode: m.RunMode = m.RunMode.gate,
@@ -403,10 +405,150 @@ def test_invalid_is_reserved_for_an_artifact_that_measured_nothing():
 
 
 def test_a_cancelled_run_that_did_write_an_artifact_is_still_cancelled():
+    """R4-13: a genuine cancel is recorded **in the artifact**, so the label
+    survives whatever happened to the control file.
+
+    Both spellings have to reach `cancelled`, because which of them is on disk
+    is a race: the endpoint removes a control file it wrote for a run that
+    finished underneath it, and the run can also finish an instant later
+    (the residual window registered in `docs/JOURNAL.md`, `be9ab3a`).
+    """
+    art = _loaded(_gate_artifact(cancelled=True))
     assert derive_status(
-        _loaded(_gate_artifact()),
+        art,
         SidecarState(present=True, control=m.ControlAction.cancel, exit_code=0),
         None) is m.RunStatus.cancelled
+    assert derive_status(
+        art, SidecarState(present=True, exit_code=0), None
+    ) is m.RunStatus.cancelled, "the artifact alone is enough"
+
+
+def test_a_completed_run_is_not_relabelled_cancelled_by_a_stale_control_file():
+    """T20-d(b), measured on run `20260811T205142907150-f4700ea3-example`: the
+    artifact said `cancelled: False` over 4 probes and trials `[3,3,3,3]` — it
+    ran to completion — while `GET /api/runs/{id}` said `status: cancelled`.
+
+    An orphan `{"action": "cancel"}` was the only difference. A completed
+    evaluation's verdict must not be rewritable by a file left lying next to
+    it, so once an artifact exists the artifact is the authority on this.
+    """
+    stale = SidecarState(present=True, control=m.ControlAction.cancel, exit_code=0)
+    assert derive_status(_loaded(_gate_artifact()), stale, None) \
+        is m.RunStatus.passed
+    assert derive_status(_loaded(_FAILING), stale, None) \
+        is m.RunStatus.gate_failed
+
+
+_COMPARE_OK = CompareArtifact(
+    pack_name="example", pack_hash="0" * 64, judge_model="mockllm/model",
+    created_at="2026-08-06T09:10:11+00:00", label_a="a", label_b="b",
+    source_a="runs/a.json", source_b="runs/b.json",
+    created_at_a="2026-08-06T08:00:00+00:00",
+    created_at_b="2026-08-06T08:30:00+00:00",
+    categories={}, probes=[], hard_metrics={}, excluded_pairs=0)
+_DISCOVER_OK = DiscoveryArtifact(
+    pack_name="example", pack_hash="0" * 64, agent_model="m", judge_model="m",
+    rubric_judge_model=None, created_at="2026-08-05T10:11:12+00:00", findings=[],
+    error_count=0, sessions_total=1, confirmed_count=0, live_spend_usd=0.0,
+    reconciled_spend_usd=0.0, budget_exhausted=False, partial=False, objectives=[],
+    log_path="logs/x", eval_status="success")
+
+
+@pytest.mark.parametrize("typed,mode,without", [
+    pytest.param(_COMPARE_OK, m.RunMode.compare, m.RunStatus.passed, id="compare"),
+    pytest.param(_DISCOVER_OK, m.RunMode.discover, m.RunStatus.passed, id="discover"),
+])
+def test_a_stale_cancel_still_relabels_compare_and_discover(typed, mode, without):
+    """**A recorded limitation, not a desired behaviour.**
+
+    `cancelled_by` prefers the artifact only where the artifact can answer,
+    and `RunArtifact` is the only one carrying a `cancelled` field. So for
+    these two modes a stale `{"action": "cancel"}` left inside the control
+    endpoint's residual window (`docs/JOURNAL.md`, `be9ab3a`) still rewrites a
+    completed run's status — exactly the T20-d(b) defect, surviving in the two
+    modes the fix could not reach.
+
+    Not fixed here on purpose: a cancelled `compare` writes **no** artifact
+    (`compare.py:250-256`), so the file is the only evidence it ever leaves,
+    and a cancelled `discover` writes `_build_artifact(aborted=True)`, which
+    would then read as `passed`/`invalid` — calling an operator's deliberate
+    stop `invalid` is a worse lie than the one being fixed. The honest fix is
+    a `cancelled` field on both artifacts, which is engine work.
+
+    **This test is written to fail the day that lands**, so the limitation
+    cannot be quietly resolved without the ledger being updated.
+
+    Two arms, so it cannot go vacuous: the same artifact must reach `without`
+    when the file is absent and `cancelled` when it is present. A version that
+    only asserted the second would also pass if the artifact stopped loading
+    at all, since `unreadable` also yields to a cancel.
+    """
+    loaded = _loaded(typed, run_id=GATE_ID, mode=mode)
+    assert loaded.typed is not None, "not the unreadable path"
+
+    clean = SidecarState(present=True, exit_code=0)
+    stale = SidecarState(present=True, control=m.ControlAction.cancel, exit_code=0)
+    assert derive_status(loaded, clean, None) is without
+    assert derive_status(loaded, stale, None) is m.RunStatus.cancelled
+
+
+def test_the_mode_that_can_answer_for_itself_is_exactly_the_one_with_the_field():
+    """The discriminator for the test above: it must be pinning a *gap*, not
+    describing every mode. If `gate` ever joined them the pair would agree and
+    neither test would be saying anything."""
+    assert hasattr(_gate_artifact(), "cancelled")
+    assert not hasattr(_COMPARE_OK, "cancelled")
+    assert not hasattr(_DISCOVER_OK, "cancelled")
+
+
+def test_a_stale_pause_file_still_does_not_relabel_a_finished_run():
+    """The defect was cancel-specific and the fix must keep it that way — a
+    `pause` orphan was verified to leave its run reading `gate_failed`."""
+    assert derive_status(
+        _loaded(_FAILING),
+        SidecarState(present=True, control=m.ControlAction.pause, exit_code=0),
+        None) is m.RunStatus.gate_failed
+
+
+def test_a_cancel_still_outranks_an_artifact_this_build_cannot_parse():
+    """Rule 3 of the precedence is unchanged: with nothing typed to consult,
+    "the operator stopped it" is the more useful fact about a half-written
+    file than "this build cannot read it"."""
+    assert derive_status(
+        _loaded(None, error="boom"),
+        SidecarState(present=True, control=m.ControlAction.cancel, exit_code=0),
+        None) is m.RunStatus.cancelled
+
+
+def test_a_run_with_no_artifact_still_reads_its_cancel_off_the_control_file():
+    """With no artifact there is nothing to outrank — and a cancelled
+    `compare` writes no artifact at all (`compare.py:250-256`), so this is the
+    only evidence that mode ever leaves behind."""
+    assert derive_status(
+        None,
+        SidecarState(present=True, control=m.ControlAction.cancel, exit_code=1),
+        None) is m.RunStatus.cancelled
+
+
+def test_the_detail_flag_agrees_with_the_status_about_who_cancelled(tmp_path):
+    """`RunDetail.cancelled` is read by the SPA independently of `status`, so
+    the two must not be able to disagree: same defect at `index.py:689`."""
+    runs = tmp_path / "runs"
+    runs.mkdir()
+    rid = "20260811T205142907150-f4700ea3-example"
+    runs.joinpath(f"{rid}.json").write_text(json.dumps(_gate_artifact().to_dict()))
+    (runs / SIDECAR_DIR_NAME / rid).mkdir(parents=True)
+    control_path(runs / f"{rid}.json").write_text(json.dumps({"action": "cancel"}))
+
+    detail = RunIndex(runs).get(rid)
+    assert detail.cancelled is False, "the artifact says nobody cancelled it"
+    assert detail.status is not m.RunStatus.cancelled
+
+    runs.joinpath(f"{rid}.json").write_text(
+        json.dumps(_gate_artifact(cancelled=True).to_dict()))
+    detail = RunIndex(runs).get(rid)
+    assert detail.cancelled is True
+    assert detail.status is m.RunStatus.cancelled
 
 
 # --------------------------------------------------------------------------
@@ -471,6 +613,103 @@ def test_an_explicit_pause_survives_an_unreadable_process_record(tmp_path):
     idx, rid, artifact = _planted(tmp_path, "{")
     control_path(artifact).write_text(json.dumps({"action": "pause"}))
     assert derive_status(None, idx._sidecar(rid, artifact)) is m.RunStatus.paused
+
+
+# --------------------------------------------------------------------------
+# 5c. a launched run has to LIST before it has written anything (F5)
+# --------------------------------------------------------------------------
+#
+# `_candidates` globs `runs/*.json`, so until an artifact exists the run has no
+# row at all: an operator who clicks **Runs** during a run sees the table it had
+# before they pressed Launch. Confirmed by execution against the real server.
+
+def test_a_launched_run_lists_before_it_has_written_an_artifact(tmp_path):
+    idx, rid, artifact = _planted(tmp_path, json.dumps({META_EXIT_CODE_KEY: None}))
+    (row,) = idx.list()
+    assert row.run_id == rid
+    assert row.status is m.RunStatus.running
+    assert row.degraded is False, "not written yet is not the same as unreadable"
+    assert row.pack_name is None, "the index has no allowlist to name it from"
+    assert row.judge_usd is None and row.verdict_hint is None
+
+
+def test_a_pending_row_disappears_the_moment_its_artifact_arrives(tmp_path):
+    """No run may be listed twice, and the artifact row is the better one."""
+    idx, rid, artifact = _planted(tmp_path, json.dumps({META_EXIT_CODE_KEY: 0}))
+    artifact.write_text(json.dumps(_gate_artifact().to_dict()))
+    (row,) = idx.list()
+    assert row.status is m.RunStatus.passed
+    assert row.pack_name == "example"
+
+
+def test_a_pending_row_answers_the_same_filters_every_other_row_does(tmp_path):
+    """`list()` is the runs table's only entry point, and a row that ignored
+    the filters would appear on a page the operator narrowed away from it."""
+    idx, rid, _ = _planted(tmp_path, json.dumps({META_EXIT_CODE_KEY: None}))
+    assert [r.run_id for r in idx.list(mode=m.RunMode.gate)] == [rid]
+    assert idx.list(mode=m.RunMode.compare) == []
+    assert [r.run_id for r in idx.list(status=m.RunStatus.running)] == [rid]
+    assert idx.list(status=m.RunStatus.passed) == []
+    assert idx.list(pack="example") == [], "no artifact means no pack name yet"
+
+
+def test_pending_and_written_runs_share_one_ordering_and_one_cursor(tmp_path):
+    """Two sequences merged into one page: newest first, and the cursor has to
+    walk through both kinds rather than skipping the sort order at the seam."""
+    runs = tmp_path / "runs"
+    runs.mkdir()
+    older = "20260807T170000000000-aaaaaaaa-example"
+    newer = "20260807T190000000000-cccccccc-example"
+    middle = "20260807T180000000000-deadbeef-example"      # the pending one
+    for rid, when in ((older, "2026-08-07T17:00:00+00:00"),
+                      (newer, "2026-08-07T19:00:00+00:00")):
+        runs.joinpath(f"{rid}.json").write_text(
+            json.dumps(_gate_artifact(created_at=when).to_dict()))
+    (runs / SIDECAR_DIR_NAME / middle).mkdir(parents=True)
+    (runs / SIDECAR_DIR_NAME / middle / META_FILENAME).write_text(
+        json.dumps({META_EXIT_CODE_KEY: None}))
+
+    idx = RunIndex(runs)
+    rows = idx.list()
+    keys = [(row.created_at, row.run_id) for row in rows]
+    assert keys == sorted(keys, reverse=True)
+    assert [row.run_id for row in rows] == [newer, middle, older]
+
+    first = idx.list(limit=1)
+    cursor = m.make_cursor(first[0].created_at, first[0].run_id)
+    assert [row.run_id for row in idx.list(limit=1, before=cursor)] == [middle]
+
+
+def test_a_sidecar_directory_that_is_not_a_run_id_is_not_a_row(tmp_path):
+    """`runs/.evalyn-ui/` is a directory on a real filesystem, so it can hold
+    anything. The grammar decides, exactly as it does for `runs/*.json`."""
+    runs = tmp_path / "runs"
+    (runs / SIDECAR_DIR_NAME / "not-a-run-id").mkdir(parents=True)
+    (runs / SIDECAR_DIR_NAME / "README").write_text("junk")
+    assert RunIndex(runs).list() == []
+
+
+def test_a_file_wearing_a_run_ids_name_is_not_a_launched_run(tmp_path):
+    """The launcher writes a **directory** per run, so a plain file that
+    happens to be named like one is not evidence that anything was launched.
+
+    It would otherwise become a row: `_sidecar` short-circuits on
+    `meta_dir.is_dir()` and returns a bare `SidecarState()`, whose defaults
+    (`present=False`, `launched=True`) `derive_status` reads as `interrupted`
+    — a run invented out of a file. The paired assertion is what keeps this
+    honest: the *same* name as a directory does list, so the test is pinning
+    the file/directory distinction and not merely a filter that rejects
+    everything.
+    """
+    runs = tmp_path / "runs"
+    rid = "20260807T180000000000-deadbeef-example"
+    (runs / SIDECAR_DIR_NAME).mkdir(parents=True)
+    (runs / SIDECAR_DIR_NAME / rid).write_text("not a directory")
+    assert RunIndex(runs).list() == []
+
+    (runs / SIDECAR_DIR_NAME / rid).unlink()
+    (runs / SIDECAR_DIR_NAME / rid).mkdir()
+    assert [row.run_id for row in RunIndex(runs).list()] == [rid]
 
 
 def test_a_runs_dir_this_cockpit_never_launched_into_reports_no_process_facts():
@@ -609,6 +848,98 @@ def test_get_returns_a_detail_that_is_a_superset_of_the_row():
 def test_get_on_a_degraded_artifact_still_returns_a_detail():
     detail = RunIndex(FIXTURES).get(LEGACY_ID)
     assert detail.degraded is True and detail.probes == []
+
+
+def _run_with(tmp_path: Path, probe_entries: list[dict]) -> tuple[RunIndex, str]:
+    """A `runs/` holding one current-schema gate artifact with these probes."""
+    runs = tmp_path / "runs"
+    runs.mkdir()
+    rid = "20260807T170000000000-deadbeef-example"
+    payload = _gate_artifact().to_dict() | {"probes": probe_entries}
+    runs.joinpath(f"{rid}.json").write_text(json.dumps(payload), encoding="utf-8")
+    return RunIndex(runs), rid
+
+
+def _entry(**kw) -> dict:
+    entry = {"id": "p", "category": "c", "kind": "regression",
+             "safety_critical": False, "samples": 1, "trials": 1,
+             "expected_trials": 1, "pass_at_k": 1.0, "pass_k": 1.0,
+             "mean_score": 1.0, "unsure_trials": 0, "checks": [],
+             "trial_records": []}
+    entry.update(kw)
+    return entry
+
+
+def test_get_never_reads_a_metric_the_artifact_omitted_as_a_zero(tmp_path):
+    """The three trend metrics are dataclass fields defaulting to `0.0`, so an
+    artifact that never recorded one is indistinguishable, at the typed layer,
+    from one that measured a total failure.
+
+    The distinction has to be read off the RAW artifact dict, because that is
+    the only place it survives. Getting it wrong puts a catastrophe that never
+    happened at the top of the trends page's worst-first ranking.
+    """
+    entry = _entry()
+    for key in ("pass_k", "pass_at_k", "mean_score"):
+        del entry[key]
+    idx, rid = _run_with(tmp_path, [entry])
+
+    detail = idx.get(rid)
+    assert detail.degraded is False, detail.degraded_reason
+    (row,) = detail.probes
+    assert (row.pass_k, row.pass_at_k, row.mean_score) == (None, None, None)
+
+
+def test_get_still_reads_a_recorded_zero_as_a_zero(tmp_path):
+    """The inverse, and the reason the fix reads key PRESENCE rather than the
+    value: a probe that genuinely scored `0.0` is a real measurement, and
+    suppressing it would erase the failures the page exists to show."""
+    idx, rid = _run_with(tmp_path, [_entry(pass_k=0.0, pass_at_k=0.0,
+                                           mean_score=0.0)])
+
+    (row,) = idx.get(rid).probes
+    assert (row.pass_k, row.pass_at_k, row.mean_score) == (0.0, 0.0, 0.0)
+
+
+def test_a_probe_row_that_cannot_be_paired_to_its_raw_entry_reads_as_no_reading():
+    """The fallback errs towards the honest blank, never towards a number.
+
+    `_probe_row` can only tell "unrecorded" from "recorded 0.0" by looking at
+    the raw entry, so an entry it cannot positively identify as this probe's
+    tells it nothing at all. Answering `0.0` there would quietly restore the
+    fabricated zero the moment a future caller mis-paired the lists; answering
+    `None` degrades to a visibly empty chart instead, which is the failure
+    this module prefers.
+    """
+    probe = _probe(id="p-one", pass_k=1.0, pass_at_k=1.0, mean_score=1.0)
+    for unpairable in (None, "not a dict", {}, _entry(id="a-different-probe")):
+        row = ix._probe_row(probe, unpairable)
+        assert (row.pass_k, row.pass_at_k, row.mean_score) == (None, None, None), (
+            f"unpairable raw entry {unpairable!r} vouched for a number")
+    paired = ix._probe_row(probe, _entry(id="p-one"))
+    assert (paired.pass_k, paired.pass_at_k, paired.mean_score) == (1.0, 1.0, 1.0)
+
+
+def test_get_pairs_each_probe_with_its_own_raw_entry(tmp_path):
+    """Key presence is per PROBE, so the pairing has to be positional too.
+
+    The omitting probe is deliberately FIRST. Order it the other way round and
+    the test stops discriminating: `_probe_row` refuses a raw entry whose id is
+    not this probe's, so a mis-pairing collapses to `None` — which is exactly
+    what the omitting-probe-first arrangement would have expected anyway. With
+    the gap leading, an implementation that consults the first entry for every
+    probe answers `[None, None, None]`, one that consults the artifact-wide
+    union of keys answers `[0.0, 0.25, 0.75]`, and only per-probe positional
+    pairing answers the honest `[None, 0.25, 0.75]`.
+    """
+    first = _entry(id="p-one")
+    del first["pass_k"]
+    idx, rid = _run_with(tmp_path, [first, _entry(id="p-two", pass_k=0.25),
+                                    _entry(id="p-three", pass_k=0.75)])
+
+    detail = idx.get(rid)
+    assert [row.id for row in detail.probes] == ["p-one", "p-two", "p-three"]
+    assert [row.pass_k for row in detail.probes] == [None, 0.25, 0.75]
 
 
 def test_get_populates_the_compare_scoreboard_and_the_discovery_summary():
