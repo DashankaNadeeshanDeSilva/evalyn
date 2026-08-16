@@ -521,7 +521,12 @@ export interface HardMetrics {
 }
 
 /**
- * `GET /api/compare/{run_id}`.
+ * Served **nested**, as `RunDetail.compare` on `GET /api/runs/{run_id}`.
+ *
+ * There is no `GET /api/compare/{run_id}` and there never has been (R4-91).
+ * This comment claimed one until the Plan #4 final review, and so did
+ * `models.py` and the MSW layer — three mutually-confirming descriptions of a
+ * route no server ever served. Do not add one here without adding the route.
  *
  * There is deliberately **no combined winner field**: compare is advisory, and
  * collapsing verdicts and hard metrics into one number is the exact claim
