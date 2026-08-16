@@ -305,6 +305,81 @@ def test_a_stopped_run_still_exits_non_zero():
     assert len(stopped.failures) == len(finished.failures) == 2
 
 
+# --- an unmeasured 0.00 is not a measured one ---
+
+def test_a_probe_nobody_could_score_says_so_instead_of_reporting_a_zero():
+    """The pair is the whole test. Both probes report `mean 0.00` and both are
+    quarantined with no baseline; only one of them was actually measured.
+
+    `scored` failed every trial on its merits — a product regression to chase.
+    `unscored` has `trials == unsure_trials`, so every trial was excluded from
+    the mean and the 0.00 is `run.py:305`'s fallback — a judge that did not
+    answer, which is a completely different thing to do next about.
+    """
+    scored = _probe("scored", trials=3, mean_score=0.0)
+    unscored = _probe("unscored", trials=3, unsure_trials=3, mean_score=0.0)
+    res = evaluate_gate(_art([scored, unscored]), baseline=None)
+
+    (measured,) = [q for q in res.quarantined if "scored`" in q and "unscored" not in q]
+    (absent,) = [q for q in res.quarantined if "unscored`" in q]
+    assert "NO USABLE SCORE" not in measured
+    assert "NO USABLE SCORE" in absent
+    assert "all 3 trials unsure" in absent
+
+
+def test_the_note_reaches_a_regression_line_too():
+    """The most misleading place it can appear: against a baseline, a probe
+    nobody could score is reported as a REGRESSION — a judge outage wearing a
+    product regression's name."""
+    base = _art([_probe("g", mean_score=1.0)])
+    cur = _art([_probe("g", trials=3, unsure_trials=3, mean_score=0.0)])
+    (failure,) = evaluate_gate(cur, baseline=base).failures
+    assert failure.startswith("REGRESSION")
+    assert "NO USABLE SCORE" in failure
+
+
+def test_a_safety_probe_that_passes_on_an_unmeasured_mean_is_quarantined():
+    """The shape actually on disk — 7 artifacts in `runs/` carry it.
+
+    A safety probe gates on `pass^k` over its REQUIRED checks, and an unsure
+    required check already forces `pass^k` to 0, so 1.0 here is a genuine pass.
+    But every trial was unsure on the non-required checks, so the `mean 0.00`
+    printed beside it measured nothing — and before this, the report said
+    neither thing: the safety branch returned early and the probe passed in
+    silence.
+
+    Quarantined, not failed. Whether an unmeasurable probe should red the build
+    is a product decision this does not take; making it visible is not.
+    """
+    p = _probe("inj", category="injection", safety=True, samples=3, trials=3,
+               pass_k=1.0, unsure_trials=3, mean_score=0.0)
+    res = evaluate_gate(_art([p]), baseline=None)
+
+    assert res.exit_code == 0, "a real pass must stay a pass"
+    assert res.failures == []
+    (q,) = res.quarantined
+    assert "pass^k=1.0 stands" in q and "not a measurement" in q
+
+
+def test_a_safety_probe_with_a_real_mean_is_not_quarantined():
+    """The control. Same probe, same pass, trials that actually scored — this
+    must stay off the quarantine list entirely, or the check above is just
+    'quarantine every passing safety probe'."""
+    p = _probe("inj", category="injection", safety=True, samples=3, trials=3,
+               pass_k=1.0, unsure_trials=0, mean_score=1.0)
+    assert evaluate_gate(_art([p]), baseline=None).quarantined == []
+
+
+def test_a_partly_unsure_probe_still_reports_a_real_mean():
+    """The discriminator: one usable trial out of three is a thin measurement,
+    not an absent one, and the mean is genuinely its average. A note keyed on
+    `unsure_trials > 0` rather than on `trials == unsure_trials` would fire
+    here and the claim would be false."""
+    cur = _art([_probe("g", trials=3, unsure_trials=2, mean_score=0.0)])
+    (q,) = evaluate_gate(cur, baseline=None).quarantined
+    assert "NO USABLE SCORE" not in q
+
+
 # --- baseline persistence ---
 
 def test_baseline_round_trip(tmp_path):
