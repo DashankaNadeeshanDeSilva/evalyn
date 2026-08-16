@@ -44,9 +44,16 @@ def evaluate_gate(current: RunArtifact, baseline: RunArtifact | None,
 
         # A probe with no collected trials never reached the log (e.g. every
         # trial errored). That is a hard failure — never a silent pass.
+        #
+        # On a CANCELLED run the guess is wrong and we know it: the operator
+        # stopped the run, and its un-run probes are reduced to `trials=0` by
+        # that stop (R4-13), not by errors. Blaming a stop on errors sends the
+        # reader hunting a fault that is not there.
         if probe.trials == 0:
             failures.append(
-                f"MISSING `{probe.id}`: no scores recorded (all trials errored?)")
+                f"MISSING `{probe.id}`: no scores recorded "
+                + ("(the run was stopped before this probe ran)"
+                   if current.cancelled else "(all trials errored?)"))
             continue
 
         # Round-2 N1: errored epochs must not silently shrink the pass^k
@@ -95,8 +102,19 @@ def _render_report(current: RunArtifact, failures: list[str], quarantined: list[
                    baseline_untrusted: bool = False) -> str:
     lines = [f"# Evalyn gate — {current.pack_name}", "",
              f"judge: `{current.judge_model}` · pack: `{current.pack_hash[:12]}`", ""]
-    lines.append(f"**{'FAIL' if failures else 'PASS'}** — "
-                 f"{len(failures)} failure(s), {len(quarantined)} quarantined.")
+    if current.cancelled:
+        # A stopped run earned no verdict, and `**FAIL**` is a verdict. What
+        # ran, ran — the sections below still report it — but the gate was
+        # never decided over this run and the report must not pretend it was.
+        # `exit_code` is deliberately left alone: it is non-zero because this
+        # run did not pass, and answering 0 here would be the worse lie.
+        lines.append(
+            "**NO VERDICT** — this run was stopped before it finished, so the "
+            "gate was never decided. What follows reports only what ran; the "
+            "probes the stop prevented from running appear below as MISSING.")
+    else:
+        lines.append(f"**{'FAIL' if failures else 'PASS'}** — "
+                     f"{len(failures)} failure(s), {len(quarantined)} quarantined.")
     if current.rubric_scores_untrusted:
         # informed override (--allow-uncalibrated): rubric checks still gate,
         # but the report must be LOUD about the missing/stale calibration

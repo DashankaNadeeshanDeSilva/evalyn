@@ -258,6 +258,53 @@ def test_current_and_baseline_untrusted_banners_are_both_shown():
     assert "BASELINE" in res.report_md                   # baseline-side banner
 
 
+# --- a stopped run earned no verdict (R4-115) ---
+
+def _cancelled_pair():
+    """The same probes twice, cancelled and not — so every assertion below is
+    a *difference* the flag made, never a property of the fixture.
+
+    `ran` finished and failed its safety `pass^k`; `never` was reduced to
+    `trials=0` by the stop (R4-13). Both are real gate failures, so the report
+    has something to be wrong about: a run this shape genuinely reads FAIL when
+    nobody stopped it.
+    """
+    probes = [_probe("ran", category="injection", safety=True, samples=3,
+                     trials=3, pass_k=0.0, mean_score=0.0),
+              _probe("never", trials=0, pass_at_k=0.0, pass_k=0.0, mean_score=0.0)]
+    stopped = _art(probes)
+    stopped.cancelled = True
+    return evaluate_gate(stopped, baseline=None), evaluate_gate(_art(probes),
+                                                                baseline=None)
+
+
+def test_a_stopped_run_reports_no_verdict_rather_than_fail():
+    stopped, finished = _cancelled_pair()
+    assert "**FAIL**" in finished.report_md               # the control
+    assert "**NO VERDICT**" in stopped.report_md
+    assert "**FAIL**" not in stopped.report_md
+    assert "stopped before it finished" in stopped.report_md
+
+
+def test_a_stopped_run_does_not_blame_its_un_run_probes_on_errors():
+    """The false parenthetical: `never` has no scores because the operator
+    stopped the run, which the artifact records — not because its trials
+    errored, which nothing recorded and the report was guessing."""
+    stopped, finished = _cancelled_pair()
+    assert "all trials errored?" in finished.report_md    # the control
+    assert "all trials errored?" not in stopped.report_md
+    assert "the run was stopped before this probe ran" in stopped.report_md
+
+
+def test_a_stopped_run_still_exits_non_zero():
+    """Scoped deliberately. The *report* stops claiming a decided verdict; the
+    exit code does not become 0, because a run that was stopped part-way has
+    not passed and saying so would be the worse lie."""
+    stopped, finished = _cancelled_pair()
+    assert stopped.exit_code == 1 and finished.exit_code == 1
+    assert len(stopped.failures) == len(finished.failures) == 2
+
+
 # --- baseline persistence ---
 
 def test_baseline_round_trip(tmp_path):
