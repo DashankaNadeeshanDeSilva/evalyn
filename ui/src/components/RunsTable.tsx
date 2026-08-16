@@ -5,6 +5,7 @@ import { formatUsd, formatUtc } from "../format";
 import { DegradedRow } from "./DegradedRow";
 import { Flatline } from "./Flatline";
 import { VerdictHintIcon } from "./InstrumentIcon";
+import { isLive } from "./LiveRunPanel";
 import { RunStatusChip } from "./RunStatusChip";
 
 /**
@@ -189,11 +190,14 @@ function VerdictHintCell({
   mode,
   hint,
   stopped,
+  live,
 }: {
   mode: RunMode;
   hint: VerdictHint | null;
   /** An operator cancelled this run, so no verdict was earned. */
   stopped: boolean;
+  /** A process is still attached, so an absent verdict may still arrive. */
+  live: boolean;
 }) {
   if (mode !== "gate") {
     // Correctness, not damage: `compare` and `discover` have no gate verdict
@@ -216,13 +220,21 @@ function VerdictHintCell({
     );
   }
   if (hint === null) {
-    // Not damage either: nothing has been measured yet. The STATUS column
-    // beside it is what says whether the run is still going.
-    return (
+    // Not damage either: nothing has been measured. But "yet" is a promise,
+    // and only a live run can keep it — on a run that failed to start, was
+    // interrupted, or left an artifact this build cannot read, no verdict is
+    // coming and saying "not yet" invites the operator to wait for one.
+    return live ? (
       <Flatline
         variant="n/a"
         word="not yet"
         reason="this run has not written an artifact, so no verdict has been computed yet"
+      />
+    ) : (
+      <Flatline
+        variant="n/a"
+        word="never"
+        reason="this run ended without a verdict being computed, and none is coming"
       />
     );
   }
@@ -305,6 +317,7 @@ function RunRow({ run }: { run: RunSummary }) {
           mode={run.mode}
           hint={run.verdict_hint}
           stopped={run.status === "cancelled"}
+          live={isLive(run.status)}
         />
       </td>
 

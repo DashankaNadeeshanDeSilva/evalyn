@@ -23,7 +23,11 @@ export function RunsPage() {
   const degradedCount = rows.filter((row) => row.degraded).length;
 
   return (
-    <section className="pb-16">
+    // `runs-page` exists for the bundle-freshness guard and nothing else: the
+    // marker for /runs used to be `runs-empty`, which lives in RunsTable, so
+    // the one page most likely to be visited was the one page whose freshness
+    // was asserted through another file (R4-116).
+    <section className="pb-16" data-testid="runs-page">
       <div className="engrave-b flex flex-wrap items-baseline gap-x-6 gap-y-1 px-4 py-3 sm:px-6">
         <h1 className="text-display uppercase tracking-display">Runs</h1>
 

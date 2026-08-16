@@ -288,7 +288,8 @@ def cancelled_by(artifact: LoadedArtifact | None,
     Two witnesses disagree here, and only one of them is authoritative.
 
     `RunArtifact.cancelled` is written by the engine itself, at the moment it
-    honoured the cancel (`run.py:431`), and it is what makes the run exit 3
+    honoured the cancel (`engine/run.py:431` — not `discovery/run.py`, which
+    is the other file of that name), and it is what makes the run exit 3
     rather than 1 — a genuinely cancelled run also has `log.results is None`
     and reduces its un-run probes to `trials=0` (R4-13). It cannot be wrong.
 

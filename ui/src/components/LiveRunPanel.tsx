@@ -54,15 +54,17 @@ import { LiveBanner } from "./LiveBanner";
  * claiming the engine did something it may not have done for another minute —
  * or, if it never acknowledges, ever (ruling R4-11).
  *
- * ## Deferred — live checks this cannot make (prerequisite: Tasks 6, 7, 19, 20)
+ * ## Still owed — live checks this cannot make (prerequisite: Tasks 6, 7, 19, 20)
  *
  * The only stream this has met is the scripted MSW handler. Against a real
  * `evalyn ui` the wiring pass must verify:
  *
- * 1. `GET /api/runs/{id}` answers for a run whose artifact does **not exist
- *    yet** — the launch console navigates here the moment the 202 lands. If it
- *    404s instead, this panel owns that state and the run detail page must not
- *    render its "artifact could not be read" alarm over a healthy live run.
+ * 1. ~~`GET /api/runs/{id}` answers for a run whose artifact does not exist
+ *    yet.~~ **Discharged**: `server.py:_pending_detail` builds exactly that
+ *    row, so the launch console can navigate here the moment the 202 lands
+ *    without meeting a 404 or the detail page's "artifact could not be read"
+ *    alarm. Kept rather than deleted because items 2–4 below are numbered
+ *    against it in the register.
  * 2. The refetch fired on `artifact.written` finds the artifact on disk, and
  *    the status it returns is `running`/`paused` from the sidecar before that.
  * 3. A cancel that the engine never acknowledges leaves this window in

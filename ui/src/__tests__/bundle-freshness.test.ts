@@ -36,10 +36,7 @@ import { shippedDestinations } from "../nav";
  * seventh page reds here until someone maps it.
  */
 const PAGE_MARKERS: Readonly<Record<string, string>> = {
-  // /runs is the one page with no testid of its own; `runs-empty` belongs to
-  // RunsTable, which nothing but RunsPage renders (the two other files naming
-  // it only do so in prose).
-  "/runs": "runs-empty",
+  "/runs": "runs-page",
   "/launch": "launch-refusal",
   "/discoveries": "discoveries-bench",
   "/compare": "compare-boards",

@@ -287,7 +287,35 @@ describe("RunsTable", () => {
     expect(said).not.toContain("no gate");
     expect(said).not.toContain("stopped");
     expect(cell.querySelector("[data-flatlined]")).not.toBeNull();
+    expect(said, "a live run is the one case 'yet' is true of").toContain(
+      "not yet",
+    );
   });
+
+  /**
+   * The fourth thing, and the one the copy was wrong about: `verdict_hint` is
+   * `null` on a run that ENDED without one. "not yet" is a promise, and a run
+   * that failed to start or was interrupted cannot keep it — the operator is
+   * told to wait for a verdict that is not coming.
+   *
+   * Two statuses, so it is not pinned to one branch, and each is asserted
+   * against "not yet" rather than merely for "never": a cell that rendered
+   * both words, or that dropped the flatline entirely, would pass a weaker
+   * version of this.
+   */
+  it.each(["interrupted", "failed_to_start"] as const)(
+    "does not promise a verdict is still coming on a %s run",
+    (status) => {
+      renderTable([{ ...SUMMARY_GATE, status, verdict_hint: null }]);
+
+      const cell = rowFor(SUMMARY_GATE.run_id).querySelectorAll("td")[5]!;
+      const said = cell.textContent?.toLowerCase() ?? "";
+      expect(said).toContain("never");
+      expect(said, "a run that ended was told to wait").not.toContain("not yet");
+      expect(said).not.toContain("no gate");
+      expect(cell.querySelector("[data-flatlined]")).not.toBeNull();
+    },
+  );
 
   /**
    * THE CONTROL — must stay GREEN.
