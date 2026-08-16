@@ -472,7 +472,6 @@ def test_build_task_degrades_loudly_when_the_seam_is_absent(gate_pack, ctl_path,
 # 5. Gate: pause changes nothing but wall time
 # ==========================================================================
 
-@pytest.mark.filterwarnings("ignore:no price entry")
 def test_a_paused_gate_run_writes_the_same_artifact_as_an_unpaused_one(
         gate_pack, tmp_path, ctl_path):
     """Step 1(a). A 2 s pause must change NOTHING but wall time.
@@ -508,7 +507,6 @@ def test_a_paused_gate_run_writes_the_same_artifact_as_an_unpaused_one(
                                  for p in paused.probes)
 
 
-@pytest.mark.filterwarnings("ignore:no price entry")
 def test_only_time_varying_fields_differ_between_two_uncontrolled_runs(gate_pack,
                                                                        tmp_path):
     """THE CONTROL for the test above — Task 18's, re-run here so this file's
@@ -527,7 +525,6 @@ def test_only_time_varying_fields_differ_between_two_uncontrolled_runs(gate_pack
 # 6. Gate: a cancelled run is marked, and is never a verdict
 # ==========================================================================
 
-@pytest.mark.filterwarnings("ignore:no price entry")
 def test_a_cancelled_gate_run_marks_the_artifact_and_still_writes_it(
         gate_pack, tmp_path, ctl_path):
     sink = _RecordingSink()
@@ -549,7 +546,6 @@ def test_a_cancelled_gate_run_marks_the_artifact_and_still_writes_it(
         == ["cancelled"]
 
 
-@pytest.mark.filterwarnings("ignore:no price entry")
 def test_a_fully_cancelled_run_is_not_reported_as_a_dead_target(gate_pack,
                                                                 tmp_path, ctl_path):
     """`run_gate` raises "no probe collected a single scored trial" when every
@@ -585,7 +581,6 @@ class _CancelledAfterScoring:
         return None      # no manager: nothing is ever stopped
 
 
-@pytest.mark.filterwarnings("ignore:no price entry")
 def test_a_cancel_that_lands_after_scoring_still_marks_the_artifact(gate_pack,
                                                                     tmp_path):
     art = _gate(gate_pack, tmp_path, name="late", controller=_CancelledAfterScoring())
@@ -1215,7 +1210,6 @@ class _CancelOnEvent:
         return None
 
 
-@pytest.mark.filterwarnings("ignore:no price entry")
 async def test_a_cancel_at_the_replay_boundary_stops_a_discovery_run(
         discover_run_pack, tmp_path, monkeypatch, ctl_path):
     """I2. Until the in-hunt seam existed this was the WHOLE discover cancel
@@ -1256,7 +1250,6 @@ async def test_a_cancel_at_the_replay_boundary_stops_a_discovery_run(
         == ["cancelled"]
 
 
-@pytest.mark.filterwarnings("ignore:no price entry")
 async def test_a_pre_cancelled_discovery_run_stops_inside_the_hunt(
         discover_run_pack, tmp_path, monkeypatch, ctl_path):
     """I3. The in-hunt checkpoint, reachable at last.

@@ -237,11 +237,6 @@ def live_example_pack(monkeypatch, toy_target, live_pack_dir):
 # Step 1 — discover -> confirm -> emit -> replay, on the real pack
 # --------------------------------------------------------------------------
 
-# Inert since the mockllm stub was priced at zero: nothing in this test emits
-# `no price entry` any more. Kept only so the sweep of all 21 such decorators
-# (this file, test_run.py, test_control.py, test_events_noop.py) lands as one
-# change — removing 1 of 21 would just look like an inconsistency.
-@pytest.mark.filterwarnings("ignore:no price entry")
 async def test_discover_toy_end_to_end(live_example_pack, tmp_path, monkeypatch):
     """The first half of the flywheel, on `packs/example` at zero spend.
 
