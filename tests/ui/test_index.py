@@ -550,6 +550,78 @@ def test_each_mode_carries_the_field_its_cancel_rule_reads():
     assert not hasattr(_COMPARE_OK, "partial")
 
 
+def test_every_artifact_type_the_loader_can_produce_has_a_cancel_rule():
+    """The per-mode rules are an `isinstance` chain, and a chain has a bottom.
+
+    `_TYPED_LOADER` is the only thing that ever puts a value in
+    `LoadedArtifact.typed`, so a fourth mode adds a class there — and if it adds
+    no rule beside it, `cancelled_by` falls out of the chain into
+    `sidecar.control is cancel` and every completed run of that mode beside a
+    leftover cancel file is relabelled `cancelled` again. Nothing else reds on
+    that: the per-mode tests above only know about the three types that exist
+    today. This equality is what makes the omission fail in the repo, one
+    keystroke after it is introduced.
+    """
+    assert set(ix._CANCEL_RULE_TYPES) \
+        == {fn.__self__ for fn in ix._TYPED_LOADER.values()}
+
+
+def test_an_unknown_artifact_type_raises_rather_than_trusting_the_file():
+    """...and if one ships anyway, it fails where it happens.
+
+    The stale file is the whole point of the fixture: a silent fall-through
+    would answer `True` here — the completed-run relabel, reinstated for a mode
+    nobody wrote a rule for — so `pytest.raises` fails the moment the guard is
+    removed rather than merely reporting a different status.
+
+    The two arms below are the control. The fall-through is *correct* for both
+    of them and must survive this: a run with no artifact at all (a cancelled
+    `compare` leaves nothing else behind) and an artifact this build cannot
+    parse both have no artifact-side answer, and the file is all there is.
+    """
+    class FourthModeArtifact:
+        """A mode added after this rule was written."""
+
+    stale = SidecarState(present=True, control=m.ControlAction.cancel, exit_code=0)
+    with pytest.raises(TypeError, match="no cancel rule"):
+        ix.cancelled_by(_loaded(FourthModeArtifact()), stale)
+
+    assert ix.cancelled_by(None, stale) is True, "no artifact: the file is all there is"
+    assert ix.cancelled_by(_loaded(None, error="boom"), stale) is True, \
+        "unreadable artifact: likewise"
+
+
+def test_an_undecidable_hint_is_never_reported_as_an_operator_stopping_the_run(
+        monkeypatch):
+    """The `hint is None` guard keys on `typed.cancelled`, not on hint-absence.
+
+    Both arms fake a future this module has to survive, because neither is
+    reachable today — `verdict_hint_of` returns `None` only for a cancelled
+    artifact, which step 3 has already returned for.
+
+    * The **reordering** arm removes step 3 (the thing the guard exists to
+      survive) and asserts a genuinely cancelled run still reads `cancelled`.
+      Delete the guard and it reads `passed` — BACKLOG-1's overclaim, back.
+    * The **second `None` case** arm gives `verdict_hint_of` the undecidable
+      verdict it may one day grow, on an artifact nobody cancelled. Key the
+      guard on `hint is None` instead and it answers `cancelled`, telling the
+      operator someone stopped a run that nobody touched.
+
+    They pull in opposite directions, so no single-branch implementation passes
+    both: `cancelled` unconditionally fails the second, `invalid`
+    unconditionally fails the first.
+    """
+    monkeypatch.setattr(ix, "cancelled_by", lambda artifact, sidecar: False)
+    cancelled = _loaded(_gate_artifact(cancelled=True))
+    assert verdict_hint_of(cancelled.typed) is None, "not a vacuous fixture"
+    assert derive_status(cancelled, SidecarState(), None) is m.RunStatus.cancelled
+
+    finished = _loaded(_gate_artifact())
+    assert verdict_hint_of(finished.typed) is m.VerdictHint.passed
+    monkeypatch.setattr(ix, "verdict_hint_of", lambda artifact: None)
+    assert derive_status(finished, SidecarState(), None) is m.RunStatus.invalid
+
+
 def test_a_stale_pause_file_still_does_not_relabel_a_finished_run():
     """The defect was cancel-specific and the fix must keep it that way — a
     `pause` orphan was verified to leave its run reading `gate_failed`."""

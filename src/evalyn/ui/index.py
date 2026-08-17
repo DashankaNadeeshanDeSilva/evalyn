@@ -114,6 +114,15 @@ _TYPED_LOADER = {
     RunMode.discover: DiscoveryArtifact.from_dict,
 }
 
+#: Every artifact class `cancelled_by` has a per-mode cancel rule for — the
+#: classes `_TYPED_LOADER` can produce, and a test pins the two sets equal. A
+#: fourth mode that adds a loader entry without a rule would otherwise reach
+#: `cancelled_by`'s last line and go back to trusting `<stem>.control.json`,
+#: silently reinstating the relabel-a-completed-run defect that rule closes;
+#: with this, it reds in the repo and raises where it happens.
+_CANCEL_RULE_TYPES: tuple[type, ...] = (
+    RunArtifact, CompareArtifact, DiscoveryArtifact)
+
 #: `YYYYmmddTHHMMSS` — the fixed head of every run id, with an optional
 #: microsecond tail after it. Spelled as a length rather than a pattern so this
 #: module keeps the promise that the grammar lives in exactly one place (R4-7).
@@ -323,8 +332,19 @@ def cancelled_by(artifact: LoadedArtifact | None,
     race registered in `docs/JOURNAL.md` from all three modes to the one case
     that has no artifact-side answer left: a `discover` run that is partial for
     some other reason, beside a cancel file that was never honoured.
+
+    The last line is reachable for exactly two things — no artifact at all, and
+    an artifact this build cannot parse (`typed is None`) — plus the partial
+    `discover` above. An artifact of a *fourth* type raises instead of reaching
+    it: falling through would hand a whole new mode back to the control file,
+    which is this defect again with a different class name on it.
     """
     typed = artifact.typed if artifact is not None else None
+    if typed is not None and not isinstance(typed, _CANCEL_RULE_TYPES):
+        raise TypeError(
+            f"cancelled_by has no cancel rule for {type(typed).__name__}; add "
+            "one here and to _CANCEL_RULE_TYPES rather than letting a new mode "
+            "fall through to trusting <stem>.control.json")
     if isinstance(typed, RunArtifact):
         return bool(typed.cancelled)
     if isinstance(typed, CompareArtifact):
@@ -405,12 +425,19 @@ def derive_status(artifact: LoadedArtifact | None,
         return RunStatus.gate_failed if gate_result.exit_code else RunStatus.passed
     hint = verdict_hint_of(typed)
     if hint is None:
-        # Only a cancelled run has no hint, and step 3 already returned for it.
-        # Stated rather than assumed: a `None` reaching here would otherwise
-        # fall through the `else` below and be painted `passed` — the same
-        # overclaim BACKLOG-1 fixed, re-entering through the door its fix
-        # opened. A reordering of the steps above must not be able to do that.
-        return RunStatus.cancelled
+        # Unreachable today: `artifact.cancelled` is `verdict_hint_of`'s only
+        # `None` case and step 3 already returned `cancelled` for it. What this
+        # guarantees is narrower than "the run was cancelled" — it is that an
+        # undecided hint is never painted `passed` by the `else` below, which is
+        # the overclaim BACKLOG-1 fixed, re-entering through the door its fix
+        # opened. A reordering of the steps above cannot reopen it.
+        #
+        # Keyed on `typed.cancelled`, not on the absence of a hint, because the
+        # two stop being the same fact the day `verdict_hint_of` grows a second
+        # `None` case: on hint-absence, a run nobody stopped would be reported to
+        # the operator as one somebody did. `invalid` is this module's "parsed,
+        # but the numbers mean nothing", which is what an undecidable hint is.
+        return RunStatus.cancelled if typed.cancelled else RunStatus.invalid
     return (RunStatus.gate_failed if hint is VerdictHint.failed
             else RunStatus.passed)
 

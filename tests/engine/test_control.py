@@ -916,6 +916,93 @@ def test_a_cancelled_compare_raises_before_any_judge_call(tmp_path, ctl_path,
         == ["cancelled"]
 
 
+def test_a_cancelled_compare_writes_no_artifact_at_all(tmp_path, ctl_path,
+                                                       monkeypatch):
+    """The engine-side half of a rule that is enforced in another module.
+
+    `evalyn.ui.index.cancelled_by` decides "did an operator stop this run?" per
+    mode, and for `compare` it answers **False whenever a `CompareArtifact`
+    exists on disk** — the artifact's existence *is* the proof the run reached
+    the end, which is what stops a leftover `<stem>.control.json` from
+    relabelling a finished comparison as `cancelled`. `gate` grounds that claim
+    in `RunArtifact.cancelled` and `discover` in `partial` (both pinned in this
+    file); `compare`'s only ground is the absence asserted below.
+
+    So this is a coupling, not a local fact. Make compare symmetric with
+    discover — write a partial artifact on the abort path to preserve the spend
+    record, exactly the rationale `discovery/run.py:554` gives for doing so —
+    and every genuinely cancelled compare starts reporting as completed. This
+    test is the thing that says so; the fix then belongs in `cancelled_by`,
+    which needs a new witness, not here.
+
+    Not vacuous: the same glob, in the same directory, does find the file the
+    shared writer puts there (the writer both the CLI's happy path and
+    `run_compare`'s budget-breach path go through). The suffix is read from
+    `_MODE_SUFFIX` rather than typed out, so a renamed suffix cannot quietly
+    turn this into a search for a name nothing ever writes.
+    """
+    from evalyn.engine import compare as cmp_mod
+    from evalyn.engine.compare import CompareArtifact
+    from evalyn.engine.run import pack_fingerprint
+
+    async def _never(*a, **kw):
+        raise AssertionError("a cancelled compare judged a pair anyway")
+
+    monkeypatch.setattr(cmp_mod, "judge_pair", _never)
+
+    d = tmp_path / "cpack"
+    (d / "probes").mkdir(parents=True)
+    (d / "rubrics").mkdir()
+    (d / "target.yaml").write_text(
+        "name: cmp\nsessions:\n  open: {method: POST, path: /session}\n"
+        "  message: {method: POST, path: /chat}\n"
+        "env: {base_url: http://localhost:8899}\n"
+        "allowlist: [http://localhost:8899]\n")
+    (d / "rubrics" / "tone.md").write_text("# Tone rubric\n## Calm\nStays calm.\n")
+    (d / "probes" / "p.yaml").write_text(
+        "- id: r1\n  category: chat\n  turns: [hi]\n  checks:\n"
+        "    - { type: rubric, rubric: tone, required: true }\n")
+    pack = load_pack(str(d))
+
+    def _art(created_at):
+        return RunArtifact(
+            pack_name="cmp", pack_hash=pack_fingerprint(pack),
+            judge_model="mockllm/model", created_at=created_at,
+            probes=[ProbeResult(
+                id="r1", category="chat", kind="regression",
+                safety_critical=False, samples=1, trials=1,
+                trial_records=[{"epoch": 0, "transcript": "User: hi",
+                                "session_seconds": 1.0,
+                                "invariant_failures": 0}])],
+            log_path="runs/logs")
+
+    out_dir = tmp_path / "runs"
+    sink = _RecordingSink()
+    c = _controller(ctl_path, sink)
+    c.request("cancel")
+    with pytest.raises(RunCancelled):
+        asyncio.run(cmp_mod.run_compare(
+            pack, _art("2026-08-01T00:00:00+00:00"),
+            _art("2026-08-02T00:00:00+00:00"), "openai/gpt-4o",
+            out_dir=str(out_dir), sink=sink, controller=c))
+
+    # Broader than the compare glob on purpose: an abort-path artifact written
+    # under any name is still a file the cockpit would find and render.
+    assert list(out_dir.rglob("*.json")) == []
+    assert [f["path"] for n, f in sink.events if n == "artifact.written"] == []
+
+    written = cmp_mod.write_compare_artifact(
+        CompareArtifact(
+            pack_name="cmp", pack_hash=pack_fingerprint(pack),
+            judge_model="openai/gpt-4o", created_at="2026-08-03T00:00:00+00:00",
+            label_a="A", label_b="B", source_a="", source_b="",
+            created_at_a="2026-08-01T00:00:00+00:00",
+            created_at_b="2026-08-02T00:00:00+00:00",
+            categories={}, probes=[], hard_metrics={}, excluded_pairs=0),
+        out_dir=str(out_dir))
+    assert list(out_dir.rglob(f"*{_MODE_SUFFIX['compare']}.json")) == [written]
+
+
 # ==========================================================================
 # 11. The pin
 # ==========================================================================
