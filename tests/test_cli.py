@@ -731,6 +731,41 @@ def test_gate_update_baseline_echoes_fail_verdict_but_still_saves(monkeypatch, t
     assert baseline_path.exists()
 
 
+def test_force_blessing_a_cancelled_run_echoes_no_verdict_not_fail(monkeypatch, tmp_path):
+    """A stopped run has no verdict to bless, and must not be called a FAIL.
+
+    Reachable only through `--force-baseline` — the guard above refuses a
+    cancelled artifact outright. The probe here PASSES on its own terms, so
+    `failures` is empty and the old two-word echo would have had to choose
+    between PASS and FAIL for a run that earned neither: `evaluate_gate`
+    answers exit 3 for a cancelled artifact, which is truthy, so it would have
+    said FAIL — blaming the product for a run an operator stopped.
+
+    The `not in` assertions are the discriminating half. A test asserting only
+    that "NO VERDICT" appears would also pass on a line that printed both.
+    """
+    monkeypatch.setenv("EVALYN_TARGET_URL", "http://localhost:8899")
+    art = _artifact([_probe("ok-probe", safety=True, pass_k=1.0)])
+    art.cancelled = True
+    monkeypatch.setattr("evalyn.engine.run.run_gate", _fake_run_gate(art))
+    baseline_path = tmp_path / "b.json"
+    result = runner.invoke(app, ["gate", "--target", PACK,
+                                 "--baseline", str(baseline_path),
+                                 "--update-baseline", "--force-baseline"])
+
+    # Anchored, not a substring search: an unanchored "blessing" also matches
+    # the tmp-path echoed by the line below it, which contains this test's own
+    # name. A filter that reads its own function name is a filter that will
+    # break the day somebody renames the test.
+    blessed = [ln for ln in result.stdout.splitlines()
+               if ln.startswith("gate: blessing ")]
+    assert len(blessed) == 1, "the bless echo is one line, or this reads the wrong one"
+    assert "NO VERDICT" in blessed[0]
+    assert "FAIL" not in blessed[0]
+    assert "PASS" not in blessed[0]
+    assert baseline_path.exists()
+
+
 # ---------------- round-2 N4: --update-baseline must not bless bad artifacts
 
 def test_update_baseline_refuses_untrusted_rubric_artifact(monkeypatch, tmp_path):

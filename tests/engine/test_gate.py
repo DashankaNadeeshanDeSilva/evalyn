@@ -287,22 +287,106 @@ def test_a_stopped_run_reports_no_verdict_rather_than_fail():
 
 
 def test_a_stopped_run_does_not_blame_its_un_run_probes_on_errors():
-    """The false parenthetical: `never` has no scores because the operator
-    stopped the run, which the artifact records — not because its trials
-    errored, which nothing recorded and the report was guessing."""
+    """The false parenthetical: on a run nobody stopped, `never` having no
+    scores is guessed to be errors and the report says so with a `?`. On a
+    stopped run that guess is not merely hedged, it is one of two stories the
+    artifact cannot choose between — see the hedging test below."""
     stopped, finished = _cancelled_pair()
     assert "all trials errored?" in finished.report_md    # the control
     assert "all trials errored?" not in stopped.report_md
     assert "the run was stopped before this probe ran" in stopped.report_md
 
 
+def test_a_stopped_run_hedges_both_causes_of_a_probe_with_no_scores():
+    """`trials == 0` has TWO causes and the artifact records neither.
+
+    A stop reduces an un-run probe to `trials=0` (R4-13) and a fully-ERRORED
+    probe stays at `trials=0` too (`run.py`: an epoch that produced no checks in
+    any scorer is not counted). So on a cancelled run, a target that died before
+    the operator pressed Cancel is indistinguishable from a probe the stop
+    prevented — and naming only the stop sends the reader past a real fault.
+    """
+    stopped, _ = _cancelled_pair()
+    (missing,) = [f for f in stopped.failures if "`never`" in f]
+    assert "stopped" in missing and "errored" in missing
+    assert "does not record which" in missing
+
+
+def test_a_stopped_run_does_not_blame_an_un_run_capability_probe_on_errors():
+    """The same hedge on the branch that runs FIRST for capability probes, and
+    so never saw the cancelled fork at all: an un-run capability probe on a
+    stopped run was still being reported as `all trials errored or unscored`."""
+    cap = _probe("cap", category="grounding", kind="capability", trials=0,
+                 pass_at_k=0.0, pass_k=0.0, mean_score=0.0)
+    stopped = _art([cap])
+    stopped.cancelled = True
+    ran, halted = evaluate_gate(_art([cap]), None), evaluate_gate(stopped, None)
+
+    assert "all trials errored or unscored" in ran.report_md          # control
+    assert "all trials errored or unscored" not in halted.report_md
+    assert "the run was stopped before this probe ran" in halted.report_md
+    assert "does not record which" in halted.report_md
+    assert halted.failures == []      # capability probes still never red a build
+
+
 def test_a_stopped_run_still_exits_non_zero():
     """Scoped deliberately. The *report* stops claiming a decided verdict; the
     exit code does not become 0, because a run that was stopped part-way has
-    not passed and saying so would be the worse lie."""
+    not passed and saying so would be the worse lie.
+
+    3, not 1: this run's probes really did fail, but a stopped run's failures
+    are not the product's to answer for, and the CLI already spells that
+    `run-invalid` (`cli.py`, exit 3). The control run — same probes, no stop —
+    is a genuine FAIL and keeps 1, so the two stay distinguishable.
+    """
     stopped, finished = _cancelled_pair()
-    assert stopped.exit_code == 1 and finished.exit_code == 1
+    assert stopped.exit_code == 3 and finished.exit_code == 1
     assert len(stopped.failures) == len(finished.failures) == 2
+
+
+def _clean_cancelled_pair():
+    """A cancel that landed AFTER every probe had scored.
+
+    Not hypothetical: `test_control.py::test_a_cancel_that_lands_after_scoring
+    _still_marks_the_artifact` builds exactly this from a real run — complete,
+    passing, and `cancelled` the only thing wrong with it. It is the shape that
+    makes `1 if failures else 0` dangerous, because there are no failures.
+    """
+    probes = [_probe("ran", category="grounding", mean_score=1.0)]
+    stopped = _art(probes)
+    stopped.cancelled = True
+    return evaluate_gate(stopped, None), evaluate_gate(_art(probes), None)
+
+
+def test_a_cancelled_run_whose_probes_all_passed_still_never_exits_zero():
+    """0 does not mean "no failures" to anyone downstream — it means PASS.
+
+    `GET /api/runs/{id}/gate` serves this integer verbatim, and a 0 beside a
+    report whose own banner reads **NO VERDICT** is the report calling the
+    endpoint a liar. The control proves the artifact is otherwise spotless, so
+    the only thing the assertion can be reading is the stop.
+    """
+    stopped, finished = _clean_cancelled_pair()
+    assert finished.exit_code == 0 and finished.failures == []   # control
+    assert stopped.failures == []          # nothing to blame — that is the trap
+    assert stopped.exit_code == 3
+    assert "**NO VERDICT**" in stopped.report_md
+
+
+def test_the_no_verdict_banner_only_points_below_when_there_is_something_there():
+    """The banner used to promise "the probes the stop prevented from running
+    appear below as MISSING" on every cancelled run. On a cancel that landed
+    after scoring there is no such probe and no such line, so the promise sent
+    the reader looking for a section that is not there. The partial run is the
+    control: the pointer must survive where it is true."""
+    stopped_clean, _ = _clean_cancelled_pair()
+    stopped_partial, _ = _cancelled_pair()
+
+    assert "1 probe(s) recorded no trials at all" in stopped_partial.report_md
+    assert "MISSING" in stopped_partial.report_md                      # control
+    assert "MISSING" not in stopped_clean.report_md
+    assert "recorded no trials" not in stopped_clean.report_md
+    assert "the stop landed after they had run" in stopped_clean.report_md
 
 
 # --- an unmeasured 0.00 is not a measured one ---
@@ -338,6 +422,31 @@ def test_the_note_reaches_a_regression_line_too():
     assert "NO USABLE SCORE" in failure
 
 
+def test_a_probe_nobody_could_score_is_reported_even_when_the_baseline_is_zero_too():
+    """The hole: every arm of the regression branch is a COMPARISON, and a probe
+    nobody could score compares fine.
+
+    Its fallback mean is 0.00, so against a baseline mean of 0.00 the drop is
+    neither `> band` nor `> 0`, and the `(no baseline)` arm cannot run because a
+    baseline exists — the probe produced no line anywhere and a total judge
+    outage read as a clean PASS. A 0.00 baseline mean is reachable:
+    `--update-baseline` blesses FAIL verdicts.
+
+    `ctl` is the control and must stay silent: a measured 0.00 that matches its
+    measured baseline is a genuine non-event, so this is not "print every
+    probe", it is "never swallow a probe that was not measured".
+    """
+    base = _art([_probe("g", mean_score=0.0), _probe("ctl", mean_score=0.0)])
+    cur = _art([_probe("g", trials=3, unsure_trials=3, mean_score=0.0),
+                _probe("ctl", trials=3, mean_score=0.0)])
+    res = evaluate_gate(cur, baseline=base)
+
+    lines = res.failures + res.quarantined
+    assert [ln for ln in lines if "`ctl`" in ln] == []            # control
+    (line,) = [ln for ln in lines if "`g`" in ln]
+    assert "NO USABLE SCORE" in line
+
+
 def test_a_safety_probe_that_passes_on_an_unmeasured_mean_is_quarantined():
     """The shape actually on disk — 7 artifacts in `runs/` carry it.
 
@@ -359,6 +468,70 @@ def test_a_safety_probe_that_passes_on_an_unmeasured_mean_is_quarantined():
     assert res.failures == []
     (q,) = res.quarantined
     assert "pass^k=1.0 stands" in q and "not a measurement" in q
+
+
+def test_every_unmeasured_line_spends_the_same_words_from_one_source():
+    """ONE source for `NO USABLE SCORE`, proven structurally.
+
+    The marker is what a reader greps and what a consumer keys on, and the
+    safety lines used to hand-write their own wording — so a future edit to
+    `_NO_SIGNAL` would have left them stale and silently unfindable. Asserting
+    each line *ends with* the shared constant fails for any re-typed copy, which
+    a substring check for the marker text would not.
+    """
+    from evalyn.engine.gate import _NO_SIGNAL
+    note = _NO_SIGNAL.format(n=3)
+
+    unmeasured = dict(trials=3, unsure_trials=3, mean_score=0.0)
+    cur = _art([_probe("passes", category="injection", safety=True, samples=3,
+                       pass_k=1.0, **unmeasured),
+                _probe("fails", category="injection", safety=True, samples=3,
+                       pass_k=0.0, **unmeasured),
+                _probe("regressed", **unmeasured),
+                _probe("no-base", **unmeasured),
+                _probe("cap", kind="capability", **unmeasured)])
+    res = evaluate_gate(cur, baseline=_art([_probe("regressed", mean_score=1.0)]))
+
+    lines = res.failures + res.quarantined + res.report_md.splitlines()
+    for pid in ("passes", "fails", "regressed", "no-base", "cap"):
+        (line, *_) = [ln for ln in lines if f"`{pid}`" in ln]
+        assert line.endswith(note), f"{pid}: {line!r}"
+
+
+def test_a_safety_failure_says_whether_it_was_measured_at_all():
+    """Both probes FAIL, and both must: an unsure REQUIRED check already forces
+    `pass^k` to 0, and a safety probe nobody could score does not get the
+    benefit of the doubt. That verdict is pinned policy and this does not touch
+    it.
+
+    What it does touch is that the two were told apart only by comparing an
+    unsure count against a trial total the line never printed. `real` is the
+    control — a measured, on-its-merits safety failure — and it must NOT pick up
+    the marker, or the marker would just mean "a safety probe failed".
+    """
+    from evalyn.engine.gate import _NO_SIGNAL
+    real = _probe("real", category="injection", safety=True, samples=3, trials=3,
+                  pass_k=0.0, unsure_trials=0, mean_score=0.0)
+    outage = _probe("outage", category="injection", safety=True, samples=3,
+                    trials=3, pass_k=0.0, unsure_trials=3, mean_score=0.0)
+    res = evaluate_gate(_art([real, outage]), None)
+
+    assert res.exit_code == 1 and len(res.failures) == 2
+    (measured,) = [f for f in res.failures if "`real`" in f]
+    (absent,) = [f for f in res.failures if "`outage`" in f]
+    assert "NO USABLE SCORE" not in measured
+    assert absent.endswith(_NO_SIGNAL.format(n=3))
+
+
+def test_a_partly_unsure_safety_failure_still_reports_its_unsure_count():
+    """The control for the branch above: two unsure trials out of three is a
+    real measurement with a caveat, so the pre-existing `(2 unsure)` suffix must
+    survive — the new marker replaces it only when there is nothing to measure.
+    """
+    p = _probe("inj", category="injection", safety=True, samples=3, trials=3,
+               pass_k=0.0, unsure_trials=2, mean_score=0.5)
+    (f,) = evaluate_gate(_art([p]), None).failures
+    assert "(2 unsure)" in f and "NO USABLE SCORE" not in f
 
 
 def test_a_safety_probe_with_a_real_mean_is_not_quarantined():
@@ -457,3 +630,100 @@ def test_load_baseline_corrupt_json_is_not_misdiagnosed_as_old_schema(tmp_path):
     with pytest.raises(RuntimeError, match=r"(?s)baseline.*not valid JSON") as exc:
         load_baseline(str(path))
     assert "predates" not in str(exc.value)
+
+
+# --- the unmeasured mean is recorded as None, and the gate does not notice ----
+#
+# `run.py` records `mean_score=None` when no trial produced a usable score, so
+# an unmeasured probe stops being indistinguishable from one that genuinely
+# scored zero everywhere. The gate is the ONE consumer that must be unmoved by
+# that: verdicts are pinned policy and this change is a reporting fix. These
+# tests are the proof, and they are written as equivalence rather than as
+# expected literals — a re-derived literal could drift with the report wording,
+# but "these two artifacts gate identically" cannot.
+
+#: The shape `run.py` now records `mean_score=None` for: trials ran, and every
+#: one of them came back unsure. `_probe` leaves `expected_trials` at 0
+#: ("unknown"), which skips the INCOMPLETE check so these reach the arms under
+#: test rather than short-circuiting there.
+_UNMEASURED = dict(trials=3, unsure_trials=3)
+
+
+@pytest.mark.parametrize("base_mean, band", [
+    (1.0, 0.1),    # a big drop: REGRESSION fires, and must keep firing
+    (0.05, 0.1),   # a drop inside the band: quarantine arm
+    (0.0, 0.1),    # no drop at all: the `_no_usable_score` catch-all arm
+])
+def test_none_mean_gates_exactly_as_the_old_fallback_zero_did(base_mean, band):
+    """A `None` mean and the fabricated `0.0` it replaced gate identically.
+
+    Same probe twice — same trials, same unsure count, same everything — except
+    that one carries the new `None` and the other the `0.0` an artifact written
+    before this change carries. Exit code, failures and the rendered report must
+    match character for character, across every arm a non-safety probe can take.
+    That is `gate._mean` doing its job: it re-applies the old fallback at the
+    point of use, so no verdict and no line of prose moved.
+    """
+    baseline = _art([_probe("g", mean_score=base_mean)])
+    nulled = evaluate_gate(_art([_probe("g", mean_score=None, **_UNMEASURED)]),
+                           baseline, band=band)
+    legacy = evaluate_gate(_art([_probe("g", mean_score=0.0, **_UNMEASURED)]),
+                           baseline, band=band)
+    assert (nulled.exit_code, nulled.failures, nulled.quarantined, nulled.report_md) \
+        == (legacy.exit_code, legacy.failures, legacy.quarantined, legacy.report_md)
+    # Not vacuous: the pair really did travel an arm that reads the mean, and
+    # the reader was told the 0.00 printed there was never measured.
+    assert "NO USABLE SCORE" in nulled.report_md
+
+
+def test_a_none_mean_still_fails_the_regression_gate_it_used_to():
+    """The fail-closed half, asserted on its own so the parametrize can't hide it.
+
+    An unmeasured probe against a 1.0 baseline is a REGRESSION today and stays
+    one. If `_mean` were ever "simplified" into skipping the comparison when the
+    mean is absent, a total judge outage would read as a clean pass — the exact
+    fail-open round-2 N3 closed.
+    """
+    res = evaluate_gate(_art([_probe("g", mean_score=None, **_UNMEASURED)]),
+                        _art([_probe("g", mean_score=1.0)]))
+    assert res.exit_code == 1
+    assert any("REGRESSION" in f for f in res.failures)
+
+
+def test_a_none_mean_in_the_BASELINE_is_not_read_as_a_missing_baseline():
+    """A blessed baseline may itself carry an unmeasured probe.
+
+    `--update-baseline` blesses FAIL verdicts, so a baseline probe nobody could
+    score is reachable, and once such a run is blessed its `mean_score` is
+    `None`. `_baseline_mean` must fold that to 0.0, not return the `None` that
+    means "this probe is absent from the baseline" — otherwise a blessed probe
+    is reported as having no baseline at all, on a run where it plainly does.
+    """
+    unmeasured_baseline = _art([_probe("g", mean_score=None, **_UNMEASURED)])
+    res = evaluate_gate(_art([_probe("g", mean_score=0.5)]), unmeasured_baseline)
+    assert not any("no baseline" in q for q in res.quarantined), res.quarantined
+    # control: the same current probe against a baseline that truly lacks it
+    absent = evaluate_gate(_art([_probe("g", mean_score=0.5)]),
+                           _art([_probe("other", mean_score=1.0)]))
+    assert any("no baseline" in q for q in absent.quarantined)
+
+
+def test_a_float_mean_artifact_written_before_this_change_still_loads(tmp_path):
+    """Every artifact and baseline on disk carries a float. They must keep working.
+
+    `from_dict` does no type coercion, so the guarantee is really about the
+    consumers: a float mean survives the round trip unchanged and still gates.
+    The `None` round trip is asserted beside it because JSON has a null and
+    `asdict` writes it — a loader that choked on it would strand every artifact
+    written from here on.
+    """
+    legacy = _art([_probe("g", mean_score=0.0, **_UNMEASURED)])
+    path = tmp_path / "baseline.json"
+    save_baseline(legacy, str(path))
+    assert load_baseline(str(path)).probes[0].mean_score == 0.0
+
+    current = _art([_probe("g", mean_score=None, **_UNMEASURED)])
+    save_baseline(current, str(path))
+    assert load_baseline(str(path)).probes[0].mean_score is None
+    # and the null really is what reached the file, not a coerced zero
+    assert json.loads(path.read_text())["probes"][0]["mean_score"] is None

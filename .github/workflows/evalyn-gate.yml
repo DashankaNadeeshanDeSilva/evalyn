@@ -118,6 +118,12 @@ jobs:
               '2': '**SETUP/INFRA** — the eval never (fully) reached the product: ' +
                 'stale rubric calibration, an unreachable target, budget exhaustion, ' +
                 'or a corrupt/pre-#2a baseline. Not a product regression.',
+              // 3 is the CLI's run-invalid code, raised before it ever reaches
+              // the gate's own 0/1 — a run somebody stopped mid-flight is not a
+              // verdict, and the report above says so in the same words.
+              '3': '**NO VERDICT** — the run was CANCELLED before it finished, so the ' +
+                'gate was never decided over it. The report above covers only the ' +
+                'probes that ran. Neither a pass nor a product regression: re-run it.',
             };
             const explainer = explainers[exitCode] ?? `unknown exit code \`${exitCode}\``;
             const body = `${marker}\n\n${report}\n\n---\n\nEvalyn gate exit code \`${exitCode}\`: ${explainer}`;
