@@ -114,6 +114,15 @@ _TYPED_LOADER = {
     RunMode.discover: DiscoveryArtifact.from_dict,
 }
 
+#: Every artifact class `cancelled_by` has a per-mode cancel rule for — the
+#: classes `_TYPED_LOADER` can produce, and a test pins the two sets equal. A
+#: fourth mode that adds a loader entry without a rule would otherwise reach
+#: `cancelled_by`'s last line and go back to trusting `<stem>.control.json`,
+#: silently reinstating the relabel-a-completed-run defect that rule closes;
+#: with this, it reds in the repo and raises where it happens.
+_CANCEL_RULE_TYPES: tuple[type, ...] = (
+    RunArtifact, CompareArtifact, DiscoveryArtifact)
+
 #: `YYYYmmddTHHMMSS` — the fixed head of every run id, with an optional
 #: microsecond tail after it. Spelled as a length rather than a pattern so this
 #: module keeps the promise that the grammar lives in exactly one place (R4-7).
@@ -209,7 +218,7 @@ class SidecarState:
 # 3. Derived views over a loaded artifact
 # --------------------------------------------------------------------------
 
-def verdict_hint_of(artifact: RunArtifact) -> VerdictHint:
+def verdict_hint_of(artifact: RunArtifact) -> VerdictHint | None:
     """The cheap approximation of a gate verdict, from `probes[]` only.
 
     It reproduces the three gate rules that need no baseline — MISSING,
@@ -217,7 +226,18 @@ def verdict_hint_of(artifact: RunArtifact) -> VerdictHint:
     which does. So `passed` here means "nothing failed *on its own terms*",
     never "the gate passed", and the SPA must render it as an approximation.
     Capability probes are excluded because they never red a build.
+
+    **A cancelled run has no hint: `None`, never `failed`.** Its un-run probes
+    come back `trials=0` (R4-13), which the MISSING rule above reds — so the
+    hint would report a gate verdict computed over only the probes that
+    happened to finish before the operator's cancel landed, which is a verdict
+    nobody earned. `None` is the wire's existing way to say "not decided"
+    (`RunSummary.verdict_hint` is `VerdictHint | None`), and the SPA already
+    renders a cancelled run as ⊘ NO VERDICT. This is the backend half of
+    BACKLOG-1, which R4-109 fixed frontend-only and deferred here.
     """
+    if artifact.cancelled:
+        return None
     probes = [p for p in artifact.probes if p.kind != "capability"]
     if not probes:
         return VerdictHint.unknown
@@ -277,7 +297,8 @@ def cancelled_by(artifact: LoadedArtifact | None,
     Two witnesses disagree here, and only one of them is authoritative.
 
     `RunArtifact.cancelled` is written by the engine itself, at the moment it
-    honoured the cancel (`run.py:431`), and it is what makes the run exit 3
+    honoured the cancel (`engine/run.py:431` — not `discovery/run.py`, which
+    is the other file of that name), and it is what makes the run exit 3
     rather than 1 — a genuinely cancelled run also has `log.results is None`
     and reduces its un-run probes to `trials=0` (R4-13). It cannot be wrong.
 
@@ -290,14 +311,46 @@ def cancelled_by(artifact: LoadedArtifact | None,
     completed evaluation's verdict must not be rewritable by a leftover file.
 
     So the control file is consulted only where there is no artifact-side
-    answer: before an artifact exists at all; when this build cannot parse the
-    one that does; and for `compare`/`discover`, whose artifacts carry no such
-    field — a cancelled `compare` writes no artifact at all
-    (`compare.py:250-256`), so the file is the only evidence it leaves.
+    answer. `compare` and `discover` carry no `cancelled` field, but neither is
+    silent about it, and reading the two of them as one — "no field, so trust
+    the file" — is what let a stale request relabel a **completed** run:
+
+    * **`compare` writes no artifact at all when it is cancelled**
+      (`compare.py:250-256`: a half-judged scoreboard is not a comparison of
+      anything). So a `CompareArtifact` on disk is itself proof the run ran to
+      completion, and any cancel file beside it arrived too late to be
+      honoured. The artifact wins, exactly as it does for `gate`.
+    * **`discover` does write one, but a cancelled run's is always
+      `partial=True`** (`discovery/run.py:437,554` — the abort path builds it
+      with `aborted=True`, and `cancelled_stops` sets `partial` on the ordinary
+      path). `partial` is not exclusive to cancels — a budget-exhausted or
+      errored run is partial too — so it cannot *confirm* a cancel, only rule
+      one out. A complete discover artifact therefore outranks the file; a
+      partial one still needs the file to say which kind of stop it was.
+
+    This is a read-side rule only. It narrows the residual control-endpoint
+    race registered in `docs/JOURNAL.md` from all three modes to the one case
+    that has no artifact-side answer left: a `discover` run that is partial for
+    some other reason, beside a cancel file that was never honoured.
+
+    The last line is reachable for exactly two things — no artifact at all, and
+    an artifact this build cannot parse (`typed is None`) — plus the partial
+    `discover` above. An artifact of a *fourth* type raises instead of reaching
+    it: falling through would hand a whole new mode back to the control file,
+    which is this defect again with a different class name on it.
     """
     typed = artifact.typed if artifact is not None else None
+    if typed is not None and not isinstance(typed, _CANCEL_RULE_TYPES):
+        raise TypeError(
+            f"cancelled_by has no cancel rule for {type(typed).__name__}; add "
+            "one here and to _CANCEL_RULE_TYPES rather than letting a new mode "
+            "fall through to trusting <stem>.control.json")
     if isinstance(typed, RunArtifact):
         return bool(typed.cancelled)
+    if isinstance(typed, CompareArtifact):
+        return False
+    if isinstance(typed, DiscoveryArtifact) and not typed.partial:
+        return False
     return sidecar.control is ControlAction.cancel
 
 
@@ -370,7 +423,22 @@ def derive_status(artifact: LoadedArtifact | None,
         return RunStatus.invalid
     if gate_result is not None:
         return RunStatus.gate_failed if gate_result.exit_code else RunStatus.passed
-    return (RunStatus.gate_failed if verdict_hint_of(typed) is VerdictHint.failed
+    hint = verdict_hint_of(typed)
+    if hint is None:
+        # Unreachable today: `artifact.cancelled` is `verdict_hint_of`'s only
+        # `None` case and step 3 already returned `cancelled` for it. What this
+        # guarantees is narrower than "the run was cancelled" — it is that an
+        # undecided hint is never painted `passed` by the `else` below, which is
+        # the overclaim BACKLOG-1 fixed, re-entering through the door its fix
+        # opened. A reordering of the steps above cannot reopen it.
+        #
+        # Keyed on `typed.cancelled`, not on the absence of a hint, because the
+        # two stop being the same fact the day `verdict_hint_of` grows a second
+        # `None` case: on hint-absence, a run nobody stopped would be reported to
+        # the operator as one somebody did. `invalid` is this module's "parsed,
+        # but the numbers mean nothing", which is what an undecidable hint is.
+        return RunStatus.cancelled if typed.cancelled else RunStatus.invalid
+    return (RunStatus.gate_failed if hint is VerdictHint.failed
             else RunStatus.passed)
 
 

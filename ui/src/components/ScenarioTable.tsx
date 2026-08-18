@@ -63,7 +63,19 @@ function Metric({
     return (
       <Flatline
         word="unrecorded"
-        reason={`this artifact did not record ${name.replace(/_/g, " ")}`}
+        reason={
+          name === "mean_score"
+            ? // Two causes, and this layer cannot tell them apart: the engine
+              // now records `null` when no trial produced a usable score, and
+              // an artifact written before that field existed omits the key —
+              // `_recorded` in `ui/index.py` answers `None` for both. Naming
+              // only the first would be the stronger, wrong claim on a legacy
+              // artifact. What is certainly true is that no mean was measured,
+              // which is the part that matters: it is not a zero.
+              "no mean was measured — either no trial produced a usable " +
+              "score, or this artifact predates the field"
+            : `this artifact did not record ${name.replace(/_/g, " ")}`
+        }
       />
     );
   }

@@ -184,20 +184,26 @@ describe("RunsTable", () => {
   });
 
   /**
-   * THE DISCRIMINATING GUARD for the stopped row.
+   * THE OLD-API GUARD — and the label is the point, because this shape is no
+   * longer one the current server can produce.
    *
    * `verdict_hint_of` reds any probe with `trials == 0`, and a cancelled run's
-   * un-run probes satisfy that trivially — so the server really does send
-   * `{status: "cancelled", verdict_hint: "failed"}` for a run nobody let
-   * finish. Measured on `20260811T212955379968-abc9a71e-example`. Reading that
-   * as a gate failure states, in one row, that the build is broken when all
-   * that happened is that an operator pressed Cancel.
+   * un-run probes satisfy that trivially — so an Evalyn from before the backend
+   * fix sends `{status: "cancelled", verdict_hint: "failed"}` for a run nobody
+   * let finish. Measured on `20260811T212955379968-abc9a71e-example`. Reading
+   * that as a gate failure states, in one row, that the build is broken when
+   * all that happened is that an operator pressed Cancel.
    *
-   * The backend field is deliberately unchanged: it is documented as a cheap
-   * approximation over `probes[]`, and it is this column's job to stop reading
-   * an approximation as a verdict.
+   * `verdict_hint_of` now returns `None` for a cancelled artifact, so THIS
+   * build's server sends `verdict_hint: null` instead — the shape pinned by the
+   * `stopped`-not-`never` test below, which is the one describing current
+   * server behaviour. What is left here is a compatibility claim and is written
+   * as one: the SPA is served by the API under `evalyn ui`, but `npm run dev`
+   * proxies `/api` to whatever `evalyn ui` is listening on 8765, and this
+   * column's promise — an approximation is never read as a verdict — must not
+   * become conditional on the peer's version.
    */
-  it("shows no pass/fail verdict on a row an operator stopped", () => {
+  it("reads no verdict off a stopped row even when an older API hints one", () => {
     renderTable([
       { ...SUMMARY_GATE, status: "cancelled", verdict_hint: "failed" },
     ]);
@@ -254,22 +260,43 @@ describe("RunsTable", () => {
   });
 
   /**
-   * And the mirror, which is what stops that ordering over-correcting.
+   * And the mirror, which is what stops that ordering over-correcting — and,
+   * since the backend fix, THE SHAPE THE SERVER ACTUALLY SENDS for a cancelled
+   * gate run.
    *
-   * `verdict_hint` is `null` for a **gate** run too: `_pending_summary`
-   * (`ui/index.py:906`) sets it for a run that exists only as a sidecar, with
-   * `degraded: false`, so the row reaches this cell rather than `DegradedRow`.
-   * Cancelling before the engine writes its artifact is the *early* cancel and
-   * it lands exactly here. The answer must be that an operator stopped it, not
-   * that it has no gate.
+   * `verdict_hint: null` now reaches this cell on a **gate** row two ways.
+   * `_pending_summary` (`ui/index.py`) sets it for a run that exists only as a
+   * sidecar, with `degraded: false`, so the *early* cancel — one that lands
+   * before the engine writes its artifact — arrives here. And `verdict_hint_of`
+   * returns `None` for a cancelled artifact, so the late cancel now arrives
+   * with the same pair.
+   *
+   * Which makes this the test that stops the backend fix being read as a
+   * licence to delete the frontend one. Remove the `stopped` branch and a
+   * cancelled row falls through to `hint === null`, where it is painted `never`
+   * — no false verdict, but no operator either. So `never` is asserted against
+   * by name: "contains stopped" alone stays green on a cell that says both, and
+   * on one that has dropped the flatline for a rendered hint.
    */
-  it("still says stopped on a gate run cancelled before it wrote an artifact", () => {
+  it("says stopped, never `never`, on a cancelled gate run with no hint", () => {
     renderTable([{ ...SUMMARY_GATE, status: "cancelled", verdict_hint: null }]);
 
     const cell = rowFor(SUMMARY_GATE.run_id).querySelectorAll("td")[5]!;
     const said = cell.textContent?.toLowerCase() ?? "";
     expect(said).toContain("stopped");
     expect(said, "a gate run was told it has no gate").not.toContain("no gate");
+    expect(
+      said,
+      "a stopped run was told its verdict merely never arrived",
+    ).not.toContain("never");
+    expect(said, "a stopped run was told to wait for a verdict").not.toContain(
+      "not yet",
+    );
+    expect(
+      cell.querySelector('[data-metric="verdict_hint"]'),
+      "a stopped run rendered a measured verdict",
+    ).toBeNull();
+    expect(cell.querySelector("[data-flatlined]")).not.toBeNull();
   });
 
   /**
@@ -287,7 +314,35 @@ describe("RunsTable", () => {
     expect(said).not.toContain("no gate");
     expect(said).not.toContain("stopped");
     expect(cell.querySelector("[data-flatlined]")).not.toBeNull();
+    expect(said, "a live run is the one case 'yet' is true of").toContain(
+      "not yet",
+    );
   });
+
+  /**
+   * The fourth thing, and the one the copy was wrong about: `verdict_hint` is
+   * `null` on a run that ENDED without one. "not yet" is a promise, and a run
+   * that failed to start or was interrupted cannot keep it — the operator is
+   * told to wait for a verdict that is not coming.
+   *
+   * Two statuses, so it is not pinned to one branch, and each is asserted
+   * against "not yet" rather than merely for "never": a cell that rendered
+   * both words, or that dropped the flatline entirely, would pass a weaker
+   * version of this.
+   */
+  it.each(["interrupted", "failed_to_start"] as const)(
+    "does not promise a verdict is still coming on a %s run",
+    (status) => {
+      renderTable([{ ...SUMMARY_GATE, status, verdict_hint: null }]);
+
+      const cell = rowFor(SUMMARY_GATE.run_id).querySelectorAll("td")[5]!;
+      const said = cell.textContent?.toLowerCase() ?? "";
+      expect(said).toContain("never");
+      expect(said, "a run that ended was told to wait").not.toContain("not yet");
+      expect(said).not.toContain("no gate");
+      expect(cell.querySelector("[data-flatlined]")).not.toBeNull();
+    },
+  );
 
   /**
    * THE CONTROL — must stay GREEN.

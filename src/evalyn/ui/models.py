@@ -769,7 +769,13 @@ class HardMetrics(_Model):
 
 
 class Scoreboard(_Model):
-    """`GET /api/compare/{run_id}`.
+    """Served **nested**, as `RunDetail.compare` on `GET /api/runs/{run_id}`.
+
+    There is no `GET /api/compare/{run_id}` and there never has been (R4-91):
+    compare is a viewer over one artifact the detail route already reads whole,
+    and a second route for it would be a second way to be wrong. This docstring
+    claimed one until the Plan #4 final review, and a page written against the
+    claim passed every mocked test and 404'd against `evalyn ui`.
 
     There is deliberately **no combined winner field**: compare is advisory,
     and collapsing verdicts and hard metrics into one number is the exact

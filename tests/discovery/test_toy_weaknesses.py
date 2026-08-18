@@ -23,7 +23,7 @@ from pathlib import Path
 
 import pytest
 
-from evalyn.engine.gate import evaluate_gate
+from evalyn.engine.gate import _mean, _no_usable_score, evaluate_gate
 from evalyn.engine.run import RunArtifact, pack_fingerprint, run_gate
 from evalyn.scoring.tier1 import INVARIANT_PATTERNS
 from evalyn.targets.loader import load_pack
@@ -32,6 +32,33 @@ from evalyn.targets.session import TargetSession
 REPO = Path(__file__).resolve().parents[2]
 PACK = str(REPO / "packs" / "example")
 BASELINE = REPO / "ci" / "baseline-example.json"
+
+
+def _assert_reproduces_blessed_means(art: RunArtifact, baseline: RunArtifact) -> None:
+    """Every blessed probe's mean, reproduced — reading absence AS absence.
+
+    Compared through `_mean`, the gate's own fallback, because the two sides are
+    of different generations. `ci/baseline-example.json` was blessed while the
+    reducer still wrote a fabricated `0.0` for a probe no trial could score; the
+    reducer now writes `None` there. `injection-trust-pivot` is that probe — all
+    three trials unsure, `pass^k=1.0` — so a raw `==` would read the honesty as a
+    changed measurement and fail R11-1 over a run that in fact reproduced the
+    baseline exactly. `_mean` folds the new `None` back onto the old `0.0`, which
+    is precisely the equivalence the gate itself asserts.
+
+    The second assertion is what keeps the first from going vacuous: it pins that
+    the `None`s appear on EXACTLY the probes the baseline records as unscoreable,
+    so a reducer that started nulling any other probe — or stopped nulling this
+    one — fails here rather than being absorbed by the fallback.
+    """
+    base_means = {p.id: _mean(p) for p in baseline.probes}
+    cur_means = {p.id: _mean(p) for p in art.probes}
+    assert cur_means.keys() == base_means.keys()
+    for pid, base in base_means.items():
+        assert cur_means[pid] == pytest.approx(base), pid
+    assert ({p.id for p in art.probes if p.mean_score is None}
+            == {p.id for p in baseline.probes if _no_usable_score(p)}
+            == {"injection-trust-pivot"})
 
 
 # --- R11-1: flag OFF keeps the committed baseline exactly where it is ---------
@@ -61,11 +88,7 @@ def test_toy_weaknesses_flag_off_matches_baseline(toy_target, monkeypatch, tmp_p
     # the pack on disk, so assert it against the pack on disk.
     assert pack_fingerprint(load_pack(PACK)) == baseline.pack_hash
     # every blessed probe reproduces its recorded mean exactly (deterministic run).
-    base_means = {p.id: p.mean_score for p in baseline.probes}
-    cur_means = {p.id: p.mean_score for p in art.probes}
-    assert cur_means.keys() == base_means.keys()
-    for pid, base in base_means.items():
-        assert cur_means[pid] == pytest.approx(base), pid
+    _assert_reproduces_blessed_means(art, baseline)
     # and the gate itself does not red against the blessed baseline.
     assert evaluate_gate(art, baseline).exit_code == 0
 
@@ -92,11 +115,7 @@ def test_toy_weaknesses_flag_on_still_matches_baseline(toy_target, monkeypatch, 
     baseline = RunArtifact.from_dict(json.loads(BASELINE.read_text()))
     assert pack_fingerprint(load_pack(PACK)) == baseline.pack_hash  # see above
 
-    base_means = {p.id: p.mean_score for p in baseline.probes}
-    cur_means = {p.id: p.mean_score for p in art.probes}
-    assert cur_means.keys() == base_means.keys()
-    for pid, base in base_means.items():
-        assert cur_means[pid] == pytest.approx(base), pid
+    _assert_reproduces_blessed_means(art, baseline)
     assert evaluate_gate(art, baseline).exit_code == 0
 
 

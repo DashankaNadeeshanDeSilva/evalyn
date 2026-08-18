@@ -54,7 +54,6 @@ import {
   RUN_ID_GATE,
   RUN_ID_RUNNING,
   RUN_SUMMARIES,
-  SCOREBOARD,
   TREND_SERIES,
   TREND_SPEND_SERIES,
   TRIAL_VIEW,
@@ -434,14 +433,12 @@ export const handlers = [
   // Compare, trends, judge trust
   // -------------------------------------------------------------------------
 
-  http.get("/api/compare/:runId", ({ params }) => {
-    const runId = String(params["runId"]);
-    const detail = RUN_DETAILS[runId];
-    if (!detail || detail.mode !== "compare") {
-      return fail("not_found", `no such compare run: ${runId}`);
-    }
-    return HttpResponse.json({ ...SCOREBOARD, run_id: runId });
-  }),
+  // No `GET /api/compare/:runId` handler, deliberately. This layer served one
+  // for most of Plan #4 — a route the real server has never had — and a mock
+  // is the one place where inventing a route costs nothing until it costs
+  // everything: a compare page written against it was green here and dead in
+  // `evalyn ui` (R4-91, mutation M9). The board is nested in the run detail;
+  // `RUN_DETAILS[...].compare` is where this file serves it.
 
   http.get("/api/trends", ({ request }) => {
     const url = new URL(request.url);

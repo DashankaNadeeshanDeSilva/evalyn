@@ -27,6 +27,7 @@ import os
 import stat
 import subprocess
 import sys
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -45,6 +46,7 @@ from evalyn.ui.index import (
     RunNotFound,
     SidecarState,
     derive_status,
+    verdict_hint_of,
 )
 from evalyn.ui.models import ReplayStatus
 from evalyn.ui.paths import (
@@ -399,6 +401,38 @@ def test_a_capability_only_run_keeps_its_unknown_hint_while_passing(tmp_path):
     assert row.degraded is False
 
 
+def test_a_cancelled_run_has_no_verdict_hint_at_all(tmp_path):
+    """BACKLOG-1's backend half: `None`, never `failed`.
+
+    The fixture is built so the test cannot pass by accident. Probe `ran`
+    finished and failed its safety `pass^k`; probe `never` was reduced to
+    `trials=0` by the cancel (R4-13). Both red the hint on their own terms, so
+    an implementation that still computed a hint over the probes that happened
+    to finish would answer `failed` here and this assertion would fail. The
+    verdict is not `failed` — it is *unknown*, and there is no honest way to
+    decide a gate over a run that was stopped part-way through it.
+
+    The row assertion beside it is the one the operator actually sees: the same
+    artifact must reach the list as `cancelled` with an empty hint, which is
+    what the SPA renders as ⊘ NO VERDICT.
+    """
+    art = _gate_artifact(
+        [_probe(id="ran", safety_critical=True, pass_k=0.0, mean_score=0.0),
+         _probe(id="never", trials=0, pass_at_k=0.0, pass_k=0.0, mean_score=0.0)],
+        cancelled=True)
+    assert verdict_hint_of(art) is None
+    assert verdict_hint_of(replace(art, cancelled=False)) is m.VerdictHint.failed
+
+    runs = tmp_path / "runs"
+    runs.mkdir()
+    rid = "20260812T181257886997-52a5b176-example"
+    runs.joinpath(f"{rid}.json").write_text(json.dumps(art.to_dict()))
+
+    (row,) = RunIndex(runs).list()
+    assert row.status is m.RunStatus.cancelled
+    assert row.verdict_hint is None
+
+
 def test_invalid_is_reserved_for_an_artifact_that_measured_nothing():
     assert derive_status(_loaded(_NO_PROBES)) is m.RunStatus.invalid
     assert derive_status(_loaded(_CAPABILITY_ONLY)) is not m.RunStatus.invalid
@@ -454,51 +488,138 @@ _DISCOVER_OK = DiscoveryArtifact(
     log_path="logs/x", eval_status="success")
 
 
-@pytest.mark.parametrize("typed,mode,without", [
-    pytest.param(_COMPARE_OK, m.RunMode.compare, m.RunStatus.passed, id="compare"),
-    pytest.param(_DISCOVER_OK, m.RunMode.discover, m.RunStatus.passed, id="discover"),
+_DISCOVER_PARTIAL = replace(_DISCOVER_OK, partial=True)
+
+
+@pytest.mark.parametrize("typed,mode", [
+    pytest.param(_COMPARE_OK, m.RunMode.compare, id="compare"),
+    pytest.param(_DISCOVER_OK, m.RunMode.discover, id="discover"),
 ])
-def test_a_stale_cancel_still_relabels_compare_and_discover(typed, mode, without):
-    """**A recorded limitation, not a desired behaviour.**
+def test_a_stale_cancel_no_longer_relabels_a_completed_compare_or_discover(typed, mode):
+    """A request the run never honoured must not rewrite a finished verdict.
 
-    `cancelled_by` prefers the artifact only where the artifact can answer,
-    and `RunArtifact` is the only one carrying a `cancelled` field. So for
-    these two modes a stale `{"action": "cancel"}` left inside the control
-    endpoint's residual window (`docs/JOURNAL.md`, `be9ab3a`) still rewrites a
-    completed run's status — exactly the T20-d(b) defect, surviving in the two
-    modes the fix could not reach.
+    Neither artifact carries a `cancelled` field, but neither is silent about
+    it either, and that is what closes this. A cancelled `compare` writes **no
+    artifact at all** (`compare.py:250-256`), so a `CompareArtifact` on disk is
+    itself proof the run completed. A cancelled `discover` writes one, but
+    always with `partial=True` (`discovery/run.py:437,554`), so a
+    `partial=False` artifact is the same proof. Either way the artifact
+    outranks a control file left inside the endpoint's residual window
+    (`docs/JOURNAL.md`, `be9ab3a`) — the same rule `gate` has always had.
 
-    Not fixed here on purpose: a cancelled `compare` writes **no** artifact
-    (`compare.py:250-256`), so the file is the only evidence it ever leaves,
-    and a cancelled `discover` writes `_build_artifact(aborted=True)`, which
-    would then read as `passed`/`invalid` — calling an operator's deliberate
-    stop `invalid` is a worse lie than the one being fixed. The honest fix is
-    a `cancelled` field on both artifacts, which is engine work.
-
-    **This test is written to fail the day that lands**, so the limitation
-    cannot be quietly resolved without the ledger being updated.
-
-    Two arms, so it cannot go vacuous: the same artifact must reach `without`
-    when the file is absent and `cancelled` when it is present. A version that
-    only asserted the second would also pass if the artifact stopped loading
-    at all, since `unreadable` also yields to a cancel.
+    Two arms, so it cannot go vacuous: the artifact must read `passed` both
+    with the stale file and without it. Asserting only the first would also
+    pass if the artifact stopped loading at all — but `unreadable` still
+    yields to a cancel, so that arm would then read `cancelled` and fail.
     """
     loaded = _loaded(typed, run_id=GATE_ID, mode=mode)
     assert loaded.typed is not None, "not the unreadable path"
 
     clean = SidecarState(present=True, exit_code=0)
     stale = SidecarState(present=True, control=m.ControlAction.cancel, exit_code=0)
-    assert derive_status(loaded, clean, None) is without
+    assert derive_status(loaded, clean, None) is m.RunStatus.passed
+    assert derive_status(loaded, stale, None) is m.RunStatus.passed
+
+
+def test_a_partial_discover_beside_a_cancel_file_is_still_read_as_cancelled():
+    """The residual, stated rather than hidden — and the discriminator for the
+    test above.
+
+    `partial` rules a cancel *out*, never *in*: a budget-exhausted or errored
+    discover run is partial too. So a partial artifact has no artifact-side
+    answer and the control file is still the only witness. The narrowing above
+    is therefore real (a complete run is now safe) and bounded (this one case
+    is not) — and if `partial` ever stopped being set on the cancel path, this
+    test and the one above could not both keep passing.
+    """
+    loaded = _loaded(_DISCOVER_PARTIAL, run_id=GATE_ID, mode=m.RunMode.discover)
+    clean = SidecarState(present=True, exit_code=0)
+    stale = SidecarState(present=True, control=m.ControlAction.cancel, exit_code=0)
+    assert derive_status(loaded, clean, None) is m.RunStatus.passed
     assert derive_status(loaded, stale, None) is m.RunStatus.cancelled
 
 
-def test_the_mode_that_can_answer_for_itself_is_exactly_the_one_with_the_field():
-    """The discriminator for the test above: it must be pinning a *gap*, not
-    describing every mode. If `gate` ever joined them the pair would agree and
-    neither test would be saying anything."""
+def test_each_mode_carries_the_field_its_cancel_rule_reads():
+    """The rule is per-mode and reads a different field in each, so the fields
+    it reads must exist. If `discover` lost `partial`, or `gate` lost
+    `cancelled`, the rules above would silently degrade to trusting the file
+    again — the exact defect they close."""
     assert hasattr(_gate_artifact(), "cancelled")
+    assert hasattr(_DISCOVER_OK, "partial")
     assert not hasattr(_COMPARE_OK, "cancelled")
-    assert not hasattr(_DISCOVER_OK, "cancelled")
+    assert not hasattr(_COMPARE_OK, "partial")
+
+
+def test_every_artifact_type_the_loader_can_produce_has_a_cancel_rule():
+    """The per-mode rules are an `isinstance` chain, and a chain has a bottom.
+
+    `_TYPED_LOADER` is the only thing that ever puts a value in
+    `LoadedArtifact.typed`, so a fourth mode adds a class there — and if it adds
+    no rule beside it, `cancelled_by` falls out of the chain into
+    `sidecar.control is cancel` and every completed run of that mode beside a
+    leftover cancel file is relabelled `cancelled` again. Nothing else reds on
+    that: the per-mode tests above only know about the three types that exist
+    today. This equality is what makes the omission fail in the repo, one
+    keystroke after it is introduced.
+    """
+    assert set(ix._CANCEL_RULE_TYPES) \
+        == {fn.__self__ for fn in ix._TYPED_LOADER.values()}
+
+
+def test_an_unknown_artifact_type_raises_rather_than_trusting_the_file():
+    """...and if one ships anyway, it fails where it happens.
+
+    The stale file is the whole point of the fixture: a silent fall-through
+    would answer `True` here — the completed-run relabel, reinstated for a mode
+    nobody wrote a rule for — so `pytest.raises` fails the moment the guard is
+    removed rather than merely reporting a different status.
+
+    The two arms below are the control. The fall-through is *correct* for both
+    of them and must survive this: a run with no artifact at all (a cancelled
+    `compare` leaves nothing else behind) and an artifact this build cannot
+    parse both have no artifact-side answer, and the file is all there is.
+    """
+    class FourthModeArtifact:
+        """A mode added after this rule was written."""
+
+    stale = SidecarState(present=True, control=m.ControlAction.cancel, exit_code=0)
+    with pytest.raises(TypeError, match="no cancel rule"):
+        ix.cancelled_by(_loaded(FourthModeArtifact()), stale)
+
+    assert ix.cancelled_by(None, stale) is True, "no artifact: the file is all there is"
+    assert ix.cancelled_by(_loaded(None, error="boom"), stale) is True, \
+        "unreadable artifact: likewise"
+
+
+def test_an_undecidable_hint_is_never_reported_as_an_operator_stopping_the_run(
+        monkeypatch):
+    """The `hint is None` guard keys on `typed.cancelled`, not on hint-absence.
+
+    Both arms fake a future this module has to survive, because neither is
+    reachable today — `verdict_hint_of` returns `None` only for a cancelled
+    artifact, which step 3 has already returned for.
+
+    * The **reordering** arm removes step 3 (the thing the guard exists to
+      survive) and asserts a genuinely cancelled run still reads `cancelled`.
+      Delete the guard and it reads `passed` — BACKLOG-1's overclaim, back.
+    * The **second `None` case** arm gives `verdict_hint_of` the undecidable
+      verdict it may one day grow, on an artifact nobody cancelled. Key the
+      guard on `hint is None` instead and it answers `cancelled`, telling the
+      operator someone stopped a run that nobody touched.
+
+    They pull in opposite directions, so no single-branch implementation passes
+    both: `cancelled` unconditionally fails the second, `invalid`
+    unconditionally fails the first.
+    """
+    monkeypatch.setattr(ix, "cancelled_by", lambda artifact, sidecar: False)
+    cancelled = _loaded(_gate_artifact(cancelled=True))
+    assert verdict_hint_of(cancelled.typed) is None, "not a vacuous fixture"
+    assert derive_status(cancelled, SidecarState(), None) is m.RunStatus.cancelled
+
+    finished = _loaded(_gate_artifact())
+    assert verdict_hint_of(finished.typed) is m.VerdictHint.passed
+    monkeypatch.setattr(ix, "verdict_hint_of", lambda artifact: None)
+    assert derive_status(finished, SidecarState(), None) is m.RunStatus.invalid
 
 
 def test_a_stale_pause_file_still_does_not_relabel_a_finished_run():
