@@ -44,12 +44,12 @@
 </div></section>
 
 <section id="why"><div class="wrap">
-  <div class="sec-head"><div class="legend">Why</div><div><h2>Most teams shipping AI features are flying blind.</h2><p class="lede">Ordinary tests don’t apply: the model answers differently every time, it can be subtly wrong, it can be talked into misbehaving, and “good vs. bad” is often a judgment call. So teams change a prompt, swap a model, feel that something got worse — and wait for users to complain.</p></div></div>
+  <div class="sec-head"><div class="legend">Why</div><div><h2>Most teams shipping AI features are flying blind.</h2><p class="lede">Ordinary tests don’t apply: the model answers differently every time, it can be subtly wrong, it can be talked into misbehaving, and “good vs. bad” is often a judgment call. So teams change a prompt, swap a model, feel that something got worse, and wait for users to complain.</p></div></div>
   <div class="why-grid">
-    <div><q>The AI gives different wording every time.</q><p>One sample proves nothing. Evalyn runs every probe as repeated trials and reports pass@k <em>and</em> pass^k — the same probe, several times, before it says anything.</p></div>
+    <div><q>The AI gives different wording every time.</q><p>One sample proves nothing. Evalyn runs every probe as repeated trials and reports pass@k <em>and</em> pass^k: the same probe, several times, before it says anything.</p></div>
     <div><q>“Usually safe” is not safe.</q><p>Averages hide the danger. Safety-critical probes gate on pass^k: every trial must pass, or the build is red. A lone flip elsewhere is quarantined, not a red build.</p></div>
     <div><q>Never trust a judge you haven’t measured.</q><p>An LLM grading an LLM is only evidence once it’s calibrated against human labels. The judge is held to the same standard as the product it judges.</p></div>
-    <div><q>It shipped with zero evaluations.</q><p>Evalyn’s origin: a real product whose whole value was its AI behaviour — and no way to know when that behaviour drifted. That gap is what this tool closes.</p></div>
+    <div><q>It shipped with zero evaluations.</q><p>Evalyn’s origin: a real product whose whole value was its AI behaviour, and no way to know when that behaviour drifted. That gap is what this tool closes.</p></div>
   </div>
 </div></section>
 
@@ -65,20 +65,20 @@
     <article class="mode">
       <div class="top"><span class="cmd">evalyn <span>compare</span></span><span class="legend">blind taste test</span></div>
       <p class="q">Which version is actually better?</p>
-      <div class="body">Pairwise judging of two gate runs, replayed from captured transcripts — it never touches your product again. Hard metrics (latency p95, invariant failures) sit beside the verdicts. Advisory by design: no combined “winner” is invented.</div>
+      <div class="body">Pairwise judging of two gate runs, replayed from captured transcripts, so it never touches your product again. Hard metrics (latency p95, invariant failures) sit beside the verdicts. Advisory by design: no combined “winner” is invented.</div>
       <dl><dt>Output</dt><dd>Markdown report, pair by pair</dd><dt>Exit</dt><dd><span class="exit"><b class="p">0</b> report <b class="w">2</b> couldn’t run — never 1</span></dd></dl>
     </article>
     <article class="mode">
       <div class="top"><span class="cmd">evalyn <span>discover</span></span><span class="legend">the clever tester</span></div>
       <p class="q">What problems don’t I know about yet?</p>
-      <div class="body">A goal-directed adversarial agent works an objective × strategy grid — injection bypass, PII leak, persona break, hallucination — under step, turn and USD budgets. Confirmed findings become minimal repro probes, staged for <em>you</em> to adopt.</div>
+      <div class="body">A goal-directed adversarial agent works an objective × strategy grid (injection bypass, PII leak, persona break, hallucination) under step, turn and USD budgets. Confirmed findings become minimal repro probes, staged for <em>you</em> to adopt.</div>
       <dl><dt>Output</dt><dd>Inert probes in <span class="mono">&lt;pack&gt;/discoveries/</span></dd><dt>Gate?</dt><dd>Never blocks CI. Discover proposes; the scoring layer disposes.</dd></dl>
     </article>
   </div>
 </div></section>
 
 <section id="how"><div class="wrap">
-  <div class="sec-head"><div class="legend">How it works</div><div><h2>A pack in, an exit code out. Everything in between is measured.</h2><p class="lede">The engine knows nothing about your product. Endpoints, probes, rubrics, budgets and the URL allowlist live in a swappable YAML <strong>target pack</strong> — a universal remote; you load the profile for your TV.</p></div></div>
+  <div class="sec-head"><div class="legend">How it works</div><div><h2>A pack in, an exit code out. Everything in between is measured.</h2><p class="lede">The engine knows nothing about your product. Endpoints, probes, rubrics, budgets and the URL allowlist live in a swappable YAML <strong>target pack</strong>: a universal remote, and you load the profile for your TV.</p></div></div>
   <div class="pipe"><svg viewBox="0 0 1180 270" role="img" aria-label="Pipeline: target pack, preflight, Inspect AI task, session driver, your product, three scoring tiers, gate diff, exit code">
     <defs><marker id="ar" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0L10 5L0 10z" fill="var(--rule2)"/></marker></defs>
     <g fill="none" stroke="var(--rule2)" stroke-width="1.2" marker-end="url(#ar)">
@@ -111,10 +111,10 @@
   </svg></div>
 
   <div style="margin-top:64px">
-    <div class="legend" style="margin-bottom:14px">The trust ladder — three scorers, cheapest first</div>
+    <div class="legend" style="margin-bottom:14px">The trust ladder: three scorers, cheapest first</div>
     <div class="tiers">
-      <div class="tier"><div class="n">1</div><h3>Invariants <span class="tag">free · exact</span></h3><p>Deterministic checks — leak patterns, empty replies, must / must-not contain. Failures here are facts, not opinions. The only tier a safety verdict may rest on; it short-circuits before a single judge token is spent.</p></div>
-      <div class="tier"><div class="n">2</div><h3>Classifier</h3><p>A cheap LLM judge at temperature 0 with forced JSON. It must quote the verbatim evidence span — otherwise the verdict is scored <span class="mono">unsure</span> and never trusted.</p></div>
+      <div class="tier"><div class="n">1</div><h3>Invariants <span class="tag">free · exact</span></h3><p>Deterministic checks: leak patterns, empty replies, must / must-not contain. Failures here are facts, not opinions. The only tier a safety verdict may rest on; it short-circuits before a single judge token is spent.</p></div>
+      <div class="tier"><div class="n">2</div><h3>Classifier</h3><p>A cheap LLM judge at temperature 0 with forced JSON. It must quote the verbatim evidence span; otherwise the verdict is scored <span class="mono">unsure</span> and never trusted.</p></div>
       <div class="tier"><div class="n">3</div><h3>Rubric judge</h3><p>A strong model, G-Eval style: pinned rubric, frozen human-reviewed grading steps, scores 1–5, k=3 self-consistency with median voting. Judge ≠ generator family, enforced in config.</p></div>
     </div>
     <div class="calib"><div class="big">≥ 85%</div><p>agreement with human-labelled anchors, per rubric, or the judge <strong>refuses to run</strong>. Override it and every artifact is stamped <span class="mono">UNTRUSTED</span>. That number is what the cockpit’s Judge Trust page shows.</p></div>
@@ -159,17 +159,17 @@
     <div class="legend" style="margin-bottom:14px">Rules the engine won’t bend</div>
     <div class="rules">
       <div><span class="mono">pass^k, not pass@k</span><p>Safety probes must pass every trial. “Usually” doesn’t count.</p></div>
-      <div><span class="mono">judge ≠ generator</span><p>Judge and product model families must differ — no self-preference bias.</p></div>
+      <div><span class="mono">judge ≠ generator</span><p>Judge and product model families must differ, so there is no self-preference bias.</p></div>
       <div><span class="mono">allowlist-fenced</span><p>A run refuses any base URL not in the pack. Prod needs <span class="mono">--i-know-this-is-prod</span>.</p></div>
       <div><span class="mono">hard USD cap</span><p>Per-run ceiling, <span class="mono">--dry-run</span> estimates, and grading-step caching.</p></div>
-      <div><span class="mono">errored ≠ failed</span><p>A 500 marks the probe INCOMPLETE — it stays in the denominator, never vanishes.</p></div>
-      <div><span class="mono">runs/ is the database</span><p>Append-only artifacts. The cockpit is a pure view — nothing it does is magic.</p></div>
+      <div><span class="mono">errored ≠ failed</span><p>A 500 marks the probe INCOMPLETE. It stays in the denominator, never vanishes.</p></div>
+      <div><span class="mono">runs/ is the database</span><p>Append-only artifacts. The cockpit is a pure view; nothing it does is magic.</p></div>
     </div>
   </div>
 </div></section>
 
 <section id="cockpit" class="cockpit"><div class="wrap">
-  <div class="sec-head"><div class="legend">The cockpit</div><div><h2>Seven pages. One of them spends money.</h2><p class="lede"><span class="mono">evalyn ui</span> serves a local, loopback-only cockpit over your <span class="mono">runs/</span> directory. Its front door is the history, not a dashboard — every number is derived from artifacts, never hard-coded.</p></div></div>
+  <div class="sec-head"><div class="legend">The cockpit</div><div><h2>Seven pages. One of them spends money.</h2><p class="lede"><span class="mono">evalyn ui</span> serves a local, loopback-only cockpit over your <span class="mono">runs/</span> directory. Its front door is the history, not a dashboard, and every number is derived from artifacts, never hard-coded.</p></div></div>
   <div class="tabs" id="tabs"></div>
   <div class="shot"><img id="shot" src="assets/shots/runs.jpg" width="1440" height="900" alt="Evalyn cockpit — Runs" loading="lazy" decoding="async"></div><div class="cap"><span class="legend" id="cap-route"></span><span id="cap-text"></span></div>
 </div></section>
@@ -177,7 +177,7 @@
 <section id="proof"><div class="wrap">
   <div class="sec-head"><div class="legend">Field test</div><div><h2>It failed the build. That’s the point.</h2><p class="lede">Pointed at a real shipping product with a 50-probe pack built from production incidents, Evalyn found one genuine guardrail failure and returned exit 1 — with the transcript to prove it.</p></div></div>
   <div class="nums">
-    <div><div class="v">150</div><p>real conversations — 50 probes × 3 trials — in 4 m 16 s</p></div>
+    <div><div class="v">150</div><p>real conversations (50 probes × 3 trials) in 4 m 16 s</p></div>
     <div><div class="v">30<small>/31</small></div><p>prompt-injection probes held at pass^k = 1.0</p></div>
     <div><div class="v">93<small>%</small></div><p>judge–human agreement across 4 rubrics; every rubric ≥ 85 %</p></div>
     <div><div class="v">1,306</div><p>tests across 63 files guard the engine itself</p></div>
@@ -195,7 +195,7 @@ SAFETY `injection-exfil-boundaries`: <span class="t-fail">pass^k=0.0</span> (&lt
 …
 
 <span class="t-dim">judge spend</span> $0.7883 of $5.0000 pack ceiling · 15.8% used</pre></div>
-    <div><p class="lede">A failing gate is not an embarrassment; it is the first honest number the team has had. The failure names the probe, the trial, the evidence span and the judge that saw it — and the same run is one click away in the cockpit.</p><p class="lede" style="margin-top:16px">Compare then answers the follow-up: <em>did the fix actually help?</em> — 24 pairs judged for $0.31, replayed from transcripts, without touching the product again.</p></div>
+    <div><p class="lede">A failing gate is not an embarrassment; it is the first honest number the team has had. The failure names the probe, the trial, the evidence span and the judge that saw it, and the same run is one click away in the cockpit.</p><p class="lede" style="margin-top:16px">Compare then answers the follow-up: <em>did the fix actually help?</em> 24 pairs judged for $0.31, replayed from transcripts, without touching the product again.</p></div>
   </div>
 </div></section>
 
@@ -232,7 +232,7 @@ uv sync --extra ui && uv run evalyn ui   <span class="c"># 127.0.0.1:8765</span>
       <span class="k">target-health-url</span>: http://127.0.0.1:8899/health
     <span class="k">secrets</span>:
       <span class="k">EVALYN_JUDGE_API_KEY</span>: ${{ secrets.JUDGE_KEY }}</pre></div>
-      <p class="lede" style="margin-top:14px;font-size:.95rem">Posts one sticky PR comment, updated in place. Exit 1 blocks the merge; exit 2 tells you the eval itself couldn’t run — a different problem, never conflated.</p>
+      <p class="lede" style="margin-top:14px;font-size:.95rem">Posts one sticky PR comment, updated in place. Exit 1 blocks the merge; exit 2 tells you the eval itself couldn’t run: a different problem, never conflated.</p>
     </div>
   </div>
 </div></section>
