@@ -37,3 +37,6 @@ packs/*/.cache/
 # when the resolved dir is inside this work tree and not ignored.
 **/discoveries/*.yaml
 !**/discoveries/.gitkeep
+
+# local screenshot scratch for the website
+.site-shots/
