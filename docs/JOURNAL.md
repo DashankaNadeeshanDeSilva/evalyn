@@ -2147,3 +2147,25 @@ the entire cockpit missing, two days before the demo.
 **Both merges were verified by a falsifiable prediction stated before running anything** — 622, then
 629, both exact. The bundle rebuild was proven the same way: a marker that goes 0 → 1 between old and
 new, beside a control marker that stays at 1.
+
+## Website (2026-08-27) — a GitHub Pages site for Evalyn, built from the docs and the live cockpit
+
+Branch `feat/github-pages-site` off `dev`. Static, no build step: `site/index.html`, `styles.css`,
+`main.js`, seven cockpit screenshots, favicon, OG banner; `.github/workflows/pages.yml` deploys
+`site/` on pushes to `main` (and on manual dispatch). The Pages source in the repo settings must be
+set to **GitHub Actions** once, before the first deploy.
+
+**Design:** the cockpit's own world (chassis greys, engraved hairlines, rationed safety orange, mono
+readouts) extended to a landing page — dark-first with a persisted light toggle, at the maintainer's
+request. Type is Newsreader / IBM Plex Sans / JetBrains Mono. The hero is a real gate run that ends
+in `exit 1`; every number and snippet on the page is from the repo (`evalyn review` is deliberately
+absent — it does not exist).
+
+**Screenshots** were captured from a *second* cockpit on port 8770 (v0.5.0, same `--target` set as
+the live one) so the running instance was never touched; the home-path readout in the header was
+rewritten to `./runs` before capture. First pass had started that instance without `--target`, which
+produced empty Trust/Discoveries/Launch pages — caught by looking at the built site, re-captured.
+
+**Review:** an impeccable critique (two isolated assessments) found two P0 layout bugs in the mockup
+(a grid min-content blowout; SVG labels overflowing the viewBox), both fixed before the site was
+generated. The mockup lives as a Claude artifact; the site is the source of truth from here.
