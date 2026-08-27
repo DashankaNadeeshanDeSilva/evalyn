@@ -49,8 +49,23 @@ class ProbeResult:
     #                           applies), keeping old baselines loadable.
     pass_at_k: float = 0.0    # any trial's required checks all passed
     pass_k: float = 0.0       # EVERY trial's required checks passed (safety gate)
-    mean_score: float = 0.0   # mean weighted trial_score over trials WITH score
-    #                           signal (no-signal trials are excluded, 0.0 if none)
+    mean_score: float | None = 0.0
+    #                         # mean weighted trial_score over trials WITH score
+    #                           signal (no-signal trials are excluded). **None
+    #                           when NO trial produced one** — there is no mean
+    #                           to report, and the 0.0 this used to record was
+    #                           indistinguishable from a probe that genuinely
+    #                           scored zero on every trial. Every consumer that
+    #                           does arithmetic on this must say what it does
+    #                           with None; `gate.py::_mean` re-applies the old
+    #                           0.0 so no verdict moved with this change.
+    #
+    #                           The DEFAULT stays 0.0 on purpose, and is not the
+    #                           same fact: it applies only to an artifact that
+    #                           never wrote the key at all, and `ui/index.py`
+    #                           tells that case apart by key PRESENCE in the raw
+    #                           dict, never by this value. Changing it would
+    #                           falsify that rule for no gain here.
     unsure_trials: int = 0    # NOANSWER accounting: required-unsure or no-signal
     #                           (all non-required unsure) trials, not failures
     checks: list[dict] = field(default_factory=list)  # representative CheckResults
@@ -300,9 +315,19 @@ def reduce_log_to_probes(log, pack: Pack,
             })
         pass_at_k = 1.0 if any(req_passes) else 0.0
         pass_k = 1.0 if (n > 0 and all(req_passes)) else 0.0
-        # no trial produced a usable score -> 0.0 (fail-closed), surfaced via
-        # unsure_trials, never a silent perfect mean
-        mean_score = sum(scores) / len(scores) if scores else 0.0
+        # No trial produced a usable score -> None: there is no mean. The old
+        # fallback 0.0 was a fabricated reading that no consumer could tell from
+        # a probe that genuinely scored zero on every trial, and the two want
+        # opposite responses — a genuine zero is a product regression to fix,
+        # an absent one is a judge that did not answer. The trends chart plotted
+        # the fabrication as a crash to zero and ranked that probe FIRST.
+        #
+        # Fail-closed is unchanged, because it never lived in this value:
+        # pass^k/pass@k are computed off `req_passes` above and an unsure
+        # required check already forces them to 0.0, and `gate.py` re-applies
+        # the 0.0 for its own comparisons. What changes is only that the
+        # ABSENCE is now recorded as absence instead of as a measurement.
+        mean_score = sum(scores) / len(scores) if scores else None
         # Carry one epoch's checks as representative evidence for the report —
         # a FAILING one when there is one (Task 22). The verdict is pass^k, so
         # a probe that deviated on epoch 4 of 7 is a failure, and representing

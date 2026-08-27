@@ -195,7 +195,6 @@ async def test_end_to_end_real_scorer_confirms_and_replays(live_pack, tmp_path,
 # Step 3 / R8-5: a tiny cap yields a partial artifact and NO exception
 # --------------------------------------------------------------------------
 
-@pytest.mark.filterwarnings("ignore:no price entry")
 async def test_tiny_cap_yields_partial_artifact_no_exception(live_pack, tmp_path,
                                                              monkeypatch):
     _scripted_brain(monkeypatch, [_send(LEAK_ASK)])

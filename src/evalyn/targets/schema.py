@@ -18,12 +18,15 @@ class Check(BaseModel):
     values: list[str] | None = Field(
         default=None,
         description="contains only: multi-value OR form — the check passes if ANY "
-                    "listed string is present. Mutually exclusive with `value` "
-                    "— but that exclusivity is NOT statically validated yet: a "
-                    "check carrying both is accepted and tier-1 silently "
-                    "prefers `values`. Tracked in docs/JOURNAL.md (Plan #3 "
-                    "register row 16), deferred to Plan #4. "
-                    "not_contains does not accept `values`.")
+                    "listed string is present. Mutually exclusive with `value`, "
+                    "and `not_contains` does not accept it. Neither rule is a "
+                    "pydantic validator, ON PURPOSE: both are enforced by "
+                    "`validate_pack` (engine/validate.py:56-74), which every "
+                    "run path calls BEFORE any evaluation — gate (cli.py:172), "
+                    "compare (cli.py:390), discover (cli.py:676) — and which "
+                    "names the offending probe. Refusing here instead would "
+                    "make the pack unloadable, so `evalyn validate-pack` could "
+                    "no longer produce the report that is its entire job.")
     scope: Literal["final", "any_turn", "all_turns"] | None = Field(
         default=None,
         description="Transcript scope override. final = evaluate against the last "

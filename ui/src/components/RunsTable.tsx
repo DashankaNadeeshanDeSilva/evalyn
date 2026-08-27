@@ -5,6 +5,7 @@ import { formatUsd, formatUtc } from "../format";
 import { DegradedRow } from "./DegradedRow";
 import { Flatline } from "./Flatline";
 import { VerdictHintIcon } from "./InstrumentIcon";
+import { isLive } from "./LiveRunPanel";
 import { RunStatusChip } from "./RunStatusChip";
 
 /**
@@ -144,25 +145,42 @@ const HINT_INK: Record<VerdictHint, string> = {
  * `verdict_hint_of` reds any probe with `trials == 0` or `trials <
  * expected_trials`, which is right for a run that failed to collect its trials
  * and wrong for one that was never allowed to try. A cancelled run's un-run
- * probes satisfy it trivially, so the server sends `verdict_hint: "failed"` for
- * a run whose only fault is that somebody pressed Cancel — measured on
- * `20260811T212955379968-abc9a71e-example`, which renders `cancelled` in STATUS
- * beside `gate failed` in this column.
+ * probes satisfy it trivially, so the server *used to* send
+ * `verdict_hint: "failed"` for a run whose only fault is that somebody pressed
+ * Cancel — measured on `20260811T212955379968-abc9a71e-example`, which rendered
+ * `cancelled` in STATUS beside `gate failed` in this column.
  *
- * The field is left alone deliberately: it is documented as a cheap
- * approximation over `probes[]`, and it is *this column's* job not to read an
- * approximation as a verdict. `status` is the signal rather than the detail
- * page's `cancelled`, because `RunSummary` carries no such field — but both
- * come from the same `cancelled_by`, and `derive_status` returns `cancelled`
- * for exactly the runs where it is true.
+ * It no longer does. `verdict_hint_of` now returns `None` for a cancelled
+ * artifact, so this build's server sends `{status: "cancelled", verdict_hint:
+ * null}` and the failed-hint pair is a shape it cannot emit at all.
+ *
+ * **The check below stays anyway, and both reasons outlive that fix:**
+ *
+ * 1. It is what gets the copy right. A cancelled run now arrives with a null
+ *    hint, so without this branch it falls into `hint === null` and is painted
+ *    `never` — not a verdict it did not earn, but not "an operator stopped it"
+ *    either. Deleting it would not fail loudly; it would say the wrong thing
+ *    quietly.
+ * 2. The guarantee this column owes — that an approximation is never read as a
+ *    verdict — cannot be made conditional on the peer being new enough. The
+ *    bundle and the API travel together under `evalyn ui`, but `npm run dev`
+ *    proxies `/api` to whatever `evalyn ui` is listening on 8765, which is how
+ *    a client meets a server older than itself.
+ *
+ * `status` is the signal rather than the detail page's `cancelled`, because
+ * `RunSummary` carries no such field — but both come from the same
+ * `cancelled_by`, and `derive_status` returns `cancelled` for exactly the runs
+ * where it is true.
  *
  * Not the `n/a` mark and not "no gate": `compare` and `discover` genuinely have
  * no gate to report, whereas this run has one and nobody let it finish.
  *
  * ## The order of the three absences is the whole correctness argument
  *
- * `verdict_hint: null` is not one fact but two, and `stopped` cuts across both
- * — so whichever question is asked first decides what the other two may claim.
+ * `verdict_hint: null` is not one fact but three — a mode with no gate, a gate
+ * run that has not measured anything yet, and (since the backend fix) a gate
+ * run somebody stopped — so whichever question is asked first decides what the
+ * others may claim.
  *
  * **`mode` answers first**, because it is true of the run whatever else
  * happened to it. Asking `stopped` first told a cancelled `compare` row that
@@ -175,10 +193,12 @@ const HINT_INK: Record<VerdictHint, string> = {
  * reach for exactly the modes whose cancelled signal cannot be trusted, rather
  * than merely avoiding it there.
  *
- * **Then `stopped`**, which by then can only speak about a gate run.
+ * **Then `stopped`**, which by then can only speak about a gate run — and which
+ * a null hint no longer distinguishes, since a stopped gate run is now one of
+ * the runs that sends one.
  *
  * **Then `hint === null`, which by that point means one thing**: a gate run
- * that has measured nothing yet. `_pending_summary` (`ui/index.py:906`) emits
+ * that has measured nothing yet. `_pending_summary` (`ui/index.py`) emits
  * exactly that for a run living as a sidecar with no artifact written, and sets
  * `degraded: false`, so it arrives here rather than at `DegradedRow`. This
  * branch used to share "no gate" with the modes that genuinely have none; once
@@ -189,11 +209,14 @@ function VerdictHintCell({
   mode,
   hint,
   stopped,
+  live,
 }: {
   mode: RunMode;
   hint: VerdictHint | null;
   /** An operator cancelled this run, so no verdict was earned. */
   stopped: boolean;
+  /** A process is still attached, so an absent verdict may still arrive. */
+  live: boolean;
 }) {
   if (mode !== "gate") {
     // Correctness, not damage: `compare` and `discover` have no gate verdict
@@ -216,13 +239,32 @@ function VerdictHintCell({
     );
   }
   if (hint === null) {
-    // Not damage either: nothing has been measured yet. The STATUS column
-    // beside it is what says whether the run is still going.
-    return (
+    // Not damage either: nothing has been measured. But "yet" is a promise,
+    // and only a live run can keep it — a gate run that has ENDED with no hint
+    // never wrote the artifact a hint is computed from, so saying "not yet"
+    // invites the operator to wait for a verdict that is not coming.
+    //
+    // Exactly two statuses reach the dead half, and they are the two ways to
+    // end without an artifact: `failed_to_start` (the child never ran) and
+    // `interrupted` (it vanished mid-flight). Every other route in is already
+    // closed — `cancelled` answered above, `running`/`paused` are the live
+    // half, and a readable gate artifact always carries a hint (`unknown` at
+    // worst, for a capability-only run). NOT `unreadable`: that row is
+    // `degraded`, so the table sends it to `DegradedRow` and it never reaches
+    // this cell — which is as well, because "none is coming" would be an
+    // overclaim there. A later build that can parse that artifact reads a
+    // verdict straight out of it.
+    return live ? (
       <Flatline
         variant="n/a"
         word="not yet"
         reason="this run has not written an artifact, so no verdict has been computed yet"
+      />
+    ) : (
+      <Flatline
+        variant="n/a"
+        word="never"
+        reason="this run ended without a verdict being computed, and none is coming"
       />
     );
   }
@@ -305,6 +347,7 @@ function RunRow({ run }: { run: RunSummary }) {
           mode={run.mode}
           hint={run.verdict_hint}
           stopped={run.status === "cancelled"}
+          live={isLive(run.status)}
         />
       </td>
 

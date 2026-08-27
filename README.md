@@ -10,6 +10,7 @@
 </p>
 
 <h3 align="center">The evaluation agent for LLM-powered products.</h3>
+<p align="center"><a href="https://dashankanadeeshandesilva.github.io/evalyn/">Website</a> · <a href="docs/EVALYN_EXPLAINED.md">Plain-English overview</a> · <a href="docs/CI_ADOPTION.md">CI adoption</a></p>
 <p align="center"><em>Replace "guess and hope" with "measure and know."</em></p>
 
 ---

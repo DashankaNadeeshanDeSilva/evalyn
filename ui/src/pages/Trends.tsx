@@ -44,11 +44,13 @@ import { METRIC_FACTS, buildTrendModel } from "../trends";
  * from `pass^k` or a mean score from either: they are different measurements
  * over the same trials and only the server has the trial records.
  *
- * ## Deferred — this page has never met its own route
+ * ## Still owed — three things a mock cannot confirm
  *
- * `GET /api/trends` is Task 13's, and it is being built in parallel. Everything
- * below is proven against the frozen wire model and the MSW layer; the wiring
- * pass must confirm three things a mock cannot:
+ * `GET /api/trends` shipped in Task 13 and this page has been wired to it
+ * since; the header here said otherwise until the Plan #4 final review. What
+ * remains genuinely unconfirmed is narrower: everything below is proven
+ * against the frozen wire model and the MSW layer, and only a run against a
+ * real `runs/` directory can settle these three:
  *
  * 1. A degraded run really is **absent** from every series rather than present
  *    with a zero — the whole chart's honesty rests on it, and 26 of the

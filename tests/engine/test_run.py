@@ -110,7 +110,13 @@ def test_reducer_sample_with_no_checks_anywhere_is_not_a_trial(minimal_pack_with
     })
     [pr] = _reduce_log_to_probes(_FakeLog([sample]), pack)
     assert pr.trials == 0
-    assert pr.pass_at_k == 0.0 and pr.pass_k == 0.0 and pr.mean_score == 0.0
+    # pass@k/pass^k stay 0.0 — those ARE the fail-closed verdict, and the gate
+    # reads them. `mean_score` is None for the same reason it is on an all-unsure
+    # probe: no trial produced a score, so there is no mean, and a probe that
+    # never ran must not appear on the trends chart as a measured crash to zero.
+    # The gate never sees it either way: `trials == 0` is MISSING, decided and
+    # `continue`d before any arm formats a mean.
+    assert pr.pass_at_k == 0.0 and pr.pass_k == 0.0 and pr.mean_score is None
 
 
 def test_reducer_tolerates_unknown_scorer_names(minimal_pack_with_probe):
@@ -474,13 +480,38 @@ def test_reducer_excludes_no_signal_trials_from_mean(minimal_pack_with_probe):
     assert pr.mean_score == 0.5  # NOT (0.5 + 1.0)/2 — unsure is never a 1.0
 
 
-def test_reducer_all_no_signal_trials_is_fail_closed_zero_mean(minimal_pack_with_probe):
+def test_reducer_all_no_signal_trials_records_no_mean_at_all(minimal_pack_with_probe):
+    """No trial could be scored -> `mean_score` is None, not a fabricated 0.0.
+
+    The 0.0 this used to record was indistinguishable from the probe in the
+    control below, which genuinely scored zero — and the two want opposite
+    responses from a reader. Every downstream consumer read the fabrication as a
+    measurement: the trends chart plotted it as a crash to zero and its
+    worst-reading ranking opened the page on it.
+    """
     pack = minimal_pack_with_probe("p", samples=1)
     sample = _FakeSample("p", 1, {"tier3": _FakeScore(
         {"checks": [_cr("rubric:x", 3, False, None, 0.0, unsure=True)]})})
     [pr] = _reduce_log_to_probes(_FakeLog([sample]), pack)
     assert pr.trials == 1 and pr.unsure_trials == 1
-    assert pr.mean_score == 0.0  # no usable signal must never read as perfect
+    assert pr.mean_score is None  # no usable signal is NOT a score of zero
+
+
+def test_reducer_a_genuinely_zero_scoring_trial_still_records_zero(minimal_pack_with_probe):
+    """The control, and the whole point: a real zero stays a real `0.0`.
+
+    Same arithmetic shape as the test above — one trial, mean of nothing to
+    average up — but the judge ANSWERED, and the answer was zero. Without this
+    pinned, "record None when there are no scores" could quietly widen into
+    "record None whenever the mean is zero", which would delete the failing
+    measurement the trends page exists to show.
+    """
+    pack = minimal_pack_with_probe("p", samples=1)
+    sample = _FakeSample("p", 1, {"tier3": _FakeScore(
+        {"checks": [_cr("rubric:x", 3, False, False, 0.0)]})})
+    [pr] = _reduce_log_to_probes(_FakeLog([sample]), pack)
+    assert pr.trials == 1 and pr.unsure_trials == 0
+    assert pr.mean_score == 0.0 and pr.mean_score is not None
 
 
 # --- PR #4 fix #2: a sample error must not abort the whole eval ---------------
@@ -738,7 +769,12 @@ def test_reducer_all_required_unsure_trials_is_zero_mean_fail_closed(minimal_pac
                                             unsure=True)]}),
         "tier3": _FakeScore({"checks": [_cr("rubric:x", 3, False, True, 1.0)]})})
     [pr] = _reduce_log_to_probes(_FakeLog([sample]), pack)
-    assert pr.mean_score == 0.0 and pr.unsure_trials == 1
+    # The recorded value is now the ABSENCE, but the verdict below is unmoved:
+    # `gate._mean` re-applies the same 0.0 the reducer used to write, so the
+    # drop against a 1.0 baseline is computed on exactly the old number. This
+    # assertion pair is the load-bearing one for the whole change — honest
+    # artifact, identical gate.
+    assert pr.mean_score is None and pr.unsure_trials == 1
     art = RunArtifact("p", "h", "j", "now", [pr], "log")
     base = RunArtifact("p", "h", "j", "now", [ProbeResult(
         "p", "misc", "regression", False, 1, trials=1, expected_trials=1,

@@ -502,7 +502,6 @@ describe("every contract route has a handler", () => {
     [`/api/packs/${PACK_ID_EXAMPLE}/axes`, undefined],
     ["/api/discoveries", undefined],
     ["/api/discoveries/discovered-hallucination-abcd1234", undefined],
-    ["/api/compare/20260806T091011000000-9f8e7d6c-example-compare", undefined],
     ["/api/trends?pack=example&metric=pass_k", undefined],
     ["/api/trust?pack=example", undefined],
   ];
@@ -510,5 +509,18 @@ describe("every contract route has a handler", () => {
   it.each(routes)("%s is handled", async (path, init) => {
     const res = await get(path, init);
     expect(res.status).toBeLessThan(400);
+  });
+
+  // The other half of the same claim, and the reason the row above was
+  // deleted rather than quietly dropped. This layer served
+  // `GET /api/compare/:runId` for most of Plan #4 — a route the real server
+  // has never had — so "every contract route has a handler" was true while
+  // one handler answered for no contract route at all. A mock that is a
+  // superset of the server is a trap, not a convenience: it makes a page
+  // written against a dead route green (R4-91, mutation M9).
+  it("does NOT serve a route the real server has never had", async () => {
+    await expect(
+      get("/api/compare/20260806T091011000000-9f8e7d6c-example-compare"),
+    ).rejects.toThrow();
   });
 });
