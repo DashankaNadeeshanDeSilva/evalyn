@@ -287,8 +287,17 @@ def gate(
                        + "; ".join(problems), err=True)
         # Echo the verdict being blessed — an explicit bless never blocks, but
         # blessing a FAIL should be a visible, deliberate act.
+        #
+        # Three words, not two. This line is reachable for a CANCELLED artifact
+        # only through `--force-baseline` (the refusal above catches it
+        # otherwise), and `evaluate_gate` now answers exit 3 for one — so a
+        # two-word `FAIL if exit_code else PASS` would call a stopped run's
+        # non-verdict a FAIL, blaming the product for probes that never ran.
+        # The vocabulary matches the report's own `**NO VERDICT**` banner.
         verdict = evaluate_gate(art, None)
-        typer.echo(f"gate: blessing {'FAIL' if verdict.exit_code else 'PASS'} verdict "
+        label = ("NO VERDICT" if art.cancelled
+                 else "FAIL" if verdict.exit_code else "PASS")
+        typer.echo(f"gate: blessing {label} verdict "
                    f"({len(verdict.failures)} failure(s), "
                    f"{len(verdict.quarantined)} quarantined)")
         save_baseline(art, baseline)

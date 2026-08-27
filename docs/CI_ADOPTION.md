@@ -74,6 +74,10 @@ with an explainer:
 - **2 — SETUP/INFRA.** The eval never (fully) reached the product — stale rubric
   calibration, an unreachable target, budget exhaustion, or a corrupt/pre-#2a baseline.
   **Not a product regression**; fix the setup, don't ship or revert on it.
+- **3 — NO VERDICT.** The run was cancelled before it finished, so the gate was never
+  decided over it. The report still prints what ran, and probes the stop prevented read
+  as MISSING. **Neither a pass nor a product regression** — re-run it. Reachable in CI
+  only if the job is cancelled mid-run.
 
 ## The committed-baseline convention
 

@@ -41,9 +41,11 @@ import { formatUsd, formatUtc } from "../format";
  * ## Where the board comes from
  *
  * `GET /api/runs/{id}` -> `RunDetail.compare`, via `useRunDetail`. There is no
- * `/api/compare/{id}` route on the server and there never has been, whatever
- * `models.py`, `types.ts` and the MSW handler say — a page built against that
- * route is green in vitest and dead in `evalyn ui`.
+ * `/api/compare/{id}` route on the server and there never has been — a page
+ * built against that route is green in vitest and dead in `evalyn ui`. Until
+ * the Plan #4 final review, `models.py`, `types.ts` and the MSW layer all said
+ * otherwise; all three now agree with the server, and this paragraph is a
+ * warning rather than a correction.
  *
  * The index read beside it (`/api/runs?mode=compare`) is what fills the board
  * selector. Only the first page is read: a directory with more compare runs

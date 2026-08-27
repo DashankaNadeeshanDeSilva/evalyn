@@ -960,14 +960,15 @@ def create_app(runs_dir: Path, packs: list[Path], *,
         one. That is the defence this guard now stands in front of rather than
         the one it provides.
 
-        **And it covers `gate` only.** `RunArtifact` is the sole artifact with
-        a `cancelled` field; a completed `compare` or `discover` beside a stale
-        cancel file still derives `cancelled`, because there is no
-        artifact-side answer to prefer (see `index.cancelled_by`; pinned by
-        `test_index.py::test_a_stale_cancel_still_relabels_compare_and_discover`).
-        For those two modes
-        this guard is not defence in depth — it is the only defence there is,
-        and its residual window is a real hole rather than a covered one.
+        **That defence now covers all three modes**, though it reads a
+        different field in each: `RunArtifact.cancelled` for `gate`, the mere
+        existence of a `CompareArtifact` for `compare` (a cancelled compare
+        writes none), and `partial=False` for `discover` (a cancelled discover
+        is always partial). See `index.cancelled_by` for why each is
+        conclusive. One case is left where this guard is the only defence
+        rather than defence in depth: a `discover` run that is partial for some
+        *other* reason — budget, error — beside a cancel file it never
+        honoured. There the residual window is still a real hole.
 
         A run this cockpit did not launch, with no artifact and no recorded
         exit code, is treated as live: it may genuinely be running in another

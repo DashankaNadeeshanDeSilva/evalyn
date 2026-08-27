@@ -141,9 +141,11 @@ def test_harvest_from_probes_scrubs_a_check_value_no_pattern_could_match():
 
 
 def test_harvesting_reaches_the_multi_value_or_form():
-    """`values` is documented as a `contains`-only form but is not statically
-    validated, so a `not_contains` carrying one is accepted input and its
-    literals are still secrets."""
+    """`values` is a `contains`-only form, and `validate_pack` refuses it on a
+    `not_contains` — but the *schema* accepts one, which is what this layer
+    sees. Redaction runs over whatever parsed, not over whatever validated, and
+    the literals are secrets either way. Constructing the refused shape on
+    purpose is the point: harvesting must not depend on the pack being valid."""
     probe = Probe(
         id="redirect", category="injection", turns=["hi"],
         checks=[Check(type="not_contains", values=[SENTINEL, "other-long-value"])],

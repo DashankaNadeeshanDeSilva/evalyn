@@ -267,7 +267,6 @@ def _discovery_cfg(tmp_path, **kw):
 # PROOF 1a: the discriminating RED — an exploding sink makes every mode raise
 # ==========================================================================
 
-@pytest.mark.filterwarnings("ignore:no price entry")
 def test_exploding_sink_makes_gate_raise(gate_pack, tmp_path):
     with pytest.raises(_Boom):
         _gate(gate_pack, tmp_path, sink=_ExplodingSink())
@@ -278,7 +277,6 @@ def test_exploding_sink_makes_compare_raise(compare_pack, offline_judge, tmp_pat
         _run_compare(compare_pack, tmp_path, sink=_ExplodingSink())
 
 
-@pytest.mark.filterwarnings("ignore:no price entry")
 async def test_exploding_sink_makes_discover_raise(discover_pack, tmp_path,
                                                    monkeypatch):
     _scripted_brain(monkeypatch, _confirming_script())
@@ -295,7 +293,6 @@ async def test_exploding_sink_makes_discover_raise(discover_pack, tmp_path,
 # assert the whole set, so deleting any single `sink.emit(...)` reds this file.
 # ==========================================================================
 
-@pytest.mark.filterwarnings("ignore:no price entry")
 def test_gate_fires_every_named_call_site(gate_pack, tmp_path):
     sink = _RecordingSink()
     art = _gate(gate_pack, tmp_path, sink=sink)
@@ -353,7 +350,6 @@ def test_compare_fires_every_named_call_site(compare_pack, offline_judge, tmp_pa
     assert n_pairs > 0
 
 
-@pytest.mark.filterwarnings("ignore:no price entry")
 async def test_discover_fires_every_named_call_site(discover_pack, tmp_path,
                                                     monkeypatch):
     _scripted_brain(monkeypatch, _confirming_script())
@@ -422,7 +418,6 @@ async def test_discover_fires_every_named_call_site(discover_pack, tmp_path,
 # tests that actually take the exception branch.
 # ==========================================================================
 
-@pytest.mark.filterwarnings("ignore:no price entry")
 def test_gate_emits_run_finished_error_when_no_trial_is_collected(gate_pack, tmp_path,
                                                                   monkeypatch):
     """`run_gate`'s fully-dead-target branch (round-2 N6) still terminates the
@@ -461,7 +456,6 @@ def test_compare_emits_run_finished_error_on_a_budget_breach(capped_compare_pack
     assert sink.names.index("artifact.written") < sink.names.index("run.finished")
 
 
-@pytest.mark.filterwarnings("ignore:no price entry")
 async def test_discover_emits_run_finished_error_when_the_finding_loop_raises(
         discover_pack, tmp_path, monkeypatch):
     """R8-5's durability wrap: staging blows up after the money is spent."""
@@ -521,7 +515,6 @@ def interdicted(monkeypatch):
     monkeypatch.setattr(events_mod, "JsonlSink", _NeverConstruct)
 
 
-@pytest.mark.filterwarnings("ignore:no price entry")
 def test_default_gate_never_constructs_a_jsonl_sink(gate_pack, tmp_path, interdicted):
     _gate(gate_pack, tmp_path)
 
@@ -531,7 +524,6 @@ def test_default_compare_never_constructs_a_jsonl_sink(compare_pack, offline_jud
     _run_compare(compare_pack, tmp_path)
 
 
-@pytest.mark.filterwarnings("ignore:no price entry")
 async def test_default_discover_never_constructs_a_jsonl_sink(discover_pack, tmp_path,
                                                               monkeypatch, interdicted):
     _scripted_brain(monkeypatch, _confirming_script())
@@ -563,7 +555,6 @@ def test_the_cli_never_constructs_a_jsonl_sink_without_events(
 # PROOF 3: a default run leaves no sidecars on disk
 # ==========================================================================
 
-@pytest.mark.filterwarnings("ignore:no price entry")
 def test_a_default_gate_run_writes_no_events_or_control_sidecars(gate_pack, tmp_path):
     _gate(gate_pack, tmp_path)
     runs = tmp_path / "runs"
@@ -585,7 +576,6 @@ def test_a_default_compare_run_writes_no_sidecars(compare_pack, offline_judge,
     assert list(runs.rglob("*.control.json")) == []
 
 
-@pytest.mark.filterwarnings("ignore:no price entry")
 async def test_a_default_discover_run_writes_no_sidecars(discover_pack, tmp_path,
                                                          monkeypatch):
     _scripted_brain(monkeypatch, _confirming_script())
@@ -621,7 +611,6 @@ def _blank_volatile(d: dict) -> dict:
     return out
 
 
-@pytest.mark.filterwarnings("ignore:no price entry")
 def test_default_run_and_explicit_null_sink_run_produce_the_same_artifact(
         gate_pack, tmp_path):
     default = _gate(gate_pack, tmp_path, name="a")
@@ -636,7 +625,6 @@ def test_default_run_and_explicit_null_sink_run_produce_the_same_artifact(
         _blank_volatile(json.loads(wb.read_text()))
 
 
-@pytest.mark.filterwarnings("ignore:no price entry")
 def test_only_time_varying_fields_differ_between_two_default_runs(gate_pack, tmp_path):
     """The control for the test above: `VOLATILE` is not hiding a real diff.
 

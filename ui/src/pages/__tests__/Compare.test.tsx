@@ -621,10 +621,12 @@ describe("the wire", () => {
   /**
    * The trap this page was briefed around.
    *
-   * `handlers.ts:438` serves `GET /api/compare/:runId`, which the real server
-   * does not have and never had. Because it *is* mocked, a page written against
-   * it passes every other test in this file. This one reads back the URLs the
-   * page actually requested.
+   * `handlers.ts` served `GET /api/compare/:runId` — a route the real server
+   * does not have and never had — for most of Plan #4. Because it *was*
+   * mocked, a page written against it passed every other test in this file.
+   * The mock is gone as of the Plan #4 final review, but this test is not:
+   * the mock could come back, and reading the URLs the page actually requested
+   * is a stronger claim than "no handler exists to answer it".
    */
   it("reads the board off the run detail, never off a compare route", async () => {
     const seen: string[] = [];

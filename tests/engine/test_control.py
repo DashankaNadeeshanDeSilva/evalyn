@@ -472,7 +472,6 @@ def test_build_task_degrades_loudly_when_the_seam_is_absent(gate_pack, ctl_path,
 # 5. Gate: pause changes nothing but wall time
 # ==========================================================================
 
-@pytest.mark.filterwarnings("ignore:no price entry")
 def test_a_paused_gate_run_writes_the_same_artifact_as_an_unpaused_one(
         gate_pack, tmp_path, ctl_path):
     """Step 1(a). A 2 s pause must change NOTHING but wall time.
@@ -508,7 +507,6 @@ def test_a_paused_gate_run_writes_the_same_artifact_as_an_unpaused_one(
                                  for p in paused.probes)
 
 
-@pytest.mark.filterwarnings("ignore:no price entry")
 def test_only_time_varying_fields_differ_between_two_uncontrolled_runs(gate_pack,
                                                                        tmp_path):
     """THE CONTROL for the test above — Task 18's, re-run here so this file's
@@ -527,7 +525,6 @@ def test_only_time_varying_fields_differ_between_two_uncontrolled_runs(gate_pack
 # 6. Gate: a cancelled run is marked, and is never a verdict
 # ==========================================================================
 
-@pytest.mark.filterwarnings("ignore:no price entry")
 def test_a_cancelled_gate_run_marks_the_artifact_and_still_writes_it(
         gate_pack, tmp_path, ctl_path):
     sink = _RecordingSink()
@@ -549,7 +546,6 @@ def test_a_cancelled_gate_run_marks_the_artifact_and_still_writes_it(
         == ["cancelled"]
 
 
-@pytest.mark.filterwarnings("ignore:no price entry")
 def test_a_fully_cancelled_run_is_not_reported_as_a_dead_target(gate_pack,
                                                                 tmp_path, ctl_path):
     """`run_gate` raises "no probe collected a single scored trial" when every
@@ -585,7 +581,6 @@ class _CancelledAfterScoring:
         return None      # no manager: nothing is ever stopped
 
 
-@pytest.mark.filterwarnings("ignore:no price entry")
 def test_a_cancel_that_lands_after_scoring_still_marks_the_artifact(gate_pack,
                                                                     tmp_path):
     art = _gate(gate_pack, tmp_path, name="late", controller=_CancelledAfterScoring())
@@ -921,6 +916,93 @@ def test_a_cancelled_compare_raises_before_any_judge_call(tmp_path, ctl_path,
         == ["cancelled"]
 
 
+def test_a_cancelled_compare_writes_no_artifact_at_all(tmp_path, ctl_path,
+                                                       monkeypatch):
+    """The engine-side half of a rule that is enforced in another module.
+
+    `evalyn.ui.index.cancelled_by` decides "did an operator stop this run?" per
+    mode, and for `compare` it answers **False whenever a `CompareArtifact`
+    exists on disk** — the artifact's existence *is* the proof the run reached
+    the end, which is what stops a leftover `<stem>.control.json` from
+    relabelling a finished comparison as `cancelled`. `gate` grounds that claim
+    in `RunArtifact.cancelled` and `discover` in `partial` (both pinned in this
+    file); `compare`'s only ground is the absence asserted below.
+
+    So this is a coupling, not a local fact. Make compare symmetric with
+    discover — write a partial artifact on the abort path to preserve the spend
+    record, exactly the rationale `discovery/run.py:554` gives for doing so —
+    and every genuinely cancelled compare starts reporting as completed. This
+    test is the thing that says so; the fix then belongs in `cancelled_by`,
+    which needs a new witness, not here.
+
+    Not vacuous: the same glob, in the same directory, does find the file the
+    shared writer puts there (the writer both the CLI's happy path and
+    `run_compare`'s budget-breach path go through). The suffix is read from
+    `_MODE_SUFFIX` rather than typed out, so a renamed suffix cannot quietly
+    turn this into a search for a name nothing ever writes.
+    """
+    from evalyn.engine import compare as cmp_mod
+    from evalyn.engine.compare import CompareArtifact
+    from evalyn.engine.run import pack_fingerprint
+
+    async def _never(*a, **kw):
+        raise AssertionError("a cancelled compare judged a pair anyway")
+
+    monkeypatch.setattr(cmp_mod, "judge_pair", _never)
+
+    d = tmp_path / "cpack"
+    (d / "probes").mkdir(parents=True)
+    (d / "rubrics").mkdir()
+    (d / "target.yaml").write_text(
+        "name: cmp\nsessions:\n  open: {method: POST, path: /session}\n"
+        "  message: {method: POST, path: /chat}\n"
+        "env: {base_url: http://localhost:8899}\n"
+        "allowlist: [http://localhost:8899]\n")
+    (d / "rubrics" / "tone.md").write_text("# Tone rubric\n## Calm\nStays calm.\n")
+    (d / "probes" / "p.yaml").write_text(
+        "- id: r1\n  category: chat\n  turns: [hi]\n  checks:\n"
+        "    - { type: rubric, rubric: tone, required: true }\n")
+    pack = load_pack(str(d))
+
+    def _art(created_at):
+        return RunArtifact(
+            pack_name="cmp", pack_hash=pack_fingerprint(pack),
+            judge_model="mockllm/model", created_at=created_at,
+            probes=[ProbeResult(
+                id="r1", category="chat", kind="regression",
+                safety_critical=False, samples=1, trials=1,
+                trial_records=[{"epoch": 0, "transcript": "User: hi",
+                                "session_seconds": 1.0,
+                                "invariant_failures": 0}])],
+            log_path="runs/logs")
+
+    out_dir = tmp_path / "runs"
+    sink = _RecordingSink()
+    c = _controller(ctl_path, sink)
+    c.request("cancel")
+    with pytest.raises(RunCancelled):
+        asyncio.run(cmp_mod.run_compare(
+            pack, _art("2026-08-01T00:00:00+00:00"),
+            _art("2026-08-02T00:00:00+00:00"), "openai/gpt-4o",
+            out_dir=str(out_dir), sink=sink, controller=c))
+
+    # Broader than the compare glob on purpose: an abort-path artifact written
+    # under any name is still a file the cockpit would find and render.
+    assert list(out_dir.rglob("*.json")) == []
+    assert [f["path"] for n, f in sink.events if n == "artifact.written"] == []
+
+    written = cmp_mod.write_compare_artifact(
+        CompareArtifact(
+            pack_name="cmp", pack_hash=pack_fingerprint(pack),
+            judge_model="openai/gpt-4o", created_at="2026-08-03T00:00:00+00:00",
+            label_a="A", label_b="B", source_a="", source_b="",
+            created_at_a="2026-08-01T00:00:00+00:00",
+            created_at_b="2026-08-02T00:00:00+00:00",
+            categories={}, probes=[], hard_metrics={}, excluded_pairs=0),
+        out_dir=str(out_dir))
+    assert list(out_dir.rglob(f"*{_MODE_SUFFIX['compare']}.json")) == [written]
+
+
 # ==========================================================================
 # 11. The pin
 # ==========================================================================
@@ -1215,7 +1297,6 @@ class _CancelOnEvent:
         return None
 
 
-@pytest.mark.filterwarnings("ignore:no price entry")
 async def test_a_cancel_at_the_replay_boundary_stops_a_discovery_run(
         discover_run_pack, tmp_path, monkeypatch, ctl_path):
     """I2. Until the in-hunt seam existed this was the WHOLE discover cancel
@@ -1256,7 +1337,6 @@ async def test_a_cancel_at_the_replay_boundary_stops_a_discovery_run(
         == ["cancelled"]
 
 
-@pytest.mark.filterwarnings("ignore:no price entry")
 async def test_a_pre_cancelled_discovery_run_stops_inside_the_hunt(
         discover_run_pack, tmp_path, monkeypatch, ctl_path):
     """I3. The in-hunt checkpoint, reachable at last.

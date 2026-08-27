@@ -196,13 +196,17 @@ describe("the gate banner", () => {
  * which is exactly the trap: `GATE_VERDICT` is a real `exit_code: 1` with two
  * named failures, and it is *not* the verdict this run earned.
  *
- * `verdict_hint` stays `failed` because `verdict_hint_of` reds any probe with
- * `trials == 0` — the same overclaim, one layer down, that the runs list reads.
+ * `verdict_hint` is `null`, and that is not a convenience: `verdict_hint_of`
+ * returns `None` the moment `artifact.cancelled` is set, so a cancelled gate
+ * run cannot reach this page carrying one. `DETAIL_GATE` says `"failed"` and
+ * spreading it here would model a payload the server has no code path to write
+ * — the mock-only shape this suite exists to keep out, one field wide.
  */
 const DETAIL_CANCELLED: RunDetail = {
   ...DETAIL_GATE,
   status: "cancelled",
   cancelled: true,
+  verdict_hint: null,
   probes: DETAIL_GATE.probes.map((probe) =>
     probe.id === PROBE_ID_EXFIL
       ? {
@@ -228,6 +232,11 @@ describe("a run an operator stopped claims no verdict it did not earn", () => {
    * about the verdict's **absence**: no banner, no PASS/FAIL sentence, no exit
    * code, and none of the failure lines the gate query really does return for
    * this run.
+   *
+   * Run against the payload the server actually writes for a stopped gate run —
+   * `cancelled: true` with `verdict_hint: null` — rather than against the
+   * pre-fix pair. The stale-hint payload is a separate, separately labelled
+   * case below.
    */
   it("shows no gate verdict and no exit code when an operator stopped the run", async () => {
     withDetail(DETAIL_CANCELLED);
@@ -270,6 +279,42 @@ describe("a run an operator stopped claims no verdict it did not earn", () => {
     // The header and the evidence below are correct and must keep rendering.
     expect(screen.getByTestId("scenario-table")).toBeInTheDocument();
     expect(page.toLowerCase()).toContain("cancelled");
+  });
+
+  /**
+   * The same suppression, keyed on the FACT and not on the approximation.
+   *
+   * Before the backend fix, `verdict_hint_of` reds a cancelled run's un-run
+   * probes and the server sent `{cancelled: true, verdict_hint: "failed"}`.
+   * This build cannot, but `npm run dev` proxies `/api` to whatever `evalyn ui`
+   * is listening on 8765 — so a stale hint is a payload this page can still be
+   * handed, and the page's own rule is that it reads `RunDetail.cancelled`, the
+   * field the engine writes when it honours a cancel, and never a hint.
+   *
+   * It discriminates rather than decorates: re-key the cancelled branch (or the
+   * gate query's `enabled:`) on `verdict_hint === null` instead of
+   * `run.cancelled` and the test above stays green — its fixture's hint is
+   * already `null` — while this one gets the full banner, exit code and
+   * failure lines for a run nobody let finish.
+   */
+  it("suppresses the verdict on a stopped run whatever an older API hints", async () => {
+    withDetail({ ...DETAIL_CANCELLED, verdict_hint: "failed" });
+    renderPage(RUN_ID_GATE);
+
+    await screen.findByTestId("gate-banner-cancelled");
+    // Same settle as above: let a real round trip land before asserting that
+    // another one's output is absent.
+    const chip = await screen.findByTestId("cost-chip");
+    await waitFor(() => expect(chip.dataset["ceiling"]).toBe("known"));
+
+    expect(screen.queryByTestId("gate-banner")).toBeNull();
+    const page = document.body.textContent ?? "";
+    expect(page.toLowerCase()).not.toMatch(/gate (failed|passed)/);
+    expect(page.toLowerCase()).not.toContain("exit code");
+    for (const line of GATE_VERDICT.failures) {
+      expect(page, "a failure line from the gate query reached the screen")
+        .not.toContain(line);
+    }
   });
 
   /**
